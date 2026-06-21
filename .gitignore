@@ -1,0 +1,95 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Environment variables
+.env
+.env.*
+**/.env
+**/.env.*
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build folders
+dist/
+build/
+.next/
+out/
+coverage/
+
+# Cache
+.cache/
+.parcel-cache/
+.vite/
+.eslintcache
+
+# Operating System files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Database files
+*.sqlite
+*.sqlite3
+*.db
+
+# Certificates & keys
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Uploads (if generated at runtime)
+uploads/
+public/uploads/
+
+# Package manager
+.pnpm-store/
+.npm/
+.yarn/
+
+# Test output
+coverage/
+.nyc_output/
+
+# Misc
+*.pid
+*.seed
+
+# Python (if used)
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Docker local files
+docker-compose.override.yml
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# Supabase local files
+.supabase/
+
+# Secrets
+secrets/
+credentials/
