@@ -25,6 +25,20 @@ async def lifespan(app: FastAPI):
             exc,
         )
 
+    # ── Fix stale quiz_questions table (missing 'questions' column) ──
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'quiz_questions' AND column_name = 'questions'"
+            ))
+            if result.fetchone() is None:
+                logger.info("quiz_questions table is missing 'questions' column — recreating...")
+                conn.execute(text("DROP TABLE IF EXISTS quiz_questions CASCADE"))
+                conn.commit()
+    except Exception as exc:
+        logger.warning("Could not verify quiz_questions schema: %s", exc)
+
     Base.metadata.create_all(bind=engine)
     yield
 

@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 import Navbar from "@/components/Navbar";
 import Link from "next/link";
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -42,6 +42,9 @@ function InterviewPage() {
   const [typedAnswer, setTypedAnswer] = useState("");
 
   const recognitionRef = useRef(null);
+  const isListeningRef = useRef(false);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
   const questionStartRef = useRef(null);
   const pauseCountRef = useRef(0);
   const longPauseMsRef = useRef(0);
@@ -82,6 +85,7 @@ function InterviewPage() {
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
 
     submittingRef.current = true;
+    isListeningRef.current = false;
     setStatus("AI PROCESSING");
     setWaitingForStudent(false);
     setMicActive(false);
@@ -191,11 +195,63 @@ function InterviewPage() {
     startSession();
     return () => {
       if (recognitionRef.current) recognitionRef.current.stop();
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        mediaRecorderRef.current.stop();
+        mediaRecorderRef.current.stream.getTracks().forEach((track) => track.stop());
+      }
       if (typeof window !== "undefined") window.speechSynthesis?.cancel();
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       if (autoSubmitTimerRef.current) clearTimeout(autoSubmitTimerRef.current);
     };
   }, [startSession]);
+
+  // ─── Shared: stop recorder, transcribe via Whisper, submit ───
+  const transcribeAndSubmit = useCallback(async (nativeFallback) => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      setStatus("AI TRANSCRIBING");
+      await new Promise((resolve) => {
+        mediaRecorderRef.current.onstop = async () => {
+          const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+          let finalAnswer = "";
+
+          // Always use Whisper as the primary transcription
+          try {
+            const formData = new FormData();
+            formData.append("file", audioBlob, "audio.webm");
+            const res = await authFetch("/api/interview/transcribe", {
+              method: "POST",
+              body: formData,
+            });
+            if (res.ok) {
+              const data = await res.json();
+              finalAnswer = (data.text || "").trim();
+            }
+          } catch (err) {
+            console.error("Whisper transcription failed:", err);
+          }
+
+          // Fall back to native browser transcript only if Whisper returned nothing
+          if (!finalAnswer && nativeFallback) {
+            finalAnswer = nativeFallback;
+          }
+
+          if (finalAnswer) {
+            submitAnswer(finalAnswer);
+          } else {
+            setStatus("WAITING FOR YOU");
+            setError("Could not recognize speech. Please try speaking louder or type your answer.");
+          }
+          resolve();
+        };
+        mediaRecorderRef.current.stop();
+        mediaRecorderRef.current.stream.getTracks().forEach((track) => track.stop());
+      });
+    } else if (nativeFallback) {
+      submitAnswer(nativeFallback);
+    } else {
+      setStatus("WAITING FOR YOU");
+    }
+  }, [authFetch, submitAnswer]);
 
   const startListening = useCallback(() => {
     const SpeechRecognition =
@@ -209,8 +265,31 @@ function InterviewPage() {
     // Stop TTS so it doesn't feed back into the mic
     if (typeof window !== "undefined") window.speechSynthesis?.cancel();
 
-    if (recognitionRef.current) recognitionRef.current.stop();
+    if (recognitionRef.current) {
+      recognitionRef.current.onend = null;
+      recognitionRef.current.stop();
+    }
 
+    // Start MediaRecorder for Whisper transcription
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then((stream) => {
+        const mediaRecorder = new MediaRecorder(stream);
+        mediaRecorderRef.current = mediaRecorder;
+        audioChunksRef.current = [];
+
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            audioChunksRef.current.push(event.data);
+          }
+        };
+
+        mediaRecorder.start();
+      })
+      .catch((err) => {
+        console.error("Failed to start MediaRecorder:", err);
+      });
+
+    // SpeechRecognition is only for real-time interim captions
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
     recognition.interimResults = true;
@@ -227,14 +306,12 @@ function InterviewPage() {
 
       // Clear existing timers on new speech
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-      if (autoSubmitTimerRef.current) clearTimeout(autoSubmitTimerRef.current);
 
       let interim = "";
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const t = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
           finalTextRef.current += t + " ";
-          // Count filler words in each final segment
           const newFillers = countFillers(t);
           fillerCountRef.current += newFillers;
           setFillerCount(fillerCountRef.current);
@@ -252,50 +329,51 @@ function InterviewPage() {
           longPauseMsRef.current += gap;
         }
       }, 3100);
-
-      // Auto-submit after 6 seconds of silence if answer is non-empty
-      if (finalTextRef.current.trim()) {
-        autoSubmitTimerRef.current = setTimeout(() => {
-          const answer = finalTextRef.current.trim();
-          if (answer && !submittingRef.current) {
-            if (recognitionRef.current) recognitionRef.current.stop();
-            submitAnswer(answer);
-          }
-        }, 6000);
-      }
     };
 
     recognition.onerror = (e) => {
-      if (e.error !== "no-speech") setError(`Mic error: ${e.error}. Please retry.`);
+      if (e.error === "no-speech" || e.error === "aborted") {
+        return; // Ignore standard lifecycle interruptions
+      }
+      setError(`Mic error: ${e.error}. Please retry.`);
+      isListeningRef.current = false;
       setMicActive(false);
     };
 
+    // Always restart recognition if it ends naturally — only the user can stop it
     recognition.onend = () => {
-      setMicActive(false);
-      // If recognition ended naturally (not by user) and we have text, submit
-      const answer = finalTextRef.current.trim();
-      if (answer && !submittingRef.current && waitingForStudent) {
-        submitAnswer(answer);
+      if (isListeningRef.current && !submittingRef.current) {
+        try {
+          recognition.start();
+          return;
+        } catch (err) {
+          console.error("Failed to restart speech recognition:", err);
+        }
       }
+      setMicActive(false);
     };
 
     recognitionRef.current = recognition;
+    isListeningRef.current = true;
     recognition.start();
     setMicActive(true);
     setStatus("LISTENING");
-  }, [submitAnswer, waitingForStudent]);
+  }, [transcribeAndSubmit, waitingForStudent]);
 
   const stopListeningAndSubmit = useCallback(() => {
-    if (autoSubmitTimerRef.current) clearTimeout(autoSubmitTimerRef.current);
-    if (recognitionRef.current) recognitionRef.current.stop();
+    isListeningRef.current = false;
     setMicActive(false);
-    const answer = finalTextRef.current.trim();
-    if (answer) {
-      submitAnswer(answer);
-    } else {
-      setStatus("WAITING FOR YOU");
+    if (autoSubmitTimerRef.current) clearTimeout(autoSubmitTimerRef.current);
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+
+    if (recognitionRef.current) {
+      recognitionRef.current.onend = null;
+      recognitionRef.current.stop();
     }
-  }, [submitAnswer]);
+
+    const nativeAnswer = finalTextRef.current.trim();
+    transcribeAndSubmit(nativeAnswer);
+  }, [transcribeAndSubmit]);
 
   const handleToggleMic = () => {
     if (!waitingForStudent || submittingRef.current) return;

@@ -6,24 +6,37 @@ import re
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
+# ─── Cached LLM instances ───
+_llm_cache = {}
 
-def get_llm():
-    """Return a LangChain chat model. Prefers Groq, then OpenAI."""
+
+def get_llm(fast: bool = False):
+    """Return a cached LangChain chat model. fast=True uses a smaller, faster model."""
+    cache_key = "fast" if fast else "default"
+    if cache_key in _llm_cache:
+        return _llm_cache[cache_key]
+
+    llm = None
     if GROQ_API_KEY:
         try:
             from langchain_groq import ChatGroq
-            return ChatGroq(
-                model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+            model = (
+                "llama-3.1-8b-instant" if fast
+                else os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+            )
+            llm = ChatGroq(
+                model=model,
                 temperature=0.7,
                 groq_api_key=GROQ_API_KEY,
+                max_tokens=512 if fast else 1024,
             )
         except Exception:
             pass
 
-    if OPENAI_API_KEY:
+    if llm is None and OPENAI_API_KEY:
         try:
             from langchain_openai import ChatOpenAI
-            return ChatOpenAI(
+            llm = ChatOpenAI(
                 model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
                 temperature=0.7,
                 api_key=OPENAI_API_KEY,
@@ -31,10 +44,12 @@ def get_llm():
         except Exception:
             pass
 
-    return None
+    _llm_cache[cache_key] = llm
+    return llm
 
 
-def _extract_json(text: str) -> dict:
+def _extract_json(text: str):
+    """Extract JSON from LLM output — handles both objects and arrays."""
     text = text.strip()
     fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if fence:
@@ -42,10 +57,19 @@ def _extract_json(text: str) -> dict:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start >= 0 and end > start:
-            return json.loads(text[start : end + 1])
+        # Try extracting a JSON object
+        obj_start = text.find("{")
+        obj_end = text.rfind("}")
+        if obj_start >= 0 and obj_end > obj_start:
+            try:
+                return json.loads(text[obj_start : obj_end + 1])
+            except json.JSONDecodeError:
+                pass
+        # Try extracting a JSON array
+        arr_start = text.find("[")
+        arr_end = text.rfind("]")
+        if arr_start >= 0 and arr_end > arr_start:
+            return json.loads(text[arr_start : arr_end + 1])
         raise
 
 
@@ -55,25 +79,23 @@ def llm_generate_question(
     transcript: list,
     question_number: int,
 ) -> str:
-    llm = get_llm()
+    # Use the fast model for question generation — speed matters here
+    llm = get_llm(fast=True)
     history = "\n".join(
-        f"{m['speaker'].upper()}: {m['text']}" for m in transcript[-6:]
+        f"{m['speaker'].upper()}: {m['text']}" for m in transcript[-4:]
     )
     if llm:
         from langchain_core.messages import HumanMessage, SystemMessage
         system = (
-            "You are an expert technical interviewer for an online learning platform. "
-            "Ask ONE clear oral interview question based ONLY on the module content provided. "
-            "Questions should test deep understanding, not memorization. "
-            "Use follow-up style when prior answers exist. "
-            "Return ONLY the question text, no preamble."
+            "You are a technical interviewer. Ask ONE concise oral interview question "
+            "based on the module content. Test understanding, not memorization. "
+            "Follow up on prior answers if available. Return ONLY the question."
         )
         user = (
             f"Module: {chapter_title}\n\n"
-            f"Content:\n{context[:6000]}\n\n"
-            f"Conversation so far:\n{history or 'None yet'}\n\n"
-            f"This is question #{question_number} of up to 5. "
-            "Ask the next interview question."
+            f"Content:\n{context[:3000]}\n\n"
+            f"Conversation:\n{history or 'None yet'}\n\n"
+            f"Question #{question_number}/5."
         )
         resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
         return resp.content.strip()
@@ -100,7 +122,8 @@ def llm_score_interview(
     pause_metrics: list,
     pass_threshold: int,
 ) -> dict:
-    llm = get_llm()
+    # Use the full model for scoring — quality matters here
+    llm = get_llm(fast=False)
     dialogue = "\n".join(
         f"{m['speaker'].upper()}: {m['text']}" for m in transcript
     )
@@ -117,31 +140,19 @@ def llm_score_interview(
     if llm:
         from langchain_core.messages import HumanMessage, SystemMessage
         system = (
-            "You are an expert evaluator for technical oral assessments. "
-            "Score the student's interview performance based on the module content. "
-            f"Pass threshold is {pass_threshold}%. "
-            "Return ONLY valid JSON with keys: "
-            "technical_score (0-100), communication_score (0-100), "
-            "confidence_score (0-100), overall_score (0-100), passed (boolean), "
-            "strengths (array of strings), weak_areas (array of strings), "
-            "suggested_review (array of strings referencing module topics to re-study). "
-            "Scoring guidelines: "
-            "technical_score = accuracy and depth of answers vs module content; "
-            "communication_score = clarity, structure, and coherence of speech "
-            "(penalise heavily for excessive filler words); "
-            "confidence_score = penalise for filler words (um, uh, mhm, hmm, like, you know) "
-            "and long hesitation pauses — these directly signal uncertainty and poor preparation."
+            "You are an evaluator for technical oral assessments. "
+            f"Pass threshold: {pass_threshold}%. "
+            "Return ONLY valid JSON: "
+            "{technical_score, communication_score, confidence_score, overall_score (all 0-100), "
+            "passed (bool), strengths (string[]), weak_areas (string[]), suggested_review (string[])}. "
+            "Penalise filler words and hesitation pauses in communication and confidence scores."
         )
         user = (
             f"Module: {chapter_title}\n\n"
-            f"Reference content:\n{context[:4000]}\n\n"
-            f"Interview transcript:\n{dialogue}\n\n"
-            f"Speech quality metrics:\n"
-            f"- Avg hesitation pauses per answer: {avg_pause:.1f}\n"
-            f"- Avg response time: {avg_response:.0f} ms\n"
-            f"- Total filler words (um/uh/mhm/hmm/like/you know): {total_filler} "
-            f"(avg {avg_filler:.1f} per answer)\n"
-            "Filler words and long pauses must significantly reduce confidence_score and communication_score."
+            f"Content:\n{context[:2500]}\n\n"
+            f"Transcript:\n{dialogue}\n\n"
+            f"Metrics: pauses={avg_pause:.1f}/ans, response={avg_response:.0f}ms, "
+            f"fillers={total_filler} total ({avg_filler:.1f}/ans)"
         )
         resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
         result = _extract_json(resp.content)

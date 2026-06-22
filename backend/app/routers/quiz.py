@@ -43,6 +43,28 @@ def get_quiz(
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
 
+    # Auto-fetch transcript from YouTube if missing
+    if not chapter.video_transcript and chapter.youtube_url:
+        try:
+            from app.services.transcript import fetch_youtube_transcript
+            transcript = fetch_youtube_transcript(chapter.youtube_url)
+            if transcript:
+                chapter.video_transcript = transcript
+                db.commit()
+                db.refresh(chapter)
+                # Embed in a separate DB session so failures don't corrupt our transaction
+                try:
+                    from app.services.embeddings import embed_and_store_chapter
+                    embed_and_store_chapter(
+                        chapter.id, chapter.course_id,
+                        chapter.article_content, transcript,
+                        db=None,  # uses its own session
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            db.rollback()
+
     cached = db.query(QuizQuestion).filter(QuizQuestion.chapter_id == chapter_id).first()
     if not cached:
         context = build_chapter_context(chapter, db=db)

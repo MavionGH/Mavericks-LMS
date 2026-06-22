@@ -120,7 +120,7 @@ def retrieve_relevant_chunks(
                 text("""
                     SELECT chunk_text FROM chunk_embeddings
                     WHERE chapter_id = :cid AND embedding IS NOT NULL
-                    ORDER BY embedding <=> :emb::vector
+                    ORDER BY embedding <=> CAST(:emb AS vector)
                     LIMIT :k
                 """),
                 {"cid": chapter_id, "emb": vec_str, "k": top_k},
@@ -129,6 +129,10 @@ def retrieve_relevant_chunks(
                 return [r[0] for r in rows]
         except Exception as exc:
             logger.warning("Vector similarity search failed, using fallback: %s", exc)
+            try:
+                db.rollback()
+            except Exception:
+                pass
 
     # Fallback: return first top_k chunks in insertion order
     chunks = (

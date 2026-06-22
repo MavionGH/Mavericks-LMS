@@ -15,6 +15,7 @@ function LearnPage() {
   const [course, setCourse] = useState(null);
   const [enrollment, setEnrollment] = useState(null);
   const [quizStatus, setQuizStatus] = useState({ attempted: false, passed: false, score: null });
+  const [interviewStatus, setInterviewStatus] = useState({ attempted: false, passed: false, score: null });
   const [activeTab, setActiveTab] = useState("video");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -59,6 +60,12 @@ function LearnPage() {
         if (qRes.ok) {
           const qData = await qRes.json();
           setQuizStatus(qData);
+        }
+
+        const intRes = await authFetch(`/api/interview/${params.chapterId}/my-status`);
+        if (intRes.ok) {
+          const intData = await intRes.json();
+          setInterviewStatus(intData);
         }
       } catch (err) {
         setError(err.message);
@@ -126,7 +133,7 @@ function LearnPage() {
             <div className="sidebar-title">{course?.title || "Course"}</div>
             {chapters.map((ch, i) => {
               const unlocked = i <= currentIndex;
-              const completed = i < currentIndex;
+              const completed = i < currentIndex || (i === chapters.length - 1 && enrollment && (enrollment.status === "capstone_ready" || enrollment.status === "completed"));
               const active = ch.id === viewingChapter.id;
               return (
                 <Link
@@ -174,6 +181,9 @@ function LearnPage() {
                 <div key={tab} className={`tab ${activeTab === tab ? "active" : ""}`} onClick={() => setActiveTab(tab)}>
                   {TAB_LABELS[tab]}
                   {tab === "quiz" && quizStatus.passed && (
+                    <span style={{ marginLeft: "6px", color: "var(--color-success)", fontSize: "11px" }}>✓</span>
+                  )}
+                  {tab === "interview" && interviewStatus.passed && (
                     <span style={{ marginLeft: "6px", color: "var(--color-success)", fontSize: "11px" }}>✓</span>
                   )}
                 </div>
@@ -287,7 +297,31 @@ function LearnPage() {
                     ask follow-up questions, score your technical knowledge, communication, and confidence.
                     Pass to unlock the next module.
                   </p>
-                  {isCurrentChapter ? (
+                  {interviewStatus.passed ? (
+                    <div>
+                      <div className="badge badge-success" style={{ marginBottom: "16px" }}>
+                        ✓ Passed ({interviewStatus.score}%) — Oral assessment completed
+                      </div>
+                      <br />
+                      {isCurrentChapter && (
+                        <Link href={`/interview/${params.courseId}/${viewingChapter.id}`}>
+                          <button className="btn btn-secondary" style={{ marginTop: "12px" }}>Retake Assessment</button>
+                        </Link>
+                      )}
+                    </div>
+                  ) : interviewStatus.attempted ? (
+                    <div>
+                      <div className="badge badge-danger" style={{ marginBottom: "16px" }}>
+                        Score: {interviewStatus.score}% — Retake to unlock next module
+                      </div>
+                      <br />
+                      {isCurrentChapter && (
+                        <Link href={`/interview/${params.courseId}/${viewingChapter.id}`}>
+                          <button className="btn btn-primary" style={{ marginTop: "12px" }}>Retake Assessment</button>
+                        </Link>
+                      )}
+                    </div>
+                  ) : isCurrentChapter ? (
                     interviewUnlocked ? (
                       <Link href={`/interview/${params.courseId}/${viewingChapter.id}`}>
                         <button className="btn btn-primary">Start AI oral assessment</button>

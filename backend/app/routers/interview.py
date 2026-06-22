@@ -1,5 +1,5 @@
 from typing import Union
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, File, UploadFile
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -36,6 +36,65 @@ def _get_chapter_and_enrollment(db: Session, user_id: str, chapter_id: str):
         raise HTTPException(status_code=403, detail="This module is not your current active chapter")
 
     return chapter, enrollment, sorted_chapters
+
+
+@router.get("/{chapter_id}/my-status")
+def get_interview_status(
+    chapter_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_student),
+):
+    latest = (
+        db.query(Evaluation)
+        .filter(Evaluation.user_id == current_user.id, Evaluation.chapter_id == chapter_id)
+        .order_by(Evaluation.created_at.desc())
+        .first()
+    )
+    if not latest:
+        return {"attempted": False, "passed": False, "score": None}
+    return {"attempted": True, "passed": latest.passed, "score": latest.overall_score}
+
+
+@router.post("/transcribe")
+def transcribe_audio(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_student),
+):
+    import os
+    groq_key = os.getenv("GROQ_API_KEY", "")
+    if not groq_key:
+        raise HTTPException(status_code=500, detail="Groq API key not configured")
+
+    try:
+        import requests
+        file_bytes = file.file.read()
+        filename = file.filename or "audio.webm"
+        
+        headers = {
+            "Authorization": f"Bearer {groq_key}"
+        }
+        files = {
+            "file": (filename, file_bytes, file.content_type or "audio/webm")
+        }
+        data = {
+            "model": "whisper-large-v3-turbo"
+        }
+        
+        response = requests.post(
+            "https://api.groq.com/openai/v1/audio/transcriptions",
+            headers=headers,
+            files=files,
+            data=data,
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+            
+        result = response.json()
+        return {"text": result.get("text", "")}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/eligibility/{chapter_id}", response_model=InterviewEligibilityResponse)
