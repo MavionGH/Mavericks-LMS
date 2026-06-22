@@ -18,6 +18,49 @@ function TeacherPanel() {
     video_transcript: "",
   });
   const [chapterStatus, setChapterStatus] = useState("");
+  const [fetchTranscriptStatus, setFetchTranscriptStatus] = useState("");
+  const [fetchProgress, setFetchProgress] = useState(0);
+
+  const handleFetchTranscript = async () => {
+    if (!chapterForm.youtube_url) {
+      setFetchTranscriptStatus("Please enter a YouTube video URL first.");
+      return;
+    }
+    setFetchTranscriptStatus("fetching");
+    setFetchProgress(10);
+    
+    const interval = setInterval(() => {
+      setFetchProgress((prev) => {
+        if (prev >= 90) return prev;
+        return prev + Math.floor(Math.random() * 8) + 4;
+      });
+    }, 250);
+
+    try {
+      const url = `/api/courses/youtube-transcript/preview?youtube_url=${encodeURIComponent(chapterForm.youtube_url)}&title=${encodeURIComponent(chapterForm.title || "the module topic")}`;
+      const res = await authFetch(url);
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || "Failed to fetch transcript.");
+      }
+      setChapterForm(prev => ({
+        ...prev,
+        video_transcript: data.transcript
+      }));
+      if (data.is_mock) {
+        setFetchTranscriptStatus("warning:YouTube rate-limited/blocked. Generated a high-quality mock transcript from LLM instead.");
+      } else {
+        setFetchTranscriptStatus("success");
+        setTimeout(() => setFetchTranscriptStatus(""), 4000);
+      }
+    } catch (err) {
+      setFetchTranscriptStatus("error:" + err.message);
+    } finally {
+      clearInterval(interval);
+      setFetchProgress(100);
+      setTimeout(() => setFetchProgress(0), 600);
+    }
+  };
 
   const loadCourses = async () => {
     try {
@@ -295,15 +338,50 @@ function TeacherPanel() {
                   </div>
                   <div className="form-group">
                     <label className="form-label">YouTube Video URL</label>
-                    <input className="form-input" placeholder="https://www.youtube.com/watch?v=..." value={chapterForm.youtube_url} onChange={(e) => setChapterForm({ ...chapterForm, youtube_url: e.target.value })} required />
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      <input className="form-input" style={{ flex: 1 }} placeholder="https://www.youtube.com/watch?v=..." value={chapterForm.youtube_url} onChange={(e) => setChapterForm({ ...chapterForm, youtube_url: e.target.value })} required />
+                      <button type="button" onClick={handleFetchTranscript} className="btn" style={{ padding: "0 16px", fontSize: "12px", whiteSpace: "nowrap", border: "1px solid var(--border-muted)" }} disabled={fetchTranscriptStatus === "fetching"}>
+                        {fetchTranscriptStatus === "fetching" ? "Fetching..." : "Fetch Transcript"}
+                      </button>
+                    </div>
+                    {fetchProgress > 0 && (
+                      <div style={{
+                        width: "100%",
+                        height: "4px",
+                        backgroundColor: "var(--border-muted)",
+                        borderRadius: "2px",
+                        overflow: "hidden",
+                        marginTop: "8px"
+                      }}>
+                        <div style={{
+                          height: "100%",
+                          width: `${fetchProgress}%`,
+                          backgroundColor: "var(--brand, #0070f3)",
+                          transition: "width 0.2s ease",
+                        }} />
+                      </div>
+                    )}
+                    {fetchTranscriptStatus === "success" && (
+                      <p style={{ fontSize: "11px", color: "var(--color-success)", marginTop: "4px" }}>Transcript loaded successfully!</p>
+                    )}
+                    {fetchTranscriptStatus.startsWith("warning:") && (
+                      <p style={{ fontSize: "11px", color: "#d97706", marginTop: "4px", lineHeight: "1.4" }}>⚠️ {fetchTranscriptStatus.slice(8)}</p>
+                    )}
+                    {fetchTranscriptStatus.startsWith("error:") && (
+                      <p style={{ fontSize: "11px", color: "var(--color-danger)", marginTop: "4px" }}>{fetchTranscriptStatus.slice(6)}</p>
+                    )}
                   </div>
                   <div className="form-group">
                     <label className="form-label">Article Content (markdown)</label>
                     <textarea className="form-input form-textarea" placeholder="## Topic&#10;Explain key concepts..." value={chapterForm.article_content} onChange={(e) => setChapterForm({ ...chapterForm, article_content: e.target.value })} required rows={8} />
                   </div>
                   <div className="form-group">
-                    <label className="form-label">Video Transcript (optional — improves AI questions)</label>
-                    <textarea className="form-input form-textarea" placeholder="Paste video transcript here..." value={chapterForm.video_transcript} onChange={(e) => setChapterForm({ ...chapterForm, video_transcript: e.target.value })} rows={4} />
+                    <label className="form-label">Video Transcript (optional — auto-fetched from YouTube if left empty)</label>
+                    <textarea className="form-input form-textarea" placeholder="Leave empty to auto-fetch from YouTube captions, or paste manually..." value={chapterForm.video_transcript} onChange={(e) => setChapterForm({ ...chapterForm, video_transcript: e.target.value })} rows={4} />
+                    <p style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>
+                      If left empty, the system will attempt to fetch captions from YouTube automatically.
+                      If no captions are available, the field will remain empty (article content will still be used for AI context).
+                    </p>
                   </div>
                   <button type="submit" className="btn btn-primary" disabled={!selectedCourseId || chapterStatus === "saving"}>
                     {chapterStatus === "saving" ? "Adding…" : "Add Module"}
@@ -318,6 +396,13 @@ function TeacherPanel() {
                   <div key={ch.id} style={{ padding: "12px 0", borderBottom: "1px solid var(--border-muted)" }}>
                     <div style={{ fontWeight: "700", fontSize: "14px" }}>{String(i + 1).padStart(2, "0")} — {ch.title}</div>
                     <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px", wordBreak: "break-all" }}>{ch.youtube_url}</div>
+                    <div style={{ marginTop: "4px" }}>
+                      {ch.video_transcript ? (
+                        <span className="badge badge-success" style={{ fontSize: "9px" }}>TRANSCRIPT AVAILABLE</span>
+                      ) : (
+                        <span className="badge badge-warning" style={{ fontSize: "9px" }}>NO TRANSCRIPT — AI uses article only</span>
+                      )}
+                    </div>
                   </div>
                 ))}
                 {(!selectedCourse?.chapters || selectedCourse.chapters.length === 0) && (

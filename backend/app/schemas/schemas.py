@@ -1,3 +1,4 @@
+# pyrefly: ignore [missing-import]
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List
 from datetime import datetime
@@ -49,6 +50,7 @@ class ChapterResponse(BaseModel):
     order_index: int
     article_content: str
     youtube_url: str
+    video_transcript: Optional[str] = None
     course_id: str
 
     class Config:

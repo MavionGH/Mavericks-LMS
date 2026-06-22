@@ -2,7 +2,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import engine, Base
-from app.routers import auth, courses, enrollment, admin, interview
+from app.routers import auth, courses, enrollment, admin, interview, quiz
+
+# Enable pgvector extension before creating tables
+from sqlalchemy import text
+try:
+    with engine.connect() as conn:
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        conn.commit()
+except Exception:
+    pass  # Extension may already exist or DB may not support it
 
 # Create all tables
 Base.metadata.create_all(bind=engine)
@@ -28,6 +37,7 @@ app.include_router(courses.router)
 app.include_router(enrollment.router)
 app.include_router(admin.router)
 app.include_router(interview.router)
+app.include_router(quiz.router)
 
 
 @app.get("/")

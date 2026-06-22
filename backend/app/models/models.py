@@ -6,6 +6,11 @@ from datetime import datetime
 import enum
 import uuid
 
+try:
+    from pgvector.sqlalchemy import Vector
+except ImportError:
+    Vector = None  # graceful fallback if pgvector not installed
+
 from app.database import Base
 
 
@@ -82,6 +87,22 @@ class Chapter(Base):
     course = relationship("Course", back_populates="chapters")
     evaluations = relationship("Evaluation", back_populates="chapter")
     quiz_attempts = relationship("QuizAttempt", back_populates="chapter")
+    quiz_questions = relationship("QuizQuestion", back_populates="chapter")
+
+
+# ─── QUIZ QUESTION (generated per chapter, reused across students) ───
+class QuizQuestion(Base):
+    __tablename__ = "quiz_questions"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    chapter_id = Column(String, ForeignKey("chapters.id", ondelete="CASCADE"), nullable=False, index=True)
+    question_text = Column(Text, nullable=False)
+    options = Column(JSON, nullable=False)       # {"A": "...", "B": "...", "C": "...", "D": "..."}
+    correct_option = Column(String(1), nullable=False)  # "A" | "B" | "C" | "D"
+    order_index = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    chapter = relationship("Chapter", back_populates="quiz_questions")
 
 
 # ─── ENROLLMENT ───
@@ -172,3 +193,24 @@ class Certificate(Base):
 
     user = relationship("User", back_populates="certificates")
     course = relationship("Course", back_populates="certificates")
+
+
+# ─── CHUNK EMBEDDING (RAG vector store) ───
+# Dimension 384 matches all-MiniLM-L6-v2 sentence-transformers model
+EMBEDDING_DIM = 384
+
+
+class ChunkEmbedding(Base):
+    __tablename__ = "chunk_embeddings"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    chapter_id = Column(String, ForeignKey("chapters.id", ondelete="CASCADE"), nullable=False, index=True)
+    course_id = Column(String, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
+    chunk_text = Column(Text, nullable=False)
+    embedding = Column(Vector(EMBEDDING_DIM), nullable=False) if Vector else Column(Text, nullable=True)
+    chunk_index = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    chapter = relationship("Chapter")
+    course = relationship("Course")
+

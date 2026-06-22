@@ -1,4 +1,8 @@
+
+
 from fastapi import APIRouter, Depends, HTTPException, status
+
+
 from sqlalchemy.orm import Session
 import bcrypt
 from jose import jwt
@@ -8,11 +12,9 @@ from typing import Optional
 from app.database import get_db
 from app.models.models import User, UserRole
 from app.schemas.schemas import UserCreate, UserLogin, UserResponse, TokenResponse
-from app.auth.dependencies import SECRET_KEY, ALGORITHM, get_current_user
+from app.auth.dependencies import SECRET_KEY, ALGORITHM, TOKEN_EXPIRE_HOURS, get_current_user
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
-
-TOKEN_EXPIRE_HOURS = 24
 
 
 def hash_password(password: str) -> str:

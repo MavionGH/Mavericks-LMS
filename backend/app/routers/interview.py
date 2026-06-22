@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.models import (
     Chapter, Course, Enrollment, Evaluation, EvaluationType,
-    InterviewSession, User,
+    InterviewSession, QuizAttempt, User,
 )
 from app.schemas.schemas import (
     InterviewStartRequest, InterviewAnswerRequest,
@@ -84,6 +84,21 @@ def check_eligibility(
             enrollment_id=enrollment.id,
         )
 
+    # Check quiz passed
+    quiz_passed = db.query(QuizAttempt).filter(
+        QuizAttempt.user_id == current_user.id,
+        QuizAttempt.chapter_id == chapter_id,
+        QuizAttempt.passed == True,
+    ).first()
+    if not quiz_passed:
+        return InterviewEligibilityResponse(
+            eligible=False,
+            reason="Pass the chapter quiz first",
+            video_watched=True,
+            article_read=True,
+            enrollment_id=enrollment.id,
+        )
+
     active = db.query(InterviewSession).filter(
         InterviewSession.user_id == current_user.id,
         InterviewSession.chapter_id == chapter_id,
@@ -120,6 +135,18 @@ def start_interview_session(
             detail="Complete the video and article before starting the interview",
         )
 
+    # Enforce quiz-pass gating
+    quiz_passed = db.query(QuizAttempt).filter(
+        QuizAttempt.user_id == current_user.id,
+        QuizAttempt.chapter_id == data.chapter_id,
+        QuizAttempt.passed == True,
+    ).first()
+    if not quiz_passed:
+        raise HTTPException(
+            status_code=400,
+            detail="Pass the chapter quiz before starting the interview",
+        )
+
     existing = db.query(InterviewSession).filter(
         InterviewSession.user_id == current_user.id,
         InterviewSession.chapter_id == data.chapter_id,
@@ -138,7 +165,11 @@ def start_interview_session(
             total_questions=MAX_QUESTIONS,
         )
 
-    context = build_chapter_context(chapter)
+    context = build_chapter_context(
+        chapter,
+        query=f"important concepts and topics in {chapter.title} for oral assessment",
+        db=db,
+    )
     course = db.query(Course).filter(Course.id == chapter.course_id).first()
     graph_state = start_interview(chapter.title, context, course.pass_threshold)
 

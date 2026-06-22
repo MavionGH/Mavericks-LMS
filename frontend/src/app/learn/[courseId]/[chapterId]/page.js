@@ -17,6 +17,8 @@ function LearnPage() {
   const [activeTab, setActiveTab] = useState("video");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [quizPassed, setQuizPassed] = useState(false);
+  const [quizScore, setQuizScore] = useState(null);
 
   const chapters = course?.chapters?.sort((a, b) => a.order_index - b.order_index) || [];
   const currentIndex = enrollment?.current_chapter_index ?? 0;
@@ -51,6 +53,21 @@ function LearnPage() {
         const active = sorted[enrollData.current_chapter_index];
         if (active && params.chapterId !== active.id) {
           router.replace(`/learn/${params.courseId}/${active.id}`);
+        }
+
+        // Check quiz status for the active chapter
+        const chapterToCheck = params.chapterId || (active && active.id);
+        if (chapterToCheck) {
+          try {
+            const quizRes = await authFetch(`/api/quiz/${chapterToCheck}/status`);
+            if (quizRes.ok) {
+              const quizData = await quizRes.json();
+              setQuizPassed(quizData.passed);
+              setQuizScore(quizData.best_score);
+            }
+          } catch {
+            // Quiz status check failed — not critical
+          }
         }
       } catch (err) {
         setError(err.message);
@@ -99,6 +116,13 @@ function LearnPage() {
   const embedUrl = getYouTubeEmbedUrl(viewingChapter.youtube_url);
   const unlockedCount = currentIndex + 1;
   const progressPct = chapters.length ? Math.round((unlockedCount / chapters.length) * 100) : 0;
+
+  const tabConfig = [
+    { key: "video", label: "Video Lecture" },
+    { key: "article", label: "Documentation" },
+    { key: "quiz", label: "Concept Check" },
+    { key: "interview", label: "AI Oral Assessment" },
+  ];
 
   return (
     <>
@@ -153,9 +177,9 @@ function LearnPage() {
             )}
 
             <div className="tabs">
-              {["video", "article", "interview"].map((tab) => (
-                <div key={tab} className={`tab ${activeTab === tab ? "active" : ""}`} onClick={() => setActiveTab(tab)}>
-                  {tab === "video" ? "Video Lecture" : tab === "article" ? "Documentation" : "AI Oral Assessment"}
+              {tabConfig.map(({ key, label }) => (
+                <div key={key} className={`tab ${activeTab === key ? "active" : ""}`} onClick={() => setActiveTab(key)}>
+                  {label}
                 </div>
               ))}
             </div>
@@ -204,25 +228,69 @@ function LearnPage() {
               </div>
             )}
 
-            {activeTab === "interview" && (
+            {activeTab === "quiz" && (
               <div>
                 <div className="card" style={{ padding: "32px", backgroundColor: "#ffffff" }}>
-                  <h3 style={{ fontSize: "16px", fontWeight: "700", marginBottom: "8px" }}>AI Voice Assessment</h3>
+                  <h3 style={{ fontSize: "16px", fontWeight: "700", marginBottom: "8px" }}>Concept Check Quiz</h3>
                   <p style={{ color: "var(--text-muted)", marginBottom: "24px", fontSize: "13.5px" }}>
-                    After watching the video and reading the article, join a Google Meet-style oral interview.
-                    The AI has full context of your module content and will ask follow-up questions,
-                    score your technical knowledge, communication, and confidence (including pause patterns).
-                    Pass to unlock the next module — fail and you must re-study this module.
+                    Test your understanding of this module with a 5-question multiple-choice quiz.
+                    You need to pass the quiz before you can take the AI oral assessment.
+                    You can retake the quiz as many times as needed.
                   </p>
+
+                  {quizPassed && (
+                    <div className="badge badge-success" style={{ marginBottom: "16px" }}>
+                      ✓ Quiz passed{quizScore !== null ? ` (Best: ${quizScore}%)` : ""}
+                    </div>
+                  )}
+
                   {isCurrentChapter ? (
                     videoWatched && articleRead ? (
-                      <Link href={`/interview/${params.courseId}/${viewingChapter.id}`}>
-                        <button className="btn btn-primary">Start AI oral assessment</button>
+                      <Link href={`/quiz/${params.courseId}/${viewingChapter.id}`}>
+                        <button className="btn btn-primary">
+                          {quizPassed ? "Retake Quiz" : "Start Quiz"}
+                        </button>
                       </Link>
                     ) : (
                       <button className="btn btn-primary" disabled>
                         Complete video and article first
                       </button>
+                    )
+                  ) : (
+                    <button className="btn btn-secondary" disabled>Quiz already completed for this module</button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {activeTab === "interview" && (
+              <div>
+                <div className="card" style={{ padding: "32px", backgroundColor: "#ffffff" }}>
+                  <h3 style={{ fontSize: "16px", fontWeight: "700", marginBottom: "8px" }}>AI Voice Assessment</h3>
+                  <p style={{ color: "var(--text-muted)", marginBottom: "24px", fontSize: "13.5px" }}>
+                    After watching the video, reading the article, and passing the quiz, join a Google Meet-style oral interview.
+                    The AI has full context of your module content and will ask follow-up questions,
+                    score your technical knowledge, communication, and confidence (including pause patterns).
+                    Pass to unlock the next module — fail and you must re-study this module.
+                  </p>
+                  {isCurrentChapter ? (
+                    videoWatched && articleRead && quizPassed ? (
+                      <Link href={`/interview/${params.courseId}/${viewingChapter.id}`}>
+                        <button className="btn btn-primary">Start AI oral assessment</button>
+                      </Link>
+                    ) : (
+                      <div>
+                        <button className="btn btn-primary" disabled>
+                          {!videoWatched || !articleRead
+                            ? "Complete video and article first"
+                            : "Pass the quiz first"}
+                        </button>
+                        {videoWatched && articleRead && !quizPassed && (
+                          <p style={{ color: "var(--text-muted)", fontSize: "12px", marginTop: "8px" }}>
+                            You must pass the concept check quiz before starting the oral assessment.
+                          </p>
+                        )}
+                      </div>
                     )
                   ) : (
                     <button className="btn btn-secondary" disabled>Assessment already completed for this module</button>
