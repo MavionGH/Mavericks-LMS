@@ -220,6 +220,7 @@ def submit_answer(
         data.response_time_ms,
         data.pause_count,
         data.long_pause_ms,
+        data.filler_word_count,
     )
 
     session.graph_state = graph_state

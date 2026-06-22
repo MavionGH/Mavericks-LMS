@@ -177,6 +177,7 @@ class InterviewAnswerRequest(BaseModel):
     response_time_ms: int = 0
     pause_count: int = 0
     long_pause_ms: int = 0
+    filler_word_count: int = 0
 
 
 class InterviewMessage(BaseModel):

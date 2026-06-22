@@ -106,9 +106,13 @@ def llm_score_interview(
     )
     avg_pause = 0
     avg_response = 0
+    total_filler = 0
+    avg_filler = 0
     if pause_metrics:
         avg_pause = sum(p.get("pause_count", 0) for p in pause_metrics) / len(pause_metrics)
         avg_response = sum(p.get("response_time_ms", 0) for p in pause_metrics) / len(pause_metrics)
+        total_filler = sum(p.get("filler_word_count", 0) for p in pause_metrics)
+        avg_filler = total_filler / len(pause_metrics)
 
     if llm:
         from langchain_core.messages import HumanMessage, SystemMessage
@@ -120,15 +124,24 @@ def llm_score_interview(
             "technical_score (0-100), communication_score (0-100), "
             "confidence_score (0-100), overall_score (0-100), passed (boolean), "
             "strengths (array of strings), weak_areas (array of strings), "
-            "suggested_review (array of strings referencing module topics to re-study)."
+            "suggested_review (array of strings referencing module topics to re-study). "
+            "Scoring guidelines: "
+            "technical_score = accuracy and depth of answers vs module content; "
+            "communication_score = clarity, structure, and coherence of speech "
+            "(penalise heavily for excessive filler words); "
+            "confidence_score = penalise for filler words (um, uh, mhm, hmm, like, you know) "
+            "and long hesitation pauses — these directly signal uncertainty and poor preparation."
         )
         user = (
             f"Module: {chapter_title}\n\n"
             f"Reference content:\n{context[:4000]}\n\n"
             f"Interview transcript:\n{dialogue}\n\n"
-            f"Pause metrics — avg pauses per answer: {avg_pause:.1f}, "
-            f"avg response time ms: {avg_response:.0f}. "
-            "Factor long pauses and hesitation into confidence_score."
+            f"Speech quality metrics:\n"
+            f"- Avg hesitation pauses per answer: {avg_pause:.1f}\n"
+            f"- Avg response time: {avg_response:.0f} ms\n"
+            f"- Total filler words (um/uh/mhm/hmm/like/you know): {total_filler} "
+            f"(avg {avg_filler:.1f} per answer)\n"
+            "Filler words and long pauses must significantly reduce confidence_score and communication_score."
         )
         resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
         result = _extract_json(resp.content)
@@ -258,12 +271,18 @@ def _fallback_score(transcript: list, pause_metrics: list, threshold: int, title
     avg_len = total_words / max(len(student_msgs), 1)
 
     technical = min(100, 40 + avg_len * 2 + len(student_msgs) * 8)
-    communication = min(100, 35 + avg_len * 1.5 + len(student_msgs) * 10)
 
     avg_pauses = 0
+    total_filler = 0
+    avg_filler = 0
     if pause_metrics:
         avg_pauses = sum(p.get("pause_count", 0) for p in pause_metrics) / len(pause_metrics)
-    confidence = max(30, min(100, 85 - avg_pauses * 8))
+        total_filler = sum(p.get("filler_word_count", 0) for p in pause_metrics)
+        avg_filler = total_filler / len(pause_metrics)
+
+    # Filler words reduce communication score; pauses reduce confidence score
+    communication = min(100, max(20, 35 + avg_len * 1.5 + len(student_msgs) * 10 - avg_filler * 5))
+    confidence = max(20, min(100, 85 - avg_pauses * 8 - avg_filler * 4))
 
     overall = round(technical * 0.5 + communication * 0.3 + confidence * 0.2, 1)
     passed = overall >= threshold
@@ -277,6 +296,10 @@ def _fallback_score(transcript: list, pause_metrics: list, threshold: int, title
         weak_areas.append("Frequent long pauses suggest uncertainty — review the module.")
     else:
         strengths.append("Responded with reasonable confidence and flow.")
+    if avg_filler > 3:
+        weak_areas.append(f"High use of filler words ({int(total_filler)} total: um, uh, mhm, like, you know) — practice speaking more deliberately.")
+    elif avg_filler == 0:
+        strengths.append("Spoke clearly without excessive filler words.")
     if len(student_msgs) >= 3:
         strengths.append("Engaged well across multiple interview questions.")
 

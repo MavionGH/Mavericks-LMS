@@ -24,6 +24,7 @@ class InterviewState(TypedDict, total=False):
     last_response_time_ms: int
     last_pause_count: int
     last_long_pause_ms: int
+    last_filler_word_count: int
     next_question: Optional[str]
     is_complete: bool
     evaluation: Optional[dict]
@@ -62,6 +63,7 @@ def _record_answer(state: InterviewState) -> InterviewState:
         "response_time_ms": state.get("last_response_time_ms", 0),
         "pause_count": state.get("last_pause_count", 0),
         "long_pause_ms": state.get("last_long_pause_ms", 0),
+        "filler_word_count": state.get("last_filler_word_count", 0),
     })
     return {**state, "transcript": transcript, "pause_metrics": pause_metrics}
 
@@ -170,10 +172,12 @@ def process_answer(
     response_time_ms: int = 0,
     pause_count: int = 0,
     long_pause_ms: int = 0,
+    filler_word_count: int = 0,
 ) -> dict:
     state = dict(state)
     state["last_answer"] = answer
     state["last_response_time_ms"] = response_time_ms
     state["last_pause_count"] = pause_count
     state["last_long_pause_ms"] = long_pause_ms
+    state["last_filler_word_count"] = filler_word_count
     return dict(_get_answer_graph().invoke(state))
