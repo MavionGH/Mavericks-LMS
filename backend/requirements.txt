@@ -13,6 +13,6 @@ langchain==0.3.14
 langchain-openai==0.3.0
 langchain-groq==0.2.4
 langgraph==0.2.60
-youtube-transcript-api==1.0.3
-pgvector==0.3.6
-fastembed==0.8.0
+youtube-transcript-api>=0.6.3
+sentence-transformers>=3.0.0
+pgvector>=0.3.0

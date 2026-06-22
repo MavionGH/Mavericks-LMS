@@ -1,7 +1,4 @@
-
-
 from fastapi import APIRouter, Depends, HTTPException, status
-
 
 from sqlalchemy.orm import Session
 import bcrypt
@@ -25,7 +22,6 @@ def verify_password(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain.encode(), hashed.encode())
 
 
-
 def create_token(user_id: str, role: str) -> str:
     expire = datetime.utcnow() + timedelta(hours=TOKEN_EXPIRE_HOURS)
     return jwt.encode(
@@ -45,7 +41,6 @@ def register(data: UserCreate, db: Session = Depends(get_db)):
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
 
-    # Map incoming role string to enum; fall back to STUDENT
     role_map = {
         "student": UserRole.STUDENT,
         "teacher": UserRole.TEACHER,

@@ -326,7 +326,7 @@ function TeacherPanel() {
                   </select>
                 </div>
                 {chapterStatus === "success" && (
-                  <div className="badge badge-success" style={{ marginBottom: "16px" }}>Module added! AI will use video + article as interview context.</div>
+                  <div className="badge badge-success" style={{ marginBottom: "16px" }}>Module added! Transcript is being fetched in the background — refresh in a moment to see status.</div>
                 )}
                 {chapterStatus.startsWith("error:") && (
                   <div style={{ color: "var(--color-danger)", marginBottom: "16px", fontSize: "13px" }}>{chapterStatus.slice(6)}</div>
@@ -389,22 +389,39 @@ function TeacherPanel() {
                 </form>
               </div>
               <div className="card" style={{ padding: "24px", backgroundColor: "#ffffff" }}>
-                <h3 style={{ fontSize: "14px", fontWeight: "700", marginBottom: "16px", textTransform: "uppercase", fontFamily: "JetBrains Mono" }}>
-                  Modules in {selectedCourse?.title || "—"}
-                </h3>
-                {(selectedCourse?.chapters || []).sort((a, b) => a.order_index - b.order_index).map((ch, i) => (
-                  <div key={ch.id} style={{ padding: "12px 0", borderBottom: "1px solid var(--border-muted)" }}>
-                    <div style={{ fontWeight: "700", fontSize: "14px" }}>{String(i + 1).padStart(2, "0")} — {ch.title}</div>
-                    <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px", wordBreak: "break-all" }}>{ch.youtube_url}</div>
-                    <div style={{ marginTop: "4px" }}>
-                      {ch.video_transcript ? (
-                        <span className="badge badge-success" style={{ fontSize: "9px" }}>TRANSCRIPT AVAILABLE</span>
-                      ) : (
-                        <span className="badge badge-warning" style={{ fontSize: "9px" }}>NO TRANSCRIPT — AI uses article only</span>
-                      )}
+                <div style={{ display: "flex", alignItems: "center", marginBottom: "16px" }}>
+                  <h3 style={{ fontSize: "14px", fontWeight: "700", textTransform: "uppercase", fontFamily: "JetBrains Mono", flex: 1, margin: 0 }}>
+                    Modules in {selectedCourse?.title || "—"}
+                  </h3>
+                  <button
+                    className="btn btn-secondary"
+                    onClick={loadCourses}
+                    style={{ fontSize: "11px", padding: "4px 10px" }}
+                  >
+                    Refresh
+                  </button>
+                </div>
+                {(selectedCourse?.chapters || []).sort((a, b) => a.order_index - b.order_index).map((ch, i) => {
+                  const hasTranscript = !!ch.video_transcript;
+                  const wordCount = hasTranscript ? ch.video_transcript.split(" ").length : 0;
+                  return (
+                    <div key={ch.id} style={{ padding: "12px 0", borderBottom: "1px solid var(--border-muted)" }}>
+                      <div style={{ fontWeight: "700", fontSize: "14px" }}>{String(i + 1).padStart(2, "0")} — {ch.title}</div>
+                      <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px", wordBreak: "break-all" }}>{ch.youtube_url}</div>
+                      <div style={{ fontSize: "11px", marginTop: "4px" }}>
+                        {hasTranscript ? (
+                          <span style={{ color: "var(--color-success)" }}>
+                            ✓ Transcript ready ({wordCount.toLocaleString()} words)
+                          </span>
+                        ) : (
+                          <span style={{ color: "#f59e0b" }}>
+                            ⏳ Transcript pending — click Refresh after a moment
+                          </span>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
                 {(!selectedCourse?.chapters || selectedCourse.chapters.length === 0) && (
                   <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>No modules yet. Add your first module with a YouTube link.</p>
                 )}

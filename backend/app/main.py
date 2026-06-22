@@ -1,25 +1,39 @@
+import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import engine, Base
 from app.routers import auth, courses, enrollment, admin, interview, quiz
 
-# Enable pgvector extension before creating tables
-from sqlalchemy import text
-try:
-    with engine.connect() as conn:
-        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        conn.commit()
-except Exception:
-    pass  # Extension may already exist or DB may not support it
+logger = logging.getLogger(__name__)
 
-# Create all tables
-Base.metadata.create_all(bind=engine)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Enable pgvector extension before creating tables (safe no-op if already enabled)
+    from sqlalchemy import text
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            conn.commit()
+        logger.info("pgvector extension ready.")
+    except Exception as exc:
+        logger.warning(
+            "Could not auto-enable pgvector extension: %s. "
+            "Enable it manually in Supabase Dashboard → Database → Extensions → vector",
+            exc,
+        )
+
+    Base.metadata.create_all(bind=engine)
+    yield
+
 
 app = FastAPI(
     title="Maverik Learning API",
     description="AI-Powered Learning Management System",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # CORS for Next.js frontend

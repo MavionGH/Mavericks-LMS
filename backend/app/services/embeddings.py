@@ -1,214 +1,141 @@
-"""
-RAG embedding service — chunks text and generates embeddings using
-sentence-transformers (all-MiniLM-L6-v2, runs locally, no API key needed).
-
-Provides:
-  - chunk_and_embed_chapter(): chunk + embed chapter content, save to DB
-  - retrieve_relevant_chunks(): vector similarity search for top-k chunks
-"""
+"""Text chunking and sentence-transformer embedding service for RAG."""
 import logging
-import re
 from typing import List, Optional
-
-from sqlalchemy.orm import Session
-from sqlalchemy import text
-
-from app.models.models import ChunkEmbedding, EMBEDDING_DIM
 
 logger = logging.getLogger(__name__)
 
-# ── Lazy-loaded fastembed model ──────────────────────────
 _model = None
 
 
-def _get_embedding_model():
-    """Lazily load the fastembed TextEmbedding model."""
+def _get_model():
+    """Lazy-load sentence-transformers model (downloads ~90 MB on first call)."""
     global _model
     if _model is None:
         try:
-            from fastembed import TextEmbedding
-            # Defaults to BAAI/bge-small-en-v1.5 (384 dimensions)
-            _model = TextEmbedding()
-            logger.info("Loaded fastembed TextEmbedding model (BAAI/bge-small-en-v1.5)")
-        except Exception as e:
-            logger.error(f"Failed to load fastembed model: {e}")
-            raise
+            from sentence_transformers import SentenceTransformer
+            _model = SentenceTransformer("all-MiniLM-L6-v2")
+            logger.info("Loaded sentence-transformers model (all-MiniLM-L6-v2, 384-dim).")
+        except Exception as exc:
+            logger.error("Could not load sentence-transformers: %s", exc)
     return _model
 
 
-def _embed_texts(texts: List[str]) -> List[List[float]]:
-    """Embed a batch of texts. Returns list of float vectors."""
-    model = _get_embedding_model()
-    # fastembed model.embed returns a generator of numpy arrays
-    embeddings = list(model.embed(texts))
-    return [vec.tolist() for vec in embeddings]
-
-
-# ── Chunking ─────────────────────────────────────────────────────────
-
-CHUNK_SIZE = 500       # target characters per chunk
-CHUNK_OVERLAP = 100    # overlap between adjacent chunks
-
-
-def _chunk_text(text_content: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> List[str]:
-    """Split text into overlapping chunks by paragraph/sentence boundaries.
-
-    Strategy:
-      1. Split by double newlines (paragraphs)
-      2. If a paragraph is still too long, split by sentences
-      3. Merge small paragraphs together up to chunk_size
-    """
-    if not text_content or not text_content.strip():
+def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[str]:
+    """Split text into overlapping word-level chunks."""
+    words = text.split()
+    if not words:
         return []
-
-    # Split by double-newline (paragraphs)
-    paragraphs = re.split(r"\n\s*\n", text_content.strip())
-    paragraphs = [p.strip() for p in paragraphs if p.strip()]
-
-    # Further split long paragraphs into sentences
-    segments = []
-    for para in paragraphs:
-        if len(para) <= chunk_size:
-            segments.append(para)
-        else:
-            # Split by sentence boundaries
-            sentences = re.split(r"(?<=[.!?])\s+", para)
-            segments.extend(sentences)
-
-    # Merge small segments into chunks
+    step = max(chunk_size - overlap, 1)
     chunks = []
-    current = ""
-    for seg in segments:
-        if current and len(current) + len(seg) + 1 > chunk_size:
-            chunks.append(current.strip())
-            # Keep overlap from end of current chunk
-            if overlap > 0:
-                current = current[-overlap:] + " " + seg
-            else:
-                current = seg
-        else:
-            current = (current + " " + seg).strip() if current else seg
-
-    if current.strip():
-        chunks.append(current.strip())
-
+    for i in range(0, len(words), step):
+        chunk = " ".join(words[i : i + chunk_size])
+        if chunk:
+            chunks.append(chunk)
     return chunks
 
 
-# ── Database operations ──────────────────────────────────────────────
-
-def ensure_pgvector_extension(db: Session):
-    """Enable pgvector extension if not already enabled."""
-    try:
-        db.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        db.commit()
-        logger.info("pgvector extension enabled")
-    except Exception as e:
-        db.rollback()
-        logger.warning(f"Could not enable pgvector extension: {e}")
-
-
-def chunk_and_embed_chapter(
-    db: Session,
+def embed_and_store_chapter(
     chapter_id: str,
     course_id: str,
     article_content: str,
     video_transcript: Optional[str] = None,
-) -> int:
-    """Chunk and embed chapter content, storing results in chunk_embeddings table.
-
-    Deletes any existing chunks for this chapter first (idempotent on re-run).
-    Returns the number of chunks created.
+    db=None,
+) -> None:
     """
-    # Delete existing chunks for this chapter
-    db.query(ChunkEmbedding).filter(ChunkEmbedding.chapter_id == chapter_id).delete()
+    Chunk chapter content, compute embeddings, and persist to chunk_embeddings.
+    Creates its own DB session if db is None — safe to call as a background task.
+    """
+    should_close = db is None
+    if db is None:
+        from app.database import SessionLocal
+        db = SessionLocal()
 
-    # Build combined text
-    combined = f"# Article Content\n\n{article_content or ''}"
-    if video_transcript:
-        combined += f"\n\n# Video Transcript\n\n{video_transcript}"
-
-    chunks = _chunk_text(combined)
-    if not chunks:
-        logger.info(f"No content to chunk for chapter {chapter_id}")
-        db.commit()
-        return 0
-
-    # Embed all chunks in one batch
     try:
-        embeddings = _embed_texts(chunks)
-    except Exception as e:
-        logger.error(f"Embedding failed for chapter {chapter_id}: {e}")
+        from app.models.models import ChunkEmbedding
+
+        db.query(ChunkEmbedding).filter(ChunkEmbedding.chapter_id == chapter_id).delete()
+
+        raw_chunks: List[str] = []
+        if article_content:
+            raw_chunks.extend(chunk_text(article_content))
+        if video_transcript:
+            raw_chunks.extend(chunk_text(video_transcript))
+
+        if not raw_chunks:
+            db.commit()
+            return
+
+        model = _get_model()
+        if model is None:
+            for chunk in raw_chunks:
+                db.add(ChunkEmbedding(
+                    chapter_id=chapter_id, course_id=course_id,
+                    chunk_text=chunk, embedding=None,
+                ))
+            db.commit()
+            logger.warning("Stored %d chunks without embeddings for chapter %s", len(raw_chunks), chapter_id)
+            return
+
+        embeddings = model.encode(raw_chunks, show_progress_bar=False)
+        for chunk, emb in zip(raw_chunks, embeddings):
+            db.add(ChunkEmbedding(
+                chapter_id=chapter_id,
+                course_id=course_id,
+                chunk_text=chunk,
+                embedding=emb.tolist(),
+            ))
         db.commit()
-        return 0
+        logger.info("Stored %d embeddings for chapter %s", len(raw_chunks), chapter_id)
 
-    # Save to DB
-    for i, (chunk_text, embedding) in enumerate(zip(chunks, embeddings)):
-        ce = ChunkEmbedding(
-            chapter_id=chapter_id,
-            course_id=course_id,
-            chunk_text=chunk_text,
-            embedding=embedding,
-            chunk_index=i,
-        )
-        db.add(ce)
-
-    db.commit()
-    logger.info(f"Created {len(chunks)} chunks for chapter {chapter_id}")
-    return len(chunks)
+    except Exception as exc:
+        logger.error("embed_and_store_chapter failed for %s: %s", chapter_id, exc)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    finally:
+        if should_close:
+            db.close()
 
 
 def retrieve_relevant_chunks(
-    db: Session,
+    chapter_id: str,
     query: str,
-    chapter_id: Optional[str] = None,
-    course_id: Optional[str] = None,
-    top_k: int = 5,
-) -> List[dict]:
-    """Retrieve top-k most relevant chunks by cosine similarity.
-
-    Filter by chapter_id (single chapter) or course_id (all chapters in a course).
-    Returns list of {"chunk_text": str, "chapter_id": str, "score": float}.
+    db,
+    top_k: int = 6,
+) -> List[str]:
     """
-    try:
-        query_embedding = _embed_texts([query])[0]
-    except Exception as e:
-        logger.error(f"Could not embed query: {e}")
-        return []
+    Return up to top_k chunk texts most relevant to query via cosine similarity.
+    Falls back to the first top_k chunks by insertion order if vector search fails.
+    """
+    from app.models.models import ChunkEmbedding
+    from sqlalchemy import text
 
-    # Build the filter conditions
-    filters = []
-    params = {"query_embedding": str(query_embedding), "top_k": top_k}
+    model = _get_model()
+    if model is not None:
+        try:
+            query_emb = model.encode([query])[0]
+            vec_str = "[" + ",".join(f"{x:.6f}" for x in query_emb.tolist()) + "]"
+            rows = db.execute(
+                text("""
+                    SELECT chunk_text FROM chunk_embeddings
+                    WHERE chapter_id = :cid AND embedding IS NOT NULL
+                    ORDER BY embedding <=> :emb::vector
+                    LIMIT :k
+                """),
+                {"cid": chapter_id, "emb": vec_str, "k": top_k},
+            ).fetchall()
+            if rows:
+                return [r[0] for r in rows]
+        except Exception as exc:
+            logger.warning("Vector similarity search failed, using fallback: %s", exc)
 
-    if chapter_id:
-        filters.append("chapter_id = :chapter_id")
-        params["chapter_id"] = chapter_id
-    elif course_id:
-        filters.append("course_id = :course_id")
-        params["course_id"] = course_id
-
-    where_clause = ("WHERE " + " AND ".join(filters)) if filters else ""
-
-    sql = text(f"""
-        SELECT id, chapter_id, course_id, chunk_text, chunk_index,
-               1 - (embedding <=> :query_embedding::vector) AS similarity
-        FROM chunk_embeddings
-        {where_clause}
-        ORDER BY embedding <=> :query_embedding::vector
-        LIMIT :top_k
-    """)
-
-    try:
-        results = db.execute(sql, params).fetchall()
-        return [
-            {
-                "chunk_text": row.chunk_text,
-                "chapter_id": row.chapter_id,
-                "course_id": row.course_id,
-                "score": float(row.similarity),
-            }
-            for row in results
-        ]
-    except Exception as e:
-        logger.error(f"Vector search failed: {e}")
-        return []
+    # Fallback: return first top_k chunks in insertion order
+    chunks = (
+        db.query(ChunkEmbedding)
+        .filter(ChunkEmbedding.chapter_id == chapter_id)
+        .order_by(ChunkEmbedding.created_at)
+        .limit(top_k)
+        .all()
+    )
+    return [c.chunk_text for c in chunks]

@@ -52,6 +52,7 @@ class ChapterResponse(BaseModel):
     youtube_url: str
     video_transcript: Optional[str] = None
     course_id: str
+    video_transcript: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -124,6 +125,45 @@ class QuizAttemptResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class QuizQuestionItem(BaseModel):
+    id: int
+    question: str
+    options: dict  # {A: str, B: str, C: str, D: str}
+
+
+class QuizQuestionsResponse(BaseModel):
+    chapter_id: str
+    questions: List[QuizQuestionItem]
+
+
+class QuizSubmitRequest(BaseModel):
+    chapter_id: str
+    answers: dict  # {str(question_id): "A"|"B"|"C"|"D"}
+
+
+class QuizResultItem(BaseModel):
+    id: int
+    correct: bool
+    selected: str
+    correct_answer: str
+
+
+class QuizResultResponse(BaseModel):
+    score: int
+    passed: bool
+    correct_count: int
+    total: int
+    threshold: int
+    attempt_id: str
+    results: List[QuizResultItem]
+
+
+class QuizStatusResponse(BaseModel):
+    attempted: bool
+    passed: bool
+    score: Optional[int] = None
 
 
 # ─── INTERVIEW ───

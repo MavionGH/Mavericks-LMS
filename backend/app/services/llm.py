@@ -144,6 +144,93 @@ def llm_score_interview(
     return _fallback_score(transcript, pause_metrics, pass_threshold, chapter_title)
 
 
+def llm_generate_mock_transcript(title: str) -> str:
+    """
+    Generate a realistic educational video transcript for a topic when YouTube
+    captions are unavailable.  Used only as a fallback in the preview endpoint.
+    """
+    llm = get_llm()
+    if llm:
+        from langchain_core.messages import HumanMessage, SystemMessage
+        system = (
+            "You are a professional educator. Write a realistic 400-600 word educational "
+            "video transcript for the given topic. Include an introduction, key concepts "
+            "clearly explained with examples, and a brief summary. Write as if speaking "
+            "to students. Return only the transcript text, no headings."
+        )
+        resp = llm.invoke([
+            SystemMessage(content=system),
+            HumanMessage(content=f"Write an educational video transcript about: {title}"),
+        ])
+        return resp.content.strip()
+
+    return (
+        f"Welcome to this module on {title}. "
+        f"In this video we'll explore the core concepts of {title}, "
+        "walk through practical examples, and summarise the key takeaways. "
+        f"Understanding {title} is essential for building a solid foundation "
+        "in this subject area."
+    )
+
+
+def llm_generate_quiz(chapter_title: str, context: str) -> list:
+    """
+    Generate 5 MCQ questions from chapter content.
+    Returns list of {id, question, options:{A,B,C,D}, correct} — includes correct answers for server-side grading.
+    """
+    llm = get_llm()
+    if llm:
+        from langchain_core.messages import HumanMessage, SystemMessage
+        system = (
+            "You are an expert educator creating a multiple-choice quiz. "
+            "Generate exactly 5 MCQ questions based ONLY on the provided module content. "
+            "Each question must have 4 options (A, B, C, D) with exactly one correct answer. "
+            "Return ONLY valid JSON — a list of 5 objects, each with keys: "
+            "id (integer 1-5), question (string), options (object with keys A/B/C/D), correct (one of A/B/C/D). "
+            "No preamble, no markdown fences, just the JSON array."
+        )
+        user = (
+            f"Module: {chapter_title}\n\n"
+            f"Content:\n{context[:5000]}\n\n"
+            "Generate 5 MCQ questions."
+        )
+        resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+        try:
+            data = _extract_json(resp.content)
+            if isinstance(data, list) and len(data) >= 5:
+                return data[:5]
+            if isinstance(data, dict) and "questions" in data:
+                qs = data["questions"]
+                if isinstance(qs, list) and len(qs) >= 5:
+                    return qs[:5]
+        except Exception:
+            pass
+
+    return _fallback_quiz_questions(chapter_title, context)
+
+
+def _fallback_quiz_questions(title: str, context: str) -> list:
+    headings = re.findall(r"^#{1,3}\s+(.+)$", context, re.MULTILINE)
+    keywords = re.findall(r"\*\*(.+?)\*\*", context)
+    topics = (headings + keywords)[:5]
+    while len(topics) < 5:
+        topics.append(f"{title} — concept {len(topics) + 1}")
+    questions = []
+    for i, topic in enumerate(topics[:5]):
+        questions.append({
+            "id": i + 1,
+            "question": f"Which best describes '{topic.strip()}' in the context of {title}?",
+            "options": {
+                "A": f"A core concept central to understanding {title}",
+                "B": f"An advanced topic outside the scope of this module",
+                "C": f"A legacy pattern replaced by modern practices",
+                "D": f"An optional feature not covered in this module",
+            },
+            "correct": "A",
+        })
+    return questions
+
+
 def _fallback_questions(title: str, context: str) -> list:
     headings = re.findall(r"^#{1,3}\s+(.+)$", context, re.MULTILINE)
     keywords = re.findall(r"\*\*(.+?)\*\*", context)
@@ -204,130 +291,5 @@ def _fallback_score(transcript: list, pause_metrics: list, threshold: int, title
         "suggested_review": [f"Re-watch and re-read: {title}"] if not passed else [],
     }
 
-
-def llm_generate_quiz_questions(chapter_title: str, context: str, num_questions: int = 5) -> list:
-    """Generate MCQ quiz questions from chapter content via LLM (with fallback).
-
-    Returns a list of dicts:
-      [{"question_text": "...", "options": {"A": "...", "B": "...", "C": "...", "D": "..."}, "correct_option": "B"}, ...]
-    """
-    llm = get_llm()
-
-    if llm:
-        from langchain_core.messages import HumanMessage, SystemMessage
-
-        system = (
-            "You are an expert educational assessment designer. "
-            "Create exactly {n} multiple-choice questions (MCQs) that test deep "
-            "understanding of the provided module content. Each question should have "
-            "4 options labeled A, B, C, D with exactly one correct answer. "
-            "Questions should test comprehension and application, not just memorization. "
-            "Return ONLY valid JSON — an array of objects, each with keys: "
-            '"question_text" (string), "options" (object with keys A, B, C, D), '
-            '"correct_option" (single letter A/B/C/D).'
-        ).format(n=num_questions)
-
-        user = (
-            f"Module: {chapter_title}\n\n"
-            f"Content:\n{context[:6000]}\n\n"
-            f"Generate exactly {num_questions} MCQ questions."
-        )
-
-        try:
-            resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
-            raw = resp.content.strip()
-            # Extract JSON array
-            fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw)
-            if fence:
-                raw = fence.group(1).strip()
-            questions = json.loads(raw)
-            if isinstance(questions, dict) and "questions" in questions:
-                questions = questions["questions"]
-            if isinstance(questions, list) and len(questions) >= 1:
-                validated = []
-                for q in questions[:num_questions]:
-                    if (
-                        isinstance(q, dict)
-                        and "question_text" in q
-                        and "options" in q
-                        and "correct_option" in q
-                        and q["correct_option"] in ("A", "B", "C", "D")
-                    ):
-                        validated.append({
-                            "question_text": q["question_text"],
-                            "options": {k: q["options"][k] for k in ("A", "B", "C", "D") if k in q["options"]},
-                            "correct_option": q["correct_option"],
-                        })
-                if len(validated) >= 1:
-                    return validated
-        except Exception:
-            pass  # fall through to fallback
-
-    # ── Fallback: generate basic questions from content headings/keywords ──
-    return _fallback_quiz_questions(chapter_title, context, num_questions)
-
-
-def _fallback_quiz_questions(title: str, context: str, num_questions: int = 5) -> list:
-    """Rule-based fallback quiz generation when no LLM is available."""
-    headings = re.findall(r"^#{1,3}\s+(.+)$", context, re.MULTILINE)
-    keywords = re.findall(r"\*\*(.+?)\*\*", context)
-    topics = (headings + keywords)[:num_questions] or [title]
-
-    questions = []
-    templates = [
-        ("Which of the following best describes '{topic}' in the context of {title}?",
-         {"A": "A fundamental concept covered in this module",
-          "B": "An unrelated external framework",
-          "C": "A deprecated feature no longer in use",
-          "D": "A testing-only utility"}, "A"),
-        ("What is the primary purpose of '{topic}'?",
-         {"A": "To handle error logging only",
-          "B": "It is a core concept explained in {title}",
-          "C": "To manage database migrations",
-          "D": "It has no practical application"}, "B"),
-        ("In {title}, '{topic}' is important because:",
-         {"A": "It simplifies complex operations in the module",
-          "B": "It is only used in production environments",
-          "C": "It replaces all other concepts in the module",
-          "D": "It is optional and rarely used"}, "A"),
-    ]
-
-    for i in range(num_questions):
-        topic = topics[i % len(topics)].strip()
-        tmpl_idx = i % len(templates)
-        q_text, opts, correct = templates[tmpl_idx]
-        questions.append({
-            "question_text": q_text.format(topic=topic, title=title),
-            "options": {k: v.format(topic=topic, title=title) for k, v in opts.items()},
-            "correct_option": correct,
-        })
-
-    return questions
-
-
-def llm_generate_mock_transcript(chapter_title: str) -> str:
-    """Generate a high-quality mock video transcript for testing purposes when YouTube blocks us."""
-    llm = get_llm()
-    if llm:
-        from langchain_core.messages import HumanMessage, SystemMessage
-        system = (
-            "You are a video lecture transcription generator. "
-            "Write a highly professional, detailed mock spoken lecture transcript (monologue style) explaining the core topics in the module. "
-            "It should sound like an expert instructor speaking to a camera. "
-            "Provide ONLY the spoken text, with no extra tags, preamble, or notes."
-        )
-        prompt = f"Write a mock video lecture transcript for the topic: '{chapter_title}'"
-        try:
-            res = llm.invoke([SystemMessage(content=system), HumanMessage(content=prompt)])
-            return res.content.strip()
-        except Exception:
-            pass
-
-    # Basic static fallback
-    return (
-        f"Hello and welcome back to our course. Today we are going to dive deep into {chapter_title}. "
-        f"This module covers the core concepts, patterns, and practical trade-offs. "
-        f"Make sure to review the accompanying article for complete code examples and diagrams."
-    )
 
 

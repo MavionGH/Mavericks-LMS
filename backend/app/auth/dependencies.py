@@ -3,7 +3,6 @@ Shared JWT authentication dependencies for FastAPI.
 All routers import from here to enforce role-based access control.
 """
 import os
-
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
@@ -12,8 +11,7 @@ from jose import jwt, JWTError
 from app.database import get_db
 from app.models.models import User, UserRole
 
-# ── JWT config loaded from environment (.env via dotenv) ──────────────
-# SECRET_KEY: falls back to a dev-only default; override in production!
+# JWT config loaded from environment (.env via dotenv)
 SECRET_KEY = os.getenv("SECRET_KEY", "DEV-ONLY-maverik-change-me")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 TOKEN_EXPIRE_HOURS = int(os.getenv("TOKEN_EXPIRE_HOURS", "24"))
