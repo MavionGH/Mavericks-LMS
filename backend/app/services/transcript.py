@@ -33,8 +33,9 @@ def fetch_youtube_transcript(youtube_url: str) -> Optional[str]:
 
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
-        segments = YouTubeTranscriptApi.get_transcript(video_id)
-        text = " ".join(seg["text"] for seg in segments)
+        api = YouTubeTranscriptApi()
+        fetched = api.fetch(video_id)
+        text = " ".join(snippet.text for snippet in fetched)
         logger.info("Fetched transcript for %s: %d chars", video_id, len(text))
         return text
     except Exception as exc:
