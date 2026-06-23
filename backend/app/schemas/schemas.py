@@ -194,6 +194,7 @@ class InterviewTurnResponse(BaseModel):
     waiting_for_student: bool = True
     question_number: int = 1
     total_questions: int = 5
+    is_chitchat: bool = False  # True when response is conversational, not a new question
 
 
 class InterviewResultResponse(BaseModel):

@@ -6,6 +6,24 @@ import re
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
+# ─── Keywords used in rule-based fallback for classification ───
+_GREETING_PATTERNS = re.compile(
+    r"^\s*(hi+|hello+|hey+|good (morning|afternoon|evening|day)|howdy|sup|yo|greetings)",
+    re.IGNORECASE,
+)
+_PERSONAL_PATTERNS = re.compile(
+    r"\b(how are you|how do you do|you doing|are you (ok|good|fine|well|alright)|what('s| is) up|how's it going)\b",
+    re.IGNORECASE,
+)
+_CLARIFICATION_PATTERNS = re.compile(
+    r"\b(what do you mean|can you (explain|clarify|elaborate|rephrase|repeat)|i don'?t understand|could you (explain|clarify|repeat)|what is meant by|please (explain|clarify|repeat)|i'?m (not sure|confused|unsure))\b",
+    re.IGNORECASE,
+)
+_OFFTOPIC_PATTERNS = re.compile(
+    r"\b(weather|temperature|time (is it|now)|what time|today'?s date|who (are|is) you|your name|tell me a joke|joke|news|sports|music|movie|song|recipe|food|cook|game|play|funny)\b",
+    re.IGNORECASE,
+)
+
 
 def get_llm():
     """Return a LangChain chat model. Prefers Groq, then OpenAI."""
@@ -91,6 +109,117 @@ def llm_generate_question(
             f"from {chapter_title} in a real-world scenario?"
         )
     return fallback_questions[idx]
+
+
+def llm_classify_response(
+    student_text: str,
+    current_question: str,
+) -> str:
+    """
+    Classify the student's input relative to the current interview question.
+
+    Returns one of:
+      'answer'        — genuine attempt at the interview question
+      'greeting'      — hi/hello/hey etc.
+      'personal'      — 'how are you?' type enquiries
+      'clarification' — asking for explanation of the question
+      'offtopic'      — unrelated general knowledge / smalltalk
+    """
+    text = student_text.strip()
+
+    # ── LLM path ──
+    llm = get_llm()
+    if llm:
+        from langchain_core.messages import HumanMessage, SystemMessage
+        system = (
+            "You are a classifier for an AI interview assistant. "
+            "Classify the student's message into exactly ONE of these categories:\n"
+            "  answer        — a genuine attempt to answer the active interview question\n"
+            "  greeting      — greetings like hi, hello, hey, good morning\n"
+            "  personal      — personal enquiries like 'how are you?'\n"
+            "  clarification — asking for clarification/explanation of the question\n"
+            "  offtopic      — unrelated question or casual conversation\n"
+            "Reply with ONLY the single category word, nothing else."
+        )
+        user = (
+            f"Active interview question: {current_question}\n"
+            f"Student message: {text}"
+        )
+        try:
+            resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+            category = resp.content.strip().lower().split()[0]
+            if category in ("answer", "greeting", "personal", "clarification", "offtopic"):
+                return category
+        except Exception:
+            pass
+
+    # ── Rule-based fallback ──
+    if _GREETING_PATTERNS.match(text):
+        return "greeting"
+    if _PERSONAL_PATTERNS.search(text):
+        return "personal"
+    if _CLARIFICATION_PATTERNS.search(text):
+        return "clarification"
+    if _OFFTOPIC_PATTERNS.search(text):
+        return "offtopic"
+    # Default: treat as a genuine answer
+    return "answer"
+
+
+def llm_handle_chitchat(
+    student_text: str,
+    current_question: str,
+    category: str,
+) -> str:
+    """
+    Generate Mav's natural conversational reply to a non-answer input.
+    Always ends by re-asking the active interview question.
+    """
+    llm = get_llm()
+    if llm:
+        from langchain_core.messages import HumanMessage, SystemMessage
+        system = (
+            "You are Mav, a friendly and professional AI interviewer. "
+            "Respond naturally and warmly to the student's off-topic message, "
+            "then gently redirect back to the interview by re-asking the current question. "
+            "Keep your response concise (2-3 sentences total). "
+            "Do NOT advance or skip the interview question. "
+            "Return ONLY the response text, no preamble."
+        )
+        category_hints = {
+            "greeting": "The student greeted you. Greet them back briefly.",
+            "personal": "The student asked how you are. Answer briefly and warmly.",
+            "clarification": "The student needs clarification on the question. Explain it clearly.",
+            "offtopic": "The student asked something unrelated. Politely acknowledge and redirect.",
+        }
+        hint = category_hints.get(category, "Respond naturally.")
+        user = (
+            f"{hint}\n"
+            f"Student said: \"{student_text}\"\n"
+            f"Current interview question: \"{current_question}\"\n"
+            "Now write Mav's response."
+        )
+        try:
+            resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+            return resp.content.strip()
+        except Exception:
+            pass
+
+    # ── Rule-based fallback ──
+    if category == "greeting":
+        return f"Hello there! Great to have you here. Now, let's get back to the interview — {current_question}"
+    if category == "personal":
+        return f"I'm doing well, thank you for asking! Let's continue — {current_question}"
+    if category == "clarification":
+        return (
+            f"Of course! I'm asking you to share your understanding and thoughts about the following topic. "
+            f"{current_question}"
+        )
+    # offtopic
+    return (
+        f"That's an interesting question, but I'm not able to help with that right now. "
+        f"Let's focus on the interview — {current_question}"
+    )
 
 
 def llm_score_interview(

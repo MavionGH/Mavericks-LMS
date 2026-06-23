@@ -116,11 +116,13 @@ def retrieve_relevant_chunks(
         try:
             query_emb = model.encode([query])[0]
             vec_str = "[" + ",".join(f"{x:.6f}" for x in query_emb.tolist()) + "]"
+            # Use CAST(:emb AS vector) instead of :emb::vector — the latter is
+            # invalid syntax with psycopg's parameterized queries.
             rows = db.execute(
                 text("""
                     SELECT chunk_text FROM chunk_embeddings
                     WHERE chapter_id = :cid AND embedding IS NOT NULL
-                    ORDER BY embedding <=> :emb::vector
+                    ORDER BY embedding <=> CAST(:emb AS vector)
                     LIMIT :k
                 """),
                 {"cid": chapter_id, "emb": vec_str, "k": top_k},
@@ -129,13 +131,28 @@ def retrieve_relevant_chunks(
                 return [r[0] for r in rows]
         except Exception as exc:
             logger.warning("Vector similarity search failed, using fallback: %s", exc)
+            # IMPORTANT: a failed SQL statement in PostgreSQL marks the entire
+            # transaction as aborted.  We must rollback here so the fallback
+            # ORM query below can execute on a clean transaction.
+            try:
+                db.rollback()
+            except Exception:
+                pass
 
     # Fallback: return first top_k chunks in insertion order
-    chunks = (
-        db.query(ChunkEmbedding)
-        .filter(ChunkEmbedding.chapter_id == chapter_id)
-        .order_by(ChunkEmbedding.created_at)
-        .limit(top_k)
-        .all()
-    )
-    return [c.chunk_text for c in chunks]
+    try:
+        chunks = (
+            db.query(ChunkEmbedding)
+            .filter(ChunkEmbedding.chapter_id == chapter_id)
+            .order_by(ChunkEmbedding.created_at)
+            .limit(top_k)
+            .all()
+        )
+        return [c.chunk_text for c in chunks]
+    except Exception as exc:
+        logger.warning("Fallback chunk retrieval also failed: %s", exc)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return []

@@ -165,13 +165,21 @@ def start_interview_session(
             total_questions=MAX_QUESTIONS,
         )
 
+    # Cache the values we need BEFORE build_chapter_context runs.
+    # build_chapter_context may trigger a vector-search SQL error that causes a
+    # DB rollback (poisoning the transaction).  Reading these values first means
+    # we don't need to issue any further DB queries after that point.
+    course = db.query(Course).filter(Course.id == chapter.course_id).first()
+    course_pass_threshold = course.pass_threshold if course else 70
+    chapter_title = chapter.title
+    chapter_course_id = chapter.course_id
+
     context = build_chapter_context(
         chapter,
         query=f"important concepts and topics in {chapter.title} for oral assessment",
         db=db,
     )
-    course = db.query(Course).filter(Course.id == chapter.course_id).first()
-    graph_state = start_interview(chapter.title, context, course.pass_threshold)
+    graph_state = start_interview(chapter_title, context, course_pass_threshold)
 
     session = InterviewSession(
         user_id=current_user.id,
@@ -233,14 +241,17 @@ def submit_answer(
 
     db.commit()
 
+    is_chitchat = graph_state.get("is_chitchat", False)
     return InterviewTurnResponse(
         session_id=session.id,
         speaker="ai",
         text=graph_state.get("next_question", ""),
         is_complete=False,
         waiting_for_student=True,
+        # During chitchat, hold the question number at the current displayed count
         question_number=graph_state.get("question_count", 1),
         total_questions=MAX_QUESTIONS,
+        is_chitchat=is_chitchat,
     )
 
 

@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 import Navbar from "@/components/Navbar";
 import Link from "next/link";
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -129,12 +129,15 @@ function InterviewPage() {
         setStatus("COMPLETE");
         speakText(
           data.passed
-            ? "Congratulations! You passed the assessment."
-            : "You did not pass. Please review the module and try again."
+            ? "Congratulations! You passed the assessment. Take care, bye!"
+            : "You did not pass. Please review the module and try again. Take care, bye!"
         );
       } else {
         setCurrentAIText(data.text);
-        setQuestionNum(data.question_number);
+        // Only advance question counter if it was a real interview answer, not chitchat
+        if (!data.is_chitchat) {
+          setQuestionNum(data.question_number);
+        }
         setTranscript((prev) => [...prev, { speaker: "ai", text: data.text }]);
         setWaitingForStudent(true);
         setStatus("WAITING FOR YOU");
@@ -175,6 +178,7 @@ function InterviewPage() {
       setChapterTitle(data.chapter_title || "");
       setCurrentAIText(data.text);
       setQuestionNum(data.question_number);
+      // Show full greeting+question text in transcript
       setTranscript([{ speaker: "ai", text: data.text }]);
       setWaitingForStudent(true);
       setStatus("WAITING FOR YOU");
@@ -362,7 +366,10 @@ function InterviewPage() {
               <h1 style={{ fontSize: "28px", fontWeight: "700", color: "var(--text-title)", marginBottom: "8px" }}>
                 Oral Assessment Complete
               </h1>
-              <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>{results.chapter_title}</p>
+              <p style={{ color: "var(--text-muted)", fontSize: "13px", marginBottom: "4px" }}>{results.chapter_title}</p>
+              <p style={{ color: "var(--color-success)", fontSize: "14px", fontWeight: "500", fontStyle: "italic" }}>
+                🎙 Thanks for your time today. Take care, bye!
+              </p>
             </div>
 
             <div className="score-grid">
