@@ -1,11 +1,11 @@
 from typing import Union
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, File, UploadFile
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.models import (
     Chapter, Course, Enrollment, Evaluation, EvaluationType,
-    InterviewSession, User,
+    InterviewSession, QuizAttempt, User,
 )
 from app.schemas.schemas import (
     InterviewStartRequest, InterviewAnswerRequest,
@@ -36,6 +36,65 @@ def _get_chapter_and_enrollment(db: Session, user_id: str, chapter_id: str):
         raise HTTPException(status_code=403, detail="This module is not your current active chapter")
 
     return chapter, enrollment, sorted_chapters
+
+
+@router.get("/{chapter_id}/my-status")
+def get_interview_status(
+    chapter_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_student),
+):
+    latest = (
+        db.query(Evaluation)
+        .filter(Evaluation.user_id == current_user.id, Evaluation.chapter_id == chapter_id)
+        .order_by(Evaluation.created_at.desc())
+        .first()
+    )
+    if not latest:
+        return {"attempted": False, "passed": False, "score": None}
+    return {"attempted": True, "passed": latest.passed, "score": latest.overall_score}
+
+
+@router.post("/transcribe")
+def transcribe_audio(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_student),
+):
+    import os
+    groq_key = os.getenv("GROQ_API_KEY", "")
+    if not groq_key:
+        raise HTTPException(status_code=500, detail="Groq API key not configured")
+
+    try:
+        import requests
+        file_bytes = file.file.read()
+        filename = file.filename or "audio.webm"
+        
+        headers = {
+            "Authorization": f"Bearer {groq_key}"
+        }
+        files = {
+            "file": (filename, file_bytes, file.content_type or "audio/webm")
+        }
+        data = {
+            "model": "whisper-large-v3-turbo"
+        }
+        
+        response = requests.post(
+            "https://api.groq.com/openai/v1/audio/transcriptions",
+            headers=headers,
+            files=files,
+            data=data,
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+            
+        result = response.json()
+        return {"text": result.get("text", "")}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/eligibility/{chapter_id}", response_model=InterviewEligibilityResponse)
@@ -84,6 +143,21 @@ def check_eligibility(
             enrollment_id=enrollment.id,
         )
 
+    # Check quiz passed
+    quiz_passed = db.query(QuizAttempt).filter(
+        QuizAttempt.user_id == current_user.id,
+        QuizAttempt.chapter_id == chapter_id,
+        QuizAttempt.passed == True,
+    ).first()
+    if not quiz_passed:
+        return InterviewEligibilityResponse(
+            eligible=False,
+            reason="Pass the chapter quiz first",
+            video_watched=True,
+            article_read=True,
+            enrollment_id=enrollment.id,
+        )
+
     active = db.query(InterviewSession).filter(
         InterviewSession.user_id == current_user.id,
         InterviewSession.chapter_id == chapter_id,
@@ -120,6 +194,18 @@ def start_interview_session(
             detail="Complete the video and article before starting the interview",
         )
 
+    # Enforce quiz-pass gating
+    quiz_passed = db.query(QuizAttempt).filter(
+        QuizAttempt.user_id == current_user.id,
+        QuizAttempt.chapter_id == data.chapter_id,
+        QuizAttempt.passed == True,
+    ).first()
+    if not quiz_passed:
+        raise HTTPException(
+            status_code=400,
+            detail="Pass the chapter quiz before starting the interview",
+        )
+
     existing = db.query(InterviewSession).filter(
         InterviewSession.user_id == current_user.id,
         InterviewSession.chapter_id == data.chapter_id,
@@ -138,7 +224,11 @@ def start_interview_session(
             total_questions=MAX_QUESTIONS,
         )
 
-    context = build_chapter_context(chapter)
+    context = build_chapter_context(
+        chapter,
+        query=f"important concepts and topics in {chapter.title} for oral assessment",
+        db=db,
+    )
     course = db.query(Course).filter(Course.id == chapter.course_id).first()
     graph_state = start_interview(chapter.title, context, course.pass_threshold)
 
@@ -189,6 +279,7 @@ def submit_answer(
         data.response_time_ms,
         data.pause_count,
         data.long_pause_ms,
+        data.filler_word_count,
     )
 
     session.graph_state = graph_state

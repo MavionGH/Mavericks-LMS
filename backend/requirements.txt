@@ -2,7 +2,7 @@ fastapi==0.115.0
 uvicorn[standard]==0.30.0
 sqlalchemy==2.0.35
 psycopg[binary]
-pydantic==2.9.0
+pydantic>=2.10.0
 pydantic[email]
 python-jose[cryptography]==3.3.0
 bcrypt==4.2.1
@@ -13,3 +13,7 @@ langchain==0.3.14
 langchain-openai==0.3.0
 langchain-groq==0.2.4
 langgraph==0.2.60
+youtube-transcript-api>=0.6.3
+sentence-transformers>=3.0.0
+pgvector>=0.3.0
+

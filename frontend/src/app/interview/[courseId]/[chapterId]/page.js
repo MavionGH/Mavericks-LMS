@@ -6,6 +6,19 @@ import { useParams, useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
 
+// Filler words to detect and penalise in scoring
+const FILLER_REGEX = /\b(um+|uh+|m+hm+|h+m+|err+|erm+|like|you know|basically|literally|right\?|i mean|kind of|sort of)\b/gi;
+
+function countFillers(text) {
+  const matches = text.match(FILLER_REGEX);
+  return matches ? matches.length : 0;
+}
+
+// Strip filler words from answer text before sending (keeps them counted but not submitted verbatim)
+function cleanAnswer(text) {
+  return text.replace(FILLER_REGEX, "").replace(/\s{2,}/g, " ").trim();
+}
+
 function InterviewPage() {
   const params = useParams();
   const router = useRouter();
@@ -17,7 +30,6 @@ function InterviewPage() {
   const [currentAIText, setCurrentAIText] = useState("");
   const [waitingForStudent, setWaitingForStudent] = useState(false);
   const [micActive, setMicActive] = useState(false);
-  const [cameraActive, setCameraActive] = useState(true);
   const [showCaptions, setShowCaptions] = useState(true);
   const [isFinished, setIsFinished] = useState(false);
   const [results, setResults] = useState(null);
@@ -26,14 +38,22 @@ function InterviewPage() {
   const [liveTranscript, setLiveTranscript] = useState("");
   const [questionNum, setQuestionNum] = useState(1);
   const [status, setStatus] = useState("CONNECTING");
+  const [fillerCount, setFillerCount] = useState(0);
+  const [typedAnswer, setTypedAnswer] = useState("");
 
   const recognitionRef = useRef(null);
+  const isListeningRef = useRef(false);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
   const questionStartRef = useRef(null);
   const pauseCountRef = useRef(0);
   const longPauseMsRef = useRef(0);
   const lastSpeechRef = useRef(Date.now());
   const silenceTimerRef = useRef(null);
+  const autoSubmitTimerRef = useRef(null);
   const submittingRef = useRef(false);
+  const finalTextRef = useRef("");
+  const fillerCountRef = useRef(0);
 
   const studentInitials = user?.name
     ? user.name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2)
@@ -44,76 +64,55 @@ function InterviewPage() {
     window.speechSynthesis.cancel();
     const utter = new SpeechSynthesisUtterance(text);
     utter.rate = 0.95;
-    utter.pitch = 1;
+    utter.pitch = 1.0;
+    utter.volume = 1;
+    // Prefer a natural-sounding voice if available
+    const voices = window.speechSynthesis.getVoices();
+    const preferred = voices.find(
+      (v) => v.lang === "en-US" && (v.name.includes("Natural") || v.name.includes("Google") || v.name.includes("Samantha"))
+    );
+    if (preferred) utter.voice = preferred;
     window.speechSynthesis.speak(utter);
   }, []);
 
-  const startSession = useCallback(async () => {
-    setLoading(true);
-    setError("");
-    try {
-      const eligRes = await authFetch(`/api/interview/eligibility/${params.chapterId}`);
-      const elig = await eligRes.json();
-      if (!elig.eligible) {
-        setError(elig.reason || "Not eligible for interview");
-        setLoading(false);
-        return;
-      }
+  const submitAnswer = useCallback(async (answerText) => {
+    if (submittingRef.current || !sessionId) return;
+    const trimmed = answerText.trim();
+    if (!trimmed) return;
 
-      const res = await authFetch("/api/interview/start", {
-        method: "POST",
-        body: JSON.stringify({ chapter_id: params.chapterId }),
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || "Failed to start interview");
-      }
-      const data = await res.json();
-      setSessionId(data.session_id);
-      setCurrentAIText(data.text);
-      setQuestionNum(data.question_number);
-      setTranscript([{ speaker: "ai", text: data.text }]);
-      setWaitingForStudent(true);
-      setStatus("WAITING FOR YOU");
-      speakText(data.text);
-      questionStartRef.current = Date.now();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }, [authFetch, params.chapterId, speakText]);
+    // Cancel any pending auto-submit
+    if (autoSubmitTimerRef.current) clearTimeout(autoSubmitTimerRef.current);
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
 
-  useEffect(() => {
-    startSession();
-    return () => {
-      if (recognitionRef.current) recognitionRef.current.stop();
-      if (typeof window !== "undefined") window.speechSynthesis?.cancel();
-    };
-  }, [startSession]);
-
-  const submitAnswer = async (answerText) => {
-    if (submittingRef.current || !sessionId || !answerText.trim()) return;
     submittingRef.current = true;
+    isListeningRef.current = false;
     setStatus("AI PROCESSING");
     setWaitingForStudent(false);
+    setMicActive(false);
 
-    const responseTime = questionStartRef.current
-      ? Date.now() - questionStartRef.current
-      : 0;
+    const responseTime = questionStartRef.current ? Date.now() - questionStartRef.current : 0;
+    const pauseCount = pauseCountRef.current;
+    const longPauseMs = longPauseMsRef.current;
+    const fillerWordCount = fillerCountRef.current;
 
-    setTranscript((prev) => [...prev, { speaker: "student", text: answerText }]);
+    // Show the raw (filler-included) answer in the UI transcript
+    setTranscript((prev) => [...prev, { speaker: "student", text: trimmed }]);
     setLiveTranscript("");
+    setFillerCount(0);
+
+    // Send cleaned answer (fillers removed) to backend for fairer technical scoring
+    const cleaned = cleanAnswer(trimmed);
 
     try {
       const res = await authFetch("/api/interview/answer", {
         method: "POST",
         body: JSON.stringify({
           session_id: sessionId,
-          answer_text: answerText,
+          answer_text: cleaned || trimmed,
           response_time_ms: responseTime,
-          pause_count: pauseCountRef.current,
-          long_pause_ms: longPauseMsRef.current,
+          pause_count: pauseCount,
+          long_pause_ms: longPauseMs,
+          filler_word_count: fillerWordCount,
         }),
       });
       if (!res.ok) {
@@ -122,8 +121,11 @@ function InterviewPage() {
       }
       const data = await res.json();
 
+      // Reset metrics for next answer
       pauseCountRef.current = 0;
       longPauseMsRef.current = 0;
+      fillerCountRef.current = 0;
+      finalTextRef.current = "";
 
       if (data.passed !== undefined) {
         setResults(data);
@@ -150,72 +152,228 @@ function InterviewPage() {
     } finally {
       submittingRef.current = false;
     }
-  };
+  }, [authFetch, sessionId, speakText]);
 
-  const startListening = () => {
+  const startSession = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const eligRes = await authFetch(`/api/interview/eligibility/${params.chapterId}`);
+      const elig = await eligRes.json();
+      if (!elig.eligible) {
+        setError(elig.reason || "Not eligible for interview");
+        setLoading(false);
+        return;
+      }
+
+      const res = await authFetch("/api/interview/start", {
+        method: "POST",
+        body: JSON.stringify({ chapter_id: params.chapterId }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Failed to start interview");
+      }
+      const data = await res.json();
+      setSessionId(data.session_id);
+      setChapterTitle(data.chapter_title || "");
+      setCurrentAIText(data.text);
+      setQuestionNum(data.question_number);
+      setTranscript([{ speaker: "ai", text: data.text }]);
+      setWaitingForStudent(true);
+      setStatus("WAITING FOR YOU");
+      speakText(data.text);
+      questionStartRef.current = Date.now();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [authFetch, params.chapterId, speakText]);
+
+  useEffect(() => {
+    startSession();
+    return () => {
+      if (recognitionRef.current) recognitionRef.current.stop();
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        mediaRecorderRef.current.stop();
+        mediaRecorderRef.current.stream.getTracks().forEach((track) => track.stop());
+      }
+      if (typeof window !== "undefined") window.speechSynthesis?.cancel();
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      if (autoSubmitTimerRef.current) clearTimeout(autoSubmitTimerRef.current);
+    };
+  }, [startSession]);
+
+  // ─── Shared: stop recorder, transcribe via Whisper, submit ───
+  const transcribeAndSubmit = useCallback(async (nativeFallback) => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      setStatus("AI TRANSCRIBING");
+      await new Promise((resolve) => {
+        mediaRecorderRef.current.onstop = async () => {
+          const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+          let finalAnswer = "";
+
+          // Always use Whisper as the primary transcription
+          try {
+            const formData = new FormData();
+            formData.append("file", audioBlob, "audio.webm");
+            const res = await authFetch("/api/interview/transcribe", {
+              method: "POST",
+              body: formData,
+            });
+            if (res.ok) {
+              const data = await res.json();
+              finalAnswer = (data.text || "").trim();
+            }
+          } catch (err) {
+            console.error("Whisper transcription failed:", err);
+          }
+
+          // Fall back to native browser transcript only if Whisper returned nothing
+          if (!finalAnswer && nativeFallback) {
+            finalAnswer = nativeFallback;
+          }
+
+          if (finalAnswer) {
+            submitAnswer(finalAnswer);
+          } else {
+            setStatus("WAITING FOR YOU");
+            setError("Could not recognize speech. Please try speaking louder or type your answer.");
+          }
+          resolve();
+        };
+        mediaRecorderRef.current.stop();
+        mediaRecorderRef.current.stream.getTracks().forEach((track) => track.stop());
+      });
+    } else if (nativeFallback) {
+      submitAnswer(nativeFallback);
+    } else {
+      setStatus("WAITING FOR YOU");
+    }
+  }, [authFetch, submitAnswer]);
+
+  const startListening = useCallback(() => {
     const SpeechRecognition =
       typeof window !== "undefined" &&
       (window.SpeechRecognition || window.webkitSpeechRecognition);
     if (!SpeechRecognition) {
-      setError("Speech recognition not supported. Type your answer below.");
+      setError("Speech recognition not supported in this browser. Use Chrome or Edge, or type below.");
       return;
     }
 
+    // Stop TTS so it doesn't feed back into the mic
+    if (typeof window !== "undefined") window.speechSynthesis?.cancel();
+
     if (recognitionRef.current) {
+      recognitionRef.current.onend = null;
       recognitionRef.current.stop();
     }
 
+    // Start MediaRecorder for Whisper transcription
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then((stream) => {
+        const mediaRecorder = new MediaRecorder(stream);
+        mediaRecorderRef.current = mediaRecorder;
+        audioChunksRef.current = [];
+
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            audioChunksRef.current.push(event.data);
+          }
+        };
+
+        mediaRecorder.start();
+      })
+      .catch((err) => {
+        console.error("Failed to start MediaRecorder:", err);
+      });
+
+    // SpeechRecognition is only for real-time interim captions
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = "en-US";
 
-    let finalText = "";
+    finalTextRef.current = "";
+    fillerCountRef.current = 0;
     pauseCountRef.current = 0;
     longPauseMsRef.current = 0;
     lastSpeechRef.current = Date.now();
 
     recognition.onresult = (event) => {
       lastSpeechRef.current = Date.now();
+
+      // Clear existing timers on new speech
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+
       let interim = "";
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const t = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
-          finalText += t + " ";
+          finalTextRef.current += t + " ";
+          const newFillers = countFillers(t);
+          fillerCountRef.current += newFillers;
+          setFillerCount(fillerCountRef.current);
         } else {
           interim += t;
         }
       }
-      setLiveTranscript(finalText + interim);
+      setLiveTranscript(finalTextRef.current + interim);
 
-      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      // Silence = pause detection (3s gap)
       silenceTimerRef.current = setTimeout(() => {
         const gap = Date.now() - lastSpeechRef.current;
-        if (gap > 3000) {
+        if (gap >= 3000) {
           pauseCountRef.current += 1;
           longPauseMsRef.current += gap;
         }
       }, 3100);
     };
 
-    recognition.onerror = () => setMicActive(false);
-    recognition.onend = () => setMicActive(false);
+    recognition.onerror = (e) => {
+      if (e.error === "no-speech" || e.error === "aborted") {
+        return; // Ignore standard lifecycle interruptions
+      }
+      setError(`Mic error: ${e.error}. Please retry.`);
+      isListeningRef.current = false;
+      setMicActive(false);
+    };
+
+    // Always restart recognition if it ends naturally — only the user can stop it
+    recognition.onend = () => {
+      if (isListeningRef.current && !submittingRef.current) {
+        try {
+          recognition.start();
+          return;
+        } catch (err) {
+          console.error("Failed to restart speech recognition:", err);
+        }
+      }
+      setMicActive(false);
+    };
 
     recognitionRef.current = recognition;
+    isListeningRef.current = true;
     recognition.start();
     setMicActive(true);
     setStatus("LISTENING");
-  };
+  }, [transcribeAndSubmit, waitingForStudent]);
 
-  const stopListeningAndSubmit = () => {
-    if (recognitionRef.current) recognitionRef.current.stop();
+  const stopListeningAndSubmit = useCallback(() => {
+    isListeningRef.current = false;
     setMicActive(false);
-    const answer = liveTranscript.trim();
-    if (answer) {
-      setTypedAnswer("");
-      submitAnswer(answer);
+    if (autoSubmitTimerRef.current) clearTimeout(autoSubmitTimerRef.current);
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+
+    if (recognitionRef.current) {
+      recognitionRef.current.onend = null;
+      recognitionRef.current.stop();
     }
-  };
+
+    const nativeAnswer = finalTextRef.current.trim();
+    transcribeAndSubmit(nativeAnswer);
+  }, [transcribeAndSubmit]);
 
   const handleToggleMic = () => {
     if (!waitingForStudent || submittingRef.current) return;
@@ -228,18 +386,20 @@ function InterviewPage() {
 
   const handleEndCall = async () => {
     if (!sessionId) return;
+    if (autoSubmitTimerRef.current) clearTimeout(autoSubmitTimerRef.current);
+    if (recognitionRef.current) recognitionRef.current.stop();
     try {
       const res = await authFetch(`/api/interview/end/${sessionId}`, { method: "POST" });
       if (!res.ok) throw new Error("Failed to end interview");
       const data = await res.json();
       setResults(data);
       setIsFinished(true);
+      setStatus("COMPLETE");
+      if (typeof window !== "undefined") window.speechSynthesis?.cancel();
     } catch (err) {
       setError(err.message);
     }
   };
-
-  const [typedAnswer, setTypedAnswer] = useState("");
 
   if (loading) {
     return (
@@ -347,10 +507,7 @@ function InterviewPage() {
 
             <div style={{ textAlign: "center", display: "flex", gap: "12px", justifyContent: "center" }}>
               {results.next_chapter_unlocked && (
-                <button
-                  className="btn btn-primary"
-                  onClick={() => router.push(`/learn/${params.courseId}`)}
-                >
+                <button className="btn btn-primary" onClick={() => router.push(`/learn/${params.courseId}`)}>
                   Continue to next module
                 </button>
               )}
@@ -362,7 +519,7 @@ function InterviewPage() {
     );
   }
 
-  const isAISpeaking = !waitingForStudent && !micActive;
+  const isAISpeaking = status === "AI PROCESSING" || (!waitingForStudent && !micActive && !isFinished);
   const captionText = micActive ? liveTranscript : currentAIText;
   const captionSpeaker = micActive ? "You (Speaking)" : "AI Assessor";
 
@@ -371,6 +528,8 @@ function InterviewPage() {
       <Navbar />
       <div className="page-container" style={{ backgroundColor: "#121212", paddingTop: "80px", paddingBottom: "32px", minHeight: "100vh" }}>
         <div className="container meet-layout">
+
+          {/* Header bar */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
               <span className="badge badge-accent" style={{ backgroundColor: "rgba(255,255,255,0.1)", borderColor: "rgba(255,255,255,0.2)", color: "#8ab4f8", marginBottom: "6px" }}>
@@ -380,11 +539,19 @@ function InterviewPage() {
                 Module Oral Assessment
               </h1>
             </div>
-            <span style={{ fontSize: "12px", color: "#e8eaed", backgroundColor: "#202124", padding: "6px 12px", borderRadius: "16px", border: "1px solid #3c4043", fontFamily: "JetBrains Mono" }}>
-              STATUS: {status}
-            </span>
+            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+              {micActive && fillerCount > 0 && (
+                <span style={{ fontSize: "11px", color: "#f28b82", backgroundColor: "rgba(242,139,130,0.15)", padding: "4px 10px", borderRadius: "12px", fontFamily: "JetBrains Mono", border: "1px solid rgba(242,139,130,0.3)" }}>
+                  {fillerCount} filler word{fillerCount !== 1 ? "s" : ""}
+                </span>
+              )}
+              <span style={{ fontSize: "12px", color: "#e8eaed", backgroundColor: "#202124", padding: "6px 12px", borderRadius: "16px", border: "1px solid #3c4043", fontFamily: "JetBrains Mono" }}>
+                {status}
+              </span>
+            </div>
           </div>
 
+          {/* Video panels */}
           <div className="meet-grid">
             <div className={`meet-panel ${isAISpeaking ? "speaking" : ""}`}>
               <div className="meet-avatar">AI</div>
@@ -406,11 +573,7 @@ function InterviewPage() {
             </div>
 
             <div className={`meet-panel meet-panel-student ${micActive ? "speaking" : ""}`}>
-              {cameraActive ? (
-                <div className="meet-avatar">{studentInitials}</div>
-              ) : (
-                <div style={{ color: "#94a3b8", fontSize: "14px" }}>Camera Disabled</div>
-              )}
+              <div className="meet-avatar">{studentInitials}</div>
               <div className="meet-nametag">
                 <span className="meet-nametag-icon">
                   {micActive ? (
@@ -431,6 +594,7 @@ function InterviewPage() {
             </div>
           </div>
 
+          {/* Captions overlay */}
           {showCaptions && captionText && (
             <div className="meet-captions-overlay">
               <div>
@@ -440,16 +604,24 @@ function InterviewPage() {
             </div>
           )}
 
+          {/* Error banner */}
           {error && (
             <div style={{ color: "#f28b82", fontSize: "13px", textAlign: "center", marginTop: "8px" }}>{error}</div>
           )}
 
-          {/* Fallback text input when speech not available */}
-          {waitingForStudent && (
+          {/* Auto-submit hint */}
+          {micActive && finalTextRef.current.trim() && (
+            <div style={{ textAlign: "center", marginTop: "8px", fontSize: "12px", color: "#9aa0a6" }}>
+              Stop speaking for 6 seconds to auto-submit, or click 🎤 to submit now
+            </div>
+          )}
+
+          {/* Fallback text input */}
+          {waitingForStudent && !micActive && (
             <div style={{ marginTop: "16px", display: "flex", gap: "8px", maxWidth: "600px", margin: "16px auto 0" }}>
               <input
                 className="form-input"
-                placeholder="Type your answer if mic doesn't work…"
+                placeholder="Type your answer here (or use the mic above)…"
                 value={typedAnswer}
                 onChange={(e) => setTypedAnswer(e.target.value)}
                 onKeyDown={(e) => {
@@ -460,32 +632,51 @@ function InterviewPage() {
                 }}
                 style={{ flex: 1, background: "#202124", borderColor: "#3c4043", color: "#fff" }}
               />
-              <button className="btn btn-secondary btn-sm" onClick={() => { if (typedAnswer.trim()) { submitAnswer(typedAnswer); setTypedAnswer(""); } }}>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={() => { if (typedAnswer.trim()) { submitAnswer(typedAnswer); setTypedAnswer(""); } }}
+              >
                 Send
               </button>
             </div>
           )}
 
+          {/* Bottom control bar */}
           <div className="meet-bottom-bar">
             <div className="meet-bar-info">
-              {waitingForStudent ? (
-                <span style={{ color: "#81c995", fontWeight: "600" }}>➔ Turn on mic to answer (click again to submit)</span>
+              {micActive ? (
+                <span style={{ color: "#81c995", fontWeight: "600" }}>
+                  🎙 Listening… click 🎤 to submit or wait 6s for auto-submit
+                </span>
+              ) : waitingForStudent ? (
+                <span style={{ color: "#81c995", fontWeight: "600" }}>➔ Click 🎤 to start speaking</span>
               ) : (
                 <span style={{ color: "#9aa0a6" }}>AI is processing your response…</span>
               )}
             </div>
 
             <div className="meet-bar-actions">
-              <button onClick={handleToggleMic} className={`meet-action-btn ${!micActive && waitingForStudent ? "" : micActive ? "" : "active-off"}`} title="Microphone">
+              <button
+                onClick={handleToggleMic}
+                className={`meet-action-btn ${micActive ? "mic-active" : ""}`}
+                title={micActive ? "Stop & submit answer" : "Start speaking"}
+                disabled={!waitingForStudent && !micActive}
+                style={{ opacity: (!waitingForStudent && !micActive) ? 0.4 : 1 }}
+              >
                 {micActive ? "🎤" : "🔇"}
               </button>
-              <button onClick={() => setCameraActive((p) => !p)} className={`meet-action-btn ${!cameraActive ? "active-off" : ""}`} title="Camera">
-                📷
-              </button>
-              <button onClick={() => setShowCaptions((p) => !p)} className={`meet-action-btn ${!showCaptions ? "active-off" : ""}`} title="Captions">
+              <button
+                onClick={() => setShowCaptions((p) => !p)}
+                className={`meet-action-btn ${!showCaptions ? "active-off" : ""}`}
+                title="Toggle captions"
+              >
                 CC
               </button>
-              <button onClick={handleEndCall} className="meet-action-btn meet-action-btn-end" title="End Call & Score">
+              <button
+                onClick={handleEndCall}
+                className="meet-action-btn meet-action-btn-end"
+                title="End interview and get score"
+              >
                 📞
               </button>
             </div>

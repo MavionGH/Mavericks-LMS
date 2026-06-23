@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+
 from sqlalchemy.orm import Session
 import bcrypt
 from jose import jwt
@@ -8,11 +9,9 @@ from typing import Optional
 from app.database import get_db
 from app.models.models import User, UserRole
 from app.schemas.schemas import UserCreate, UserLogin, UserResponse, TokenResponse
-from app.auth.dependencies import SECRET_KEY, ALGORITHM, get_current_user
+from app.auth.dependencies import SECRET_KEY, ALGORITHM, TOKEN_EXPIRE_HOURS, get_current_user
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
-
-TOKEN_EXPIRE_HOURS = 24
 
 
 def hash_password(password: str) -> str:
@@ -21,7 +20,6 @@ def hash_password(password: str) -> str:
 
 def verify_password(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain.encode(), hashed.encode())
-
 
 
 def create_token(user_id: str, role: str) -> str:
@@ -43,7 +41,6 @@ def register(data: UserCreate, db: Session = Depends(get_db)):
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
 
-    # Map incoming role string to enum; fall back to STUDENT
     role_map = {
         "student": UserRole.STUDENT,
         "teacher": UserRole.TEACHER,

@@ -1,3 +1,4 @@
+# pyrefly: ignore [missing-import]
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List
 from datetime import datetime
@@ -49,7 +50,9 @@ class ChapterResponse(BaseModel):
     order_index: int
     article_content: str
     youtube_url: str
+    video_transcript: Optional[str] = None
     course_id: str
+    video_transcript: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -124,6 +127,45 @@ class QuizAttemptResponse(BaseModel):
         from_attributes = True
 
 
+class QuizQuestionItem(BaseModel):
+    id: int
+    question: str
+    options: dict  # {A: str, B: str, C: str, D: str}
+
+
+class QuizQuestionsResponse(BaseModel):
+    chapter_id: str
+    questions: List[QuizQuestionItem]
+
+
+class QuizSubmitRequest(BaseModel):
+    chapter_id: str
+    answers: dict  # {str(question_id): "A"|"B"|"C"|"D"}
+
+
+class QuizResultItem(BaseModel):
+    id: int
+    correct: bool
+    selected: str
+    correct_answer: str
+
+
+class QuizResultResponse(BaseModel):
+    score: int
+    passed: bool
+    correct_count: int
+    total: int
+    threshold: int
+    attempt_id: str
+    results: List[QuizResultItem]
+
+
+class QuizStatusResponse(BaseModel):
+    attempted: bool
+    passed: bool
+    score: Optional[int] = None
+
+
 # ─── INTERVIEW ───
 class InterviewStartRequest(BaseModel):
     chapter_id: str
@@ -135,6 +177,7 @@ class InterviewAnswerRequest(BaseModel):
     response_time_ms: int = 0
     pause_count: int = 0
     long_pause_ms: int = 0
+    filler_word_count: int = 0
 
 
 class InterviewMessage(BaseModel):
