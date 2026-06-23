@@ -52,7 +52,18 @@ class ChapterResponse(BaseModel):
     youtube_url: str
     video_transcript: Optional[str] = None
     course_id: str
-    video_transcript: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ChapterMinResponse(BaseModel):
+    id: str
+    title: str
+    order_index: int
+    youtube_url: str
+    course_id: str
+    has_transcript: bool = False
 
     class Config:
         from_attributes = True
@@ -73,7 +84,7 @@ class CourseResponse(BaseModel):
     pass_threshold: int
     is_published: bool
     created_at: datetime
-    chapters: List[ChapterResponse] = []
+    chapters: List[ChapterMinResponse] = []
 
     class Config:
         from_attributes = True

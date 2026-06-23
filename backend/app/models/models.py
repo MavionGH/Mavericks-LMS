@@ -93,6 +93,11 @@ class Chapter(Base):
     quiz_question = relationship("QuizQuestion", back_populates="chapter", uselist=False)
     chunk_embeddings = relationship("ChunkEmbedding", back_populates="chapter", cascade="all, delete-orphan")
 
+    @property
+    def has_transcript(self) -> bool:
+        return self.video_transcript is not None and len(self.video_transcript.strip()) > 0
+
+
 
 # ─── ENROLLMENT ───
 class Enrollment(Base):

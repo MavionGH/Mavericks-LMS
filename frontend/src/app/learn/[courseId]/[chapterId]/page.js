@@ -14,6 +14,7 @@ function LearnPage() {
 
   const [course, setCourse] = useState(null);
   const [enrollment, setEnrollment] = useState(null);
+  const [chapterDetail, setChapterDetail] = useState(null);
   const [quizStatus, setQuizStatus] = useState({ attempted: false, passed: false, score: null });
   const [activeTab, setActiveTab] = useState("video");
   const [loading, setLoading] = useState(true);
@@ -53,6 +54,15 @@ function LearnPage() {
         if (active && params.chapterId !== active.id) {
           router.replace(`/learn/${params.courseId}/${active.id}`);
           return;
+        }
+
+        const chapterIdToFetch = params.chapterId || active?.id;
+        if (chapterIdToFetch) {
+          const chRes = await authFetch(`/api/courses/chapters/${chapterIdToFetch}`);
+          if (chRes.ok) {
+            const chData = await chRes.json();
+            setChapterDetail(chData);
+          }
         }
 
         const qRes = await authFetch(`/api/quiz/${params.chapterId}/my-status`);
@@ -213,7 +223,7 @@ function LearnPage() {
             {/* ARTICLE TAB */}
             {activeTab === "article" && (
               <div>
-                <div className="article-content" dangerouslySetInnerHTML={{ __html: renderArticleHtml(viewingChapter.article_content) }} />
+                <div className="article-content" dangerouslySetInnerHTML={{ __html: renderArticleHtml(chapterDetail?.article_content || "*Loading documentation...*") }} />
                 {isCurrentChapter && (
                   <div style={{ marginTop: "24px" }}>
                     {!articleRead ? (

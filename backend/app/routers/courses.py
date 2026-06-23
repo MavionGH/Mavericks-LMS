@@ -1,13 +1,14 @@
 import logging
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from sqlalchemy.orm import Session
+from sqlalchemy import func
+from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 
 from app.database import get_db
 from app.models.models import Course, Chapter, User
 from app.schemas.schemas import (
     CourseCreate, CourseResponse, CourseListResponse,
-    ChapterCreate, ChapterResponse
+    ChapterCreate, ChapterResponse, ChapterMinResponse
 )
 from app.auth.dependencies import get_current_user, require_teacher, require_admin
 from app.services.transcript import fetch_youtube_transcript
@@ -24,7 +25,9 @@ def list_all_courses_teacher(
     current_user: User = Depends(require_teacher),
 ):
     """Teacher/admin — lists all courses including drafts."""
-    courses = db.query(Course).order_by(Course.created_at.desc()).all()
+    courses = db.query(Course).options(
+        joinedload(Course.chapters)
+    ).order_by(Course.created_at.desc()).all()
     return [CourseResponse.model_validate(c) for c in courses]
 
 
@@ -60,16 +63,26 @@ def preview_youtube_transcript(
 @router.get("/", response_model=List[CourseListResponse])
 def list_courses(db: Session = Depends(get_db)):
     """Public endpoint — lists all published courses."""
-    courses = db.query(Course).filter(Course.is_published == True).all()
+    query_results = db.query(
+        Course,
+        func.count(Chapter.id).label("chapter_count")
+    ).outerjoin(
+        Chapter, Course.id == Chapter.course_id
+    ).filter(
+        Course.is_published == True
+    ).group_by(
+        Course.id
+    ).all()
+
     result = []
-    for c in courses:
+    for c, count in query_results:
         result.append(CourseListResponse(
             id=c.id,
             title=c.title,
             description=c.description,
             thumbnail=c.thumbnail,
             is_published=c.is_published,
-            chapter_count=len(c.chapters),
+            chapter_count=count,
         ))
     return result
 
@@ -77,7 +90,9 @@ def list_courses(db: Session = Depends(get_db)):
 @router.get("/{course_id}", response_model=CourseResponse)
 def get_course(course_id: str, db: Session = Depends(get_db)):
     """Public endpoint — returns course details."""
-    course = db.query(Course).filter(Course.id == course_id).first()
+    course = db.query(Course).options(
+        joinedload(Course.chapters)
+    ).filter(Course.id == course_id).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
     return CourseResponse.model_validate(course)
@@ -149,6 +164,15 @@ def publish_course(
 
 
 # ─── CHAPTER ROUTES ───
+
+@router.get("/chapters/{chapter_id}", response_model=ChapterResponse)
+def get_chapter(chapter_id: str, db: Session = Depends(get_db)):
+    """Get details of a single chapter (includes article_content)."""
+    chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
+    if not chapter:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+    return ChapterResponse.model_validate(chapter)
+
 
 @router.post("/{course_id}/chapters", response_model=ChapterResponse)
 def add_chapter(
