@@ -257,7 +257,7 @@ function InterviewPage() {
         }
       }, 3100);
 
-      // Auto-submit after 6 seconds of silence if answer is non-empty
+      // Auto-submit after 3 seconds of silence if answer is non-empty
       if (finalTextRef.current.trim()) {
         autoSubmitTimerRef.current = setTimeout(() => {
           const answer = finalTextRef.current.trim();
@@ -265,7 +265,7 @@ function InterviewPage() {
             if (recognitionRef.current) recognitionRef.current.stop();
             submitAnswer(answer);
           }
-        }, 6000);
+        }, 3000);
       }
     };
 
@@ -541,7 +541,7 @@ function InterviewPage() {
           {/* Auto-submit hint */}
           {micActive && finalTextRef.current.trim() && (
             <div style={{ textAlign: "center", marginTop: "8px", fontSize: "12px", color: "#9aa0a6" }}>
-              Stop speaking for 6 seconds to auto-submit, or click 🎤 to submit now
+              Stop speaking for 3 seconds to auto-submit, or click 🎤 to submit now
             </div>
           )}
 
@@ -575,7 +575,7 @@ function InterviewPage() {
             <div className="meet-bar-info">
               {micActive ? (
                 <span style={{ color: "#81c995", fontWeight: "600" }}>
-                  🎙 Listening… click 🎤 to submit or wait 6s for auto-submit
+                  🎙 Listening… click 🎤 to submit or wait 3s for auto-submit
                 </span>
               ) : waitingForStudent ? (
                 <span style={{ color: "#81c995", fontWeight: "600" }}>➔ Click 🎤 to start speaking</span>

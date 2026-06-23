@@ -180,24 +180,39 @@ def llm_handle_chitchat(
         from langchain_core.messages import HumanMessage, SystemMessage
         system = (
             "You are Mav, a friendly and professional AI interviewer. "
-            "Respond naturally and warmly to the student's off-topic message, "
-            "then gently redirect back to the interview by re-asking the current question. "
-            "Keep your response concise (2-3 sentences total). "
-            "Do NOT advance or skip the interview question. "
-            "Return ONLY the response text, no preamble."
+            "Your job in this response has TWO parts:\n"
+            "  PART 1 — Respond directly and helpfully to whatever the student said "
+            "(answer their question, greet them back, clarify the interview question, etc.). "
+            "Do NOT say 'I'll answer that at the end' or defer. Answer RIGHT NOW.\n"
+            "  PART 2 — After your response, transition back and re-ask the current interview question.\n"
+            "Keep the whole reply concise (2-4 sentences). "
+            "Return ONLY the response text, no preamble or labels."
         )
         category_hints = {
-            "greeting": "The student greeted you. Greet them back briefly.",
-            "personal": "The student asked how you are. Answer briefly and warmly.",
-            "clarification": "The student needs clarification on the question. Explain it clearly.",
-            "offtopic": "The student asked something unrelated. Politely acknowledge and redirect.",
+            "greeting": (
+                "The student greeted you. Greet them back warmly and briefly, "
+                "then re-ask the interview question."
+            ),
+            "personal": (
+                "The student asked how you are. Give a brief, warm personal answer "
+                "(e.g. 'I'm doing great, thanks for asking!'), then re-ask the interview question."
+            ),
+            "clarification": (
+                "The student asked for clarification on the interview question. "
+                "Explain what the question is asking in simpler terms, then re-ask it."
+            ),
+            "offtopic": (
+                "The student asked an off-topic question. Give a brief, genuine answer to their "
+                "question right now (DO NOT say you will answer later or at the end). "
+                "Then transition back and re-ask the interview question."
+            ),
         }
-        hint = category_hints.get(category, "Respond naturally.")
+        hint = category_hints.get(category, "Respond naturally, then re-ask the interview question.")
         user = (
             f"{hint}\n"
             f"Student said: \"{student_text}\"\n"
             f"Current interview question: \"{current_question}\"\n"
-            "Now write Mav's response."
+            "Now write Mav's response (answer their message first, then re-ask the question)."
         )
         try:
             resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
@@ -207,19 +222,27 @@ def llm_handle_chitchat(
 
     # ── Rule-based fallback ──
     if category == "greeting":
-        return f"Hello there! Great to have you here. Now, let's get back to the interview — {current_question}"
+        return f"Hello! Great to have you here today. Now, let's get started — {current_question}"
     if category == "personal":
-        return f"I'm doing well, thank you for asking! Let's continue — {current_question}"
+        return f"I'm doing great, thanks for asking! Now let's continue — {current_question}"
     if category == "clarification":
         return (
-            f"Of course! I'm asking you to share your understanding and thoughts about the following topic. "
-            f"{current_question}"
+            f"Of course! I'm asking you to explain your understanding and experience related to this topic. "
+            f"Here's the question again: {current_question}"
         )
-    # offtopic
-    return (
-        f"That's an interesting question, but I'm not able to help with that right now. "
-        f"Let's focus on the interview — {current_question}"
-    )
+    # offtopic — give a brief genuine answer, then redirect
+    lower = student_text.lower()
+    if "weather" in lower:
+        brief = "I don't have access to live weather data, but I hope it's nice where you are!"
+    elif "time" in lower or "date" in lower:
+        brief = "I don't have a clock on me, but let's make the most of our time together!"
+    elif "joke" in lower:
+        brief = "Ha! I'd love to tell a joke, but I'm in interviewer mode right now."
+    else:
+        brief = "That's a great question outside of our interview scope, so I can't go into detail on that."
+    return f"{brief} Now, back to the interview — {current_question}"
+
+
 
 
 def llm_score_interview(
