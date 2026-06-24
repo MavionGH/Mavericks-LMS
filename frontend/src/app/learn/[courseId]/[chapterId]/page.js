@@ -115,6 +115,7 @@ function LearnPage() {
   }
 
   const embedUrl = getYouTubeEmbedUrl(viewingChapter.youtube_url);
+  const isDirectVideo = viewingChapter.youtube_url?.match(/\.(mp4|mov|webm|mkv)/i);
   const unlockedCount = currentIndex + 1;
   const progressPct = chapters.length ? Math.round((unlockedCount / chapters.length) * 100) : 0;
 
@@ -193,18 +194,24 @@ function LearnPage() {
             {/* VIDEO TAB */}
             {activeTab === "video" && (
               <div>
-                <div className="video-container">
-                  {embedUrl ? (
+                <div className="video-container" style={{ position: "relative", width: "100%", aspectRatio: "16/9", backgroundColor: "#000", borderRadius: "var(--radius-md)", overflow: "hidden" }}>
+                  {isDirectVideo ? (
+                    <video
+                      src={viewingChapter.youtube_url}
+                      controls
+                      style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                    />
+                  ) : embedUrl ? (
                     <iframe
                       src={embedUrl}
                       title={viewingChapter.title}
                       allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                       allowFullScreen
-                      style={{ width: "100%", height: "100%", border: "none", borderRadius: "var(--radius-md)" }}
+                      style={{ width: "100%", height: "100%", border: "none" }}
                     />
                   ) : (
-                    <div className="video-placeholder">
-                      <span>No YouTube URL configured for this module</span>
+                    <div className="video-placeholder" style={{ display: "grid", placeItems: "center", height: "100%", color: "var(--text-muted)" }}>
+                      <span>No video file or YouTube URL configured for this module</span>
                     </div>
                   )}
                 </div>

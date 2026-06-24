@@ -1,11 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 from typing import List
 
 from app.database import get_db
-from app.models.models import User, Course, Enrollment, Evaluation, Certificate, UserRole
-from app.schemas.schemas import AnalyticsResponse, UserResponse
+from app.models.models import User, Course, Chapter, Enrollment, Evaluation, Certificate, UserRole
+from app.schemas.schemas import AnalyticsResponse
 from app.auth.dependencies import require_admin
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
@@ -18,7 +18,10 @@ def get_analytics(
 ):
     total_students = db.query(User).filter(User.role == UserRole.STUDENT).count()
     total_courses = db.query(Course).count()
-    published_courses = db.query(Course).filter(Course.is_published == True).count()
+    # A course is "live" only when both teacher-published and admin-approved
+    published_courses = db.query(Course).filter(
+        Course.is_published == True, Course.is_approved == True
+    ).count()
     total_enrollments = db.query(Enrollment).count()
     completed = db.query(Enrollment).filter(Enrollment.status == "completed").count()
     certs = db.query(Certificate).count()
@@ -40,6 +43,8 @@ def get_analytics(
         pass_rate=round(pass_rate, 1),
     )
 
+
+# ─── STUDENT MANAGEMENT ───
 
 @router.get("/students")
 def list_students(
@@ -70,7 +75,7 @@ def get_student_detail(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
-    student = db.query(User).filter(User.id == student_id).first()
+    student = db.query(User).filter(User.id == student_id, User.role == UserRole.STUDENT).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
@@ -85,11 +90,36 @@ def get_student_detail(
             "email": student.email,
             "joined": student.created_at.isoformat(),
         },
-        "enrollments": [{"course_id": e.course_id, "status": e.status.value, "chapter": e.current_chapter_index} for e in enrollments],
-        "evaluations": [{"chapter_id": e.chapter_id, "score": e.overall_score, "passed": e.passed, "type": e.type.value} for e in evaluations],
-        "certificates": [{"course_id": c.course_id, "verify_code": c.verify_code, "issued": c.issue_date.isoformat()} for c in certificates],
+        "enrollments": [
+            {"course_id": e.course_id, "status": e.status.value, "chapter": e.current_chapter_index}
+            for e in enrollments
+        ],
+        "evaluations": [
+            {"chapter_id": e.chapter_id, "score": e.overall_score, "passed": e.passed, "type": e.type.value}
+            for e in evaluations
+        ],
+        "certificates": [
+            {"course_id": c.course_id, "verify_code": c.verify_code, "issued": c.issue_date.isoformat()}
+            for c in certificates
+        ],
     }
 
+
+@router.delete("/students/{student_id}")
+def delete_student(
+    student_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    student = db.query(User).filter(User.id == student_id, User.role == UserRole.STUDENT).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+    db.delete(student)
+    db.commit()
+    return {"message": "Student removed", "user_id": student_id}
+
+
+# ─── TEACHER MANAGEMENT ───
 
 @router.get("/teachers")
 def list_teachers(
@@ -97,8 +127,90 @@ def list_teachers(
     current_user: User = Depends(require_admin),
 ):
     teachers = db.query(User).filter(User.role == UserRole.TEACHER).all()
-    return [{"id": t.id, "name": t.name, "email": t.email, "joined": t.created_at.isoformat()} for t in teachers]
+    result = []
+    for t in teachers:
+        course_count = db.query(Course).filter(Course.teacher_id == t.id).count()
+        result.append({
+            "id": t.id,
+            "name": t.name,
+            "email": t.email,
+            "is_approved": t.is_approved,
+            "course_count": course_count,
+            "joined": t.created_at.isoformat(),
+        })
+    return result
 
+
+@router.put("/teachers/{teacher_id}/approve")
+def approve_teacher(
+    teacher_id: str,
+    approved: bool = True,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Admin approves or rejects a teacher account."""
+    teacher = db.query(User).filter(User.id == teacher_id, User.role == UserRole.TEACHER).first()
+    if not teacher:
+        raise HTTPException(status_code=404, detail="Teacher not found")
+    teacher.is_approved = approved
+    db.commit()
+    action = "approved" if approved else "rejected"
+    return {"message": f"Teacher {action}", "teacher_id": teacher_id, "is_approved": approved}
+
+
+@router.get("/teachers/{teacher_id}")
+def get_teacher_detail(
+    teacher_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    teacher = db.query(User).filter(User.id == teacher_id, User.role == UserRole.TEACHER).first()
+    if not teacher:
+        raise HTTPException(status_code=404, detail="Teacher not found")
+
+    courses = (
+        db.query(Course)
+        .options(joinedload(Course.chapters))
+        .filter(Course.teacher_id == teacher_id)
+        .all()
+    )
+
+    return {
+        "teacher": {
+            "id": teacher.id,
+            "name": teacher.name,
+            "email": teacher.email,
+            "joined": teacher.created_at.isoformat(),
+        },
+        "courses": [
+            {
+                "id": c.id,
+                "title": c.title,
+                "is_published": c.is_published,
+                "is_approved": c.is_approved,
+                "chapter_count": len(c.chapters),
+                "created_at": c.created_at.isoformat(),
+            }
+            for c in courses
+        ],
+    }
+
+
+@router.delete("/teachers/{teacher_id}")
+def delete_teacher(
+    teacher_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    teacher = db.query(User).filter(User.id == teacher_id, User.role == UserRole.TEACHER).first()
+    if not teacher:
+        raise HTTPException(status_code=404, detail="Teacher not found")
+    db.delete(teacher)
+    db.commit()
+    return {"message": "Teacher removed", "user_id": teacher_id}
+
+
+# ─── ROLE MANAGEMENT ───
 
 @router.patch("/users/{user_id}/role")
 def change_user_role(
@@ -107,13 +219,56 @@ def change_user_role(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
-    """Admin can promote/demote any user's role."""
+    """Admin can promote/demote any non-admin user's role."""
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    role_map = {"student": UserRole.STUDENT, "teacher": UserRole.TEACHER, "admin": UserRole.ADMIN}
+    if user.role == UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="Cannot change the role of another admin")
+    role_map = {"student": UserRole.STUDENT, "teacher": UserRole.TEACHER}
     if role not in role_map:
-        raise HTTPException(status_code=400, detail="Invalid role. Use: student, teacher, or admin")
+        raise HTTPException(status_code=400, detail="Invalid role. Use: student or teacher")
     user.role = role_map[role]
     db.commit()
     return {"message": f"User role updated to {role}", "user_id": user_id}
+
+
+# ─── COURSES OVERVIEW ───
+
+@router.get("/courses")
+def list_all_courses(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Admin overview of all courses across all teachers, with module list."""
+    courses = (
+        db.query(Course)
+        .options(joinedload(Course.chapters), joinedload(Course.teacher))
+        .order_by(Course.created_at.desc())
+        .all()
+    )
+    return [
+        {
+            "id": c.id,
+            "title": c.title,
+            "description": c.description,
+            "is_published": c.is_published,
+            "is_approved": c.is_approved,
+            "teacher": {
+                "id": c.teacher.id if c.teacher else None,
+                "name": c.teacher.name if c.teacher else "Unknown",
+                "email": c.teacher.email if c.teacher else None,
+            },
+            "modules": [
+                {
+                    "id": ch.id,
+                    "title": ch.title,
+                    "order_index": ch.order_index,
+                    "has_transcript": ch.has_transcript,
+                }
+                for ch in c.chapters
+            ],
+            "created_at": c.created_at.isoformat(),
+        }
+        for c in courses
+    ]

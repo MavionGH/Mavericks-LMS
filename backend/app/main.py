@@ -26,6 +26,23 @@ async def lifespan(app: FastAPI):
         )
 
     Base.metadata.create_all(bind=engine)
+
+    # Add new columns to existing tables without a full migration.
+    # PostgreSQL `ADD COLUMN IF NOT EXISTS` is idempotent and safe to run every start.
+    _new_cols = [
+        "ALTER TABLE courses ADD COLUMN IF NOT EXISTS teacher_id VARCHAR REFERENCES users(id) ON DELETE SET NULL",
+        "ALTER TABLE courses ADD COLUMN IF NOT EXISTS is_approved BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_approved BOOLEAN NOT NULL DEFAULT TRUE",
+    ]
+    try:
+        with engine.connect() as conn:
+            for stmt in _new_cols:
+                conn.execute(text(stmt))
+            conn.commit()
+        logger.info("Schema columns ensured.")
+    except Exception as exc:
+        logger.warning("Column migration warning: %s", exc)
+
     yield
 
 

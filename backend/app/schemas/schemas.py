@@ -22,6 +22,7 @@ class UserResponse(BaseModel):
     name: str
     email: str
     role: str
+    is_approved: bool = True
     avatar: Optional[str] = None
     created_at: datetime
 
@@ -82,7 +83,9 @@ class CourseResponse(BaseModel):
     description: str
     thumbnail: Optional[str] = None
     pass_threshold: int
+    teacher_id: Optional[str] = None
     is_published: bool
+    is_approved: bool = False
     created_at: datetime
     chapters: List[ChapterMinResponse] = []
 
