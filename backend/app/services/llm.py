@@ -1,6 +1,8 @@
 """LLM wrapper — Groq (primary), OpenAI (fallback), then rule-based scoring."""
 import json
+import math
 import os
+import random
 import re
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
@@ -398,50 +400,239 @@ def llm_generate_mock_transcript(title: str) -> str:
     )
 
 
-def llm_generate_quiz(chapter_title: str, context: str) -> list:
+# ─── QUIZ GENERATION (dynamic, grounded in module video transcript + articles) ───
+
+QUIZ_QUESTION_COUNT = 10
+_QUIZ_BATCH_CHARS = 6000
+
+# Randomized prompt facets — varied per request so each quiz feels fresh.
+_QUIZ_FOCUS_AREAS = [
+    "definitions and terminology",
+    "core concepts and underlying principles",
+    "processes and step-by-step workflows",
+    "real-world examples and applications",
+    "practical understanding and problem-solving",
+    "comparisons, trade-offs and distinctions",
+    "common mistakes and misconceptions",
+    "cause-and-effect relationships",
+]
+_QUIZ_DIFFICULTIES = [
+    "a balanced mix of easy and medium difficulty",
+    "mostly medium difficulty with a couple of challenging questions",
+    "an even spread from easy to hard",
+    "medium-to-hard difficulty that tests deep understanding",
+]
+
+
+def _get_quiz_llm():
     """
-    Generate 5 MCQ questions from chapter content.
-    Returns list of {id, question, options:{A,B,C,D}, correct} — includes correct answers for server-side grading.
+    LLM tuned for diverse quiz generation: temperature 0.8-1.0 and top_p 0.9.
+    A fresh random temperature each call helps every quiz come out different.
     """
-    llm = get_llm()
-    if llm:
-        from langchain_core.messages import HumanMessage, SystemMessage
-        system = (
-            "You are an expert educator creating a multiple-choice quiz. "
-            "Generate exactly 5 MCQ questions based ONLY on the provided module content. "
-            "Each question must have 4 options (A, B, C, D) with exactly one correct answer. "
-            "Return ONLY valid JSON — a list of 5 objects, each with keys: "
-            "id (integer 1-5), question (string), options (object with keys A/B/C/D), correct (one of A/B/C/D). "
-            "No preamble, no markdown fences, just the JSON array."
-        )
-        user = (
-            f"Module: {chapter_title}\n\n"
-            f"Content:\n{context[:5000]}\n\n"
-            "Generate 5 MCQ questions."
-        )
-        resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+    temperature = round(random.uniform(0.8, 1.0), 2)
+    if GROQ_API_KEY:
         try:
-            data = _extract_json(resp.content)
-            if isinstance(data, list) and len(data) >= 5:
-                return data[:5]
-            if isinstance(data, dict) and "questions" in data:
-                qs = data["questions"]
-                if isinstance(qs, list) and len(qs) >= 5:
-                    return qs[:5]
+            from langchain_groq import ChatGroq
+            return ChatGroq(
+                model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+                temperature=temperature,
+                groq_api_key=GROQ_API_KEY,
+                model_kwargs={"top_p": 0.9},
+            )
         except Exception:
             pass
 
-    return _fallback_quiz_questions(chapter_title, context)
+    if OPENAI_API_KEY:
+        try:
+            from langchain_openai import ChatOpenAI
+            return ChatOpenAI(
+                model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+                temperature=temperature,
+                top_p=0.9,
+                api_key=OPENAI_API_KEY,
+            )
+        except Exception:
+            pass
+
+    return None
 
 
-def _fallback_quiz_questions(title: str, context: str) -> list:
-    headings = re.findall(r"^#{1,3}\s+(.+)$", context, re.MULTILINE)
-    keywords = re.findall(r"\*\*(.+?)\*\*", context)
-    topics = (headings + keywords)[:5]
-    while len(topics) < 5:
+def _extract_json_list(text: str) -> list:
+    """Parse a JSON array from an LLM response, tolerating fences/preamble."""
+    text = text.strip()
+    fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+    if fence:
+        text = fence.group(1).strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("[")
+        end = text.rfind("]")
+        if start >= 0 and end > start:
+            data = json.loads(text[start : end + 1])
+        else:
+            raise
+    if isinstance(data, dict) and "questions" in data:
+        data = data["questions"]
+    return data if isinstance(data, list) else []
+
+
+def _valid_mcq(q) -> bool:
+    if not isinstance(q, dict) or not str(q.get("question", "")).strip():
+        return False
+    opts = q.get("options")
+    if not isinstance(opts, dict):
+        return False
+    if not all(k in opts and str(opts[k]).strip() for k in ("A", "B", "C", "D")):
+        return False
+    return str(q.get("correct", "")).strip().upper() in ("A", "B", "C", "D")
+
+
+def _normalize_question(text: str) -> str:
+    return re.sub(r"[^a-z0-9 ]", "", text.lower()).strip()
+
+
+def _dedupe_questions(questions: list) -> list:
+    """Keep only valid, non-duplicate MCQs (deduped by normalized question text)."""
+    seen = set()
+    out = []
+    for q in questions:
+        if not _valid_mcq(q):
+            continue
+        q["correct"] = str(q["correct"]).strip().upper()
+        key = _normalize_question(str(q["question"]))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(q)
+    return out
+
+
+def _batch_content(text: str, max_chars: int = _QUIZ_BATCH_CHARS) -> list:
+    """
+    Split long content into sentence-aligned batches so the ENTIRE module is
+    used (never truncated) even when it exceeds the LLM context window.
+    """
+    text = text.strip()
+    if len(text) <= max_chars:
+        return [text]
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    batches, current = [], ""
+    for sentence in sentences:
+        candidate = (current + " " + sentence).strip() if current else sentence
+        if len(candidate) > max_chars and current:
+            batches.append(current)
+            current = sentence
+        else:
+            current = candidate
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _generate_quiz_batch(llm, title, content, count, focus_areas, difficulty, nonce) -> list:
+    """Generate candidate MCQs from a single content batch."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+    system = (
+        "You are an expert educator creating multiple-choice quiz questions.\n"
+        f"Generate exactly {count} MCQ questions based STRICTLY and ONLY on the provided module material.\n"
+        "RULES:\n"
+        "- Use ONLY the provided material. Do NOT invent facts or use any outside knowledge.\n"
+        "- Each question must have exactly 4 options (A, B, C, D) with exactly ONE correct answer.\n"
+        "- Make every question unique — never reword the same concept twice.\n"
+        "- Cover diverse parts of the material: definitions, concepts, processes, examples, "
+        "and practical understanding.\n"
+        "- Return ONLY valid JSON: a JSON array of objects, each with keys "
+        'id (integer), question (string), options (object with keys "A","B","C","D"), '
+        'correct (one of "A","B","C","D").\n'
+        "- No preamble, no explanations, no markdown fences — just the JSON array."
+    )
+    user = (
+        f"Module: {title}\n\n"
+        f"Module material:\n{content}\n\n"
+        f"Focus especially on: {', '.join(focus_areas)}.\n"
+        f"Use {difficulty}.\n"
+        f"Generate {count} fresh, diverse MCQs that cover different concepts. "
+        f"(Variation token {nonce}: use it only to vary your choices; never mention it.)\n"
+        "Return ONLY the JSON array."
+    )
+    try:
+        resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+        return [q for q in _extract_json_list(resp.content) if _valid_mcq(q)]
+    except Exception:
+        return []
+
+
+def llm_generate_quiz(
+    chapter_title: str,
+    video_transcript: str = None,
+    article_content: str = None,
+) -> list:
+    """
+    Dynamically generate exactly 10 MCQs grounded in the module's video transcript
+    and article content (NO vector search / Pinecone — raw content is used directly).
+
+    Long content is split into batches, each batch produces candidate questions,
+    then results are merged, de-duplicated, and the final 10 are selected. Prompt
+    facets and sampling are randomized so each generation is fresh (not cached,
+    not templated).
+
+    Returns list of {id, question, options:{A,B,C,D}, correct}.
+    """
+    parts = []
+    if video_transcript and video_transcript.strip():
+        parts.append("VIDEO TRANSCRIPT:\n" + video_transcript.strip())
+    if article_content and article_content.strip():
+        parts.append("ARTICLE CONTENT:\n" + article_content.strip())
+    combined = "\n\n".join(parts).strip()
+
+    llm = _get_quiz_llm()
+    if not combined or llm is None:
+        return _fallback_quiz_questions(chapter_title, combined)
+
+    batches = _batch_content(combined)
+    # Ask each batch for a few extra so we have spares for dedup/selection.
+    per_batch = max(4, math.ceil(QUIZ_QUESTION_COUNT / len(batches)) + 2)
+
+    candidates = []
+    for batch in batches:
+        focus = random.sample(_QUIZ_FOCUS_AREAS, k=min(3, len(_QUIZ_FOCUS_AREAS)))
+        difficulty = random.choice(_QUIZ_DIFFICULTIES)
+        nonce = random.randint(1000, 9999)
+        candidates.extend(
+            _generate_quiz_batch(llm, chapter_title, batch, per_batch, focus, difficulty, nonce)
+        )
+
+    unique = _dedupe_questions(candidates)
+    random.shuffle(unique)  # randomize which questions are selected each time
+    selected = unique[:QUIZ_QUESTION_COUNT]
+
+    # Guarantee exactly 10 — top up from the rule-based fallback if the LLM
+    # produced too few unique, valid questions.
+    if len(selected) < QUIZ_QUESTION_COUNT:
+        seen = {_normalize_question(str(q["question"])) for q in selected}
+        for q in _fallback_quiz_questions(chapter_title, combined):
+            if len(selected) >= QUIZ_QUESTION_COUNT:
+                break
+            key = _normalize_question(str(q["question"]))
+            if key not in seen:
+                seen.add(key)
+                selected.append(q)
+
+    selected = selected[:QUIZ_QUESTION_COUNT]
+    for i, q in enumerate(selected):
+        q["id"] = i + 1
+    return selected
+
+
+def _fallback_quiz_questions(title: str, context: str, count: int = QUIZ_QUESTION_COUNT) -> list:
+    headings = re.findall(r"^#{1,3}\s+(.+)$", context or "", re.MULTILINE)
+    keywords = re.findall(r"\*\*(.+?)\*\*", context or "")
+    topics = (headings + keywords)[:count]
+    while len(topics) < count:
         topics.append(f"{title} — concept {len(topics) + 1}")
     questions = []
-    for i, topic in enumerate(topics[:5]):
+    for i, topic in enumerate(topics[:count]):
         questions.append({
             "id": i + 1,
             "question": f"Which best describes '{topic.strip()}' in the context of {title}?",

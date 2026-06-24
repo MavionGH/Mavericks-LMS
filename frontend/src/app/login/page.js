@@ -1,7 +1,7 @@
 "use client";
 import Navbar from "@/components/Navbar";
 import Link from "next/link";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 
@@ -16,6 +16,24 @@ export default function LoginPage() {
   const router = useRouter();
 
   // ─── Email / Password sign-in ─────────────────────────────────────────
+const { login, loginWithGoogle, user, loading: authLoading } = useAuth();
+const router = useRouter();
+
+// Redirect already-authenticated users to their panel
+useEffect(() => {
+  if (!authLoading && user) {
+    const panelMap = {
+      student: "/dashboard",
+      teacher: "/teacher",
+      admin: "/admin",
+    };
+
+    router.replace(panelMap[user.role] || "/dashboard");
+  }
+}, [user, authLoading, router]);
+
+// ─── Email / Password sign-in ─────────────────────────────────────────
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");

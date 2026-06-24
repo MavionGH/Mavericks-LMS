@@ -22,6 +22,7 @@ class UserResponse(BaseModel):
     name: str
     email: str
     role: str
+    is_approved: bool = True
     avatar: Optional[str] = None
     created_at: Optional[datetime] = None
 
@@ -82,7 +83,9 @@ class CourseResponse(BaseModel):
     description: str
     thumbnail: Optional[str] = None
     pass_threshold: int
+    teacher_id: Optional[str] = None
     is_published: bool
+    is_approved: bool = False
     created_at: datetime
     chapters: List[ChapterMinResponse] = []
 
@@ -175,6 +178,13 @@ class QuizStatusResponse(BaseModel):
     attempted: bool
     passed: bool
     score: Optional[int] = None
+
+
+class QuizWarningLog(BaseModel):
+    type: str       # "fullscreen" | "tab" | "clipboard"
+    code: str       # "fullscreen-exit" | "tab-switch" | "clipboard-action"
+    message: str
+    timestamp: str  # ISO-8601 string sent from the client
 
 
 # ─── INTERVIEW ───
