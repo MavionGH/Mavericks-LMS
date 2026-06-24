@@ -1,5 +1,6 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+import os
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, File, UploadFile
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
@@ -13,6 +14,7 @@ from app.schemas.schemas import (
 from app.auth.dependencies import get_current_user, require_teacher, require_admin
 from app.services.transcript import fetch_youtube_transcript
 from app.services.embeddings import embed_and_store_chapter
+from app.services.storage import upload_video_to_r2
 
 logger = logging.getLogger(__name__)
 
@@ -265,3 +267,35 @@ def delete_chapter(
     db.delete(chapter)
     db.commit()
     return {"message": "Chapter deleted"}
+
+
+# Limit file uploads: max 100MB
+MAX_FILE_SIZE = 100 * 1024 * 1024
+ALLOWED_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv"}
+
+@router.post("/upload-video")
+def upload_video(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_teacher),
+):
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type. Allowed formats: {', '.join(ALLOWED_EXTENSIONS)}"
+        )
+        
+    # Read size to validate
+    file.file.seek(0, 2)
+    file_size = file.file.tell()
+    file.file.seek(0)
+    
+    if file_size > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail="File is too large. Max size is 100MB."
+        )
+        
+    url = upload_video_to_r2(file)
+    return {"video_url": url}
+

@@ -5,7 +5,7 @@ import { useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
 
 function TeacherPanel() {
-  const { user, authFetch } = useAuth();
+  const { user, token, authFetch } = useAuth();
   const [activeTab, setActiveTab] = useState("overview");
   const [form, setForm] = useState({ title: "", description: "", pass_threshold: 70, thumbnail: "" });
   const [formStatus, setFormStatus] = useState("");
@@ -18,48 +18,79 @@ function TeacherPanel() {
     video_transcript: "",
   });
   const [chapterStatus, setChapterStatus] = useState("");
-  const [fetchTranscriptStatus, setFetchTranscriptStatus] = useState("");
-  const [fetchProgress, setFetchProgress] = useState(0);
+  
+  // Video upload state
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadedFileName, setUploadedFileName] = useState("");
+  const [uploadError, setUploadError] = useState("");
 
-  const handleFetchTranscript = async () => {
-    if (!chapterForm.youtube_url) {
-      setFetchTranscriptStatus("Please enter a YouTube video URL first.");
+  const handleVideoUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const allowedExtensions = ["mp4", "mov", "webm", "mkv"];
+    const fileExtension = file.name.split(".").pop().toLowerCase();
+    if (!allowedExtensions.includes(fileExtension)) {
+      setUploadError("Invalid file format. Allowed formats: mp4, mov, webm, mkv.");
       return;
     }
-    setFetchTranscriptStatus("fetching");
-    setFetchProgress(10);
-    
-    const interval = setInterval(() => {
-      setFetchProgress((prev) => {
-        if (prev >= 90) return prev;
-        return prev + Math.floor(Math.random() * 8) + 4;
-      });
-    }, 250);
 
-    try {
-      const url = `/api/courses/youtube-transcript/preview?youtube_url=${encodeURIComponent(chapterForm.youtube_url)}&title=${encodeURIComponent(chapterForm.title || "the module topic")}`;
-      const res = await authFetch(url);
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.detail || "Failed to fetch transcript.");
-      }
-      setChapterForm(prev => ({
-        ...prev,
-        video_transcript: data.transcript
-      }));
-      if (data.is_mock) {
-        setFetchTranscriptStatus("warning:YouTube rate-limited/blocked. Generated a high-quality mock transcript from LLM instead.");
-      } else {
-        setFetchTranscriptStatus("success");
-        setTimeout(() => setFetchTranscriptStatus(""), 4000);
-      }
-    } catch (err) {
-      setFetchTranscriptStatus("error:" + err.message);
-    } finally {
-      clearInterval(interval);
-      setFetchProgress(100);
-      setTimeout(() => setFetchProgress(0), 600);
+    if (file.size > 100 * 1024 * 1024) {
+      setUploadError("File is too large. Maximum size allowed is 100MB.");
+      return;
     }
+
+    setUploadError("");
+    setUploading(true);
+    setUploadProgress(0);
+    setUploadedFileName(file.name);
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "http://localhost:8000/api/courses/upload-video", true);
+    if (token) {
+      xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    }
+
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        const percentComplete = Math.round((event.loaded / event.total) * 100);
+        setUploadProgress(percentComplete);
+      }
+    };
+
+    xhr.onload = () => {
+      setUploading(false);
+      if (xhr.status === 200) {
+        try {
+          const res = JSON.parse(xhr.responseText);
+          setChapterForm((prev) => ({
+            ...prev,
+            youtube_url: res.video_url,
+          }));
+          setUploadProgress(100);
+        } catch (e) {
+          setUploadError("Failed to parse upload response.");
+        }
+      } else {
+        try {
+          const res = JSON.parse(xhr.responseText);
+          setUploadError(res.detail || "Upload failed.");
+        } catch (e) {
+          setUploadError(`Upload failed with status code ${xhr.status}`);
+        }
+      }
+    };
+
+    xhr.onerror = () => {
+      setUploading(false);
+      setUploadError("Network error during file upload.");
+    };
+
+    xhr.send(formData);
   };
 
   const loadCourses = async () => {
@@ -121,6 +152,8 @@ function TeacherPanel() {
       if (!res.ok) throw new Error((await res.json()).detail || "Failed");
       setChapterStatus("success");
       setChapterForm({ title: "", article_content: "", youtube_url: "", video_transcript: "" });
+      setUploadedFileName("");
+      setUploadProgress(0);
       loadCourses();
       setTimeout(() => setChapterStatus(""), 3000);
     } catch (err) {
@@ -337,38 +370,56 @@ function TeacherPanel() {
                     <input className="form-input" placeholder="e.g. Variables & Data Types" value={chapterForm.title} onChange={(e) => setChapterForm({ ...chapterForm, title: e.target.value })} required />
                   </div>
                   <div className="form-group">
-                    <label className="form-label">YouTube Video URL</label>
-                    <div style={{ display: "flex", gap: "8px" }}>
-                      <input className="form-input" style={{ flex: 1 }} placeholder="https://www.youtube.com/watch?v=..." value={chapterForm.youtube_url} onChange={(e) => setChapterForm({ ...chapterForm, youtube_url: e.target.value })} required />
-                      <button type="button" onClick={handleFetchTranscript} className="btn" style={{ padding: "0 16px", fontSize: "12px", whiteSpace: "nowrap", border: "1px solid var(--border-muted)" }} disabled={fetchTranscriptStatus === "fetching"}>
-                        {fetchTranscriptStatus === "fetching" ? "Fetching..." : "Fetch Transcript"}
-                      </button>
-                    </div>
-                    {fetchProgress > 0 && (
-                      <div style={{
-                        width: "100%",
-                        height: "4px",
-                        backgroundColor: "var(--border-muted)",
-                        borderRadius: "2px",
-                        overflow: "hidden",
-                        marginTop: "8px"
-                      }}>
+                    <label className="form-label">Video File (mp4, mov, webm, mkv)</label>
+                    <input
+                      type="file"
+                      accept=".mp4,.mov,.webm,.mkv"
+                      onChange={handleVideoUpload}
+                      disabled={uploading}
+                      className="form-input"
+                      style={{ padding: "8px" }}
+                      required={!chapterForm.youtube_url}
+                    />
+                    
+                    {uploading && (
+                      <div style={{ marginTop: "12px" }}>
+                        <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "4px" }}>
+                          Uploading video ({uploadProgress}%)
+                        </div>
                         <div style={{
-                          height: "100%",
-                          width: `${fetchProgress}%`,
-                          backgroundColor: "var(--brand, #0070f3)",
-                          transition: "width 0.2s ease",
-                        }} />
+                          width: "100%",
+                          height: "6px",
+                          backgroundColor: "var(--border-muted, #e5e7eb)",
+                          borderRadius: "3px",
+                          overflow: "hidden",
+                        }}>
+                          <div style={{
+                            height: "100%",
+                            width: `${uploadProgress}%`,
+                            backgroundColor: "var(--brand, #0070f3)",
+                            transition: "width 0.1s ease",
+                          }} />
+                        </div>
                       </div>
                     )}
-                    {fetchTranscriptStatus === "success" && (
-                      <p style={{ fontSize: "11px", color: "var(--color-success)", marginTop: "4px" }}>Transcript loaded successfully!</p>
+
+                    {uploadedFileName && !uploading && (
+                      <div style={{ marginTop: "12px", padding: "10px", backgroundColor: "#f9fafb", border: "1px solid var(--border-muted)", borderRadius: "var(--radius-sm)" }}>
+                        <div style={{ fontSize: "12px", fontWeight: "600", color: "var(--text-main)" }}>
+                          ✓ File: {uploadedFileName}
+                        </div>
+                        {chapterForm.youtube_url && (
+                          <div style={{ fontSize: "11px", color: "var(--color-success)", marginTop: "4px" }}>
+                            Successfully uploaded!
+                          </div>
+                        )}
+                      </div>
                     )}
-                    {fetchTranscriptStatus.startsWith("warning:") && (
-                      <p style={{ fontSize: "11px", color: "#d97706", marginTop: "4px", lineHeight: "1.4" }}>⚠️ {fetchTranscriptStatus.slice(8)}</p>
-                    )}
-                    {fetchTranscriptStatus.startsWith("error:") && (
-                      <p style={{ fontSize: "11px", color: "var(--color-danger)", marginTop: "4px" }}>{fetchTranscriptStatus.slice(6)}</p>
+
+                    {uploadError && (
+                      <p style={{ fontSize: "12px", color: "var(--color-danger)", marginTop: "8px" }}>
+                        ❌ {uploadError}
+                      </p>
                     )}
                   </div>
                   <div className="form-group">
@@ -376,14 +427,13 @@ function TeacherPanel() {
                     <textarea className="form-input form-textarea" placeholder="## Topic&#10;Explain key concepts..." value={chapterForm.article_content} onChange={(e) => setChapterForm({ ...chapterForm, article_content: e.target.value })} required rows={8} />
                   </div>
                   <div className="form-group">
-                    <label className="form-label">Video Transcript (optional — auto-fetched from YouTube if left empty)</label>
-                    <textarea className="form-input form-textarea" placeholder="Leave empty to auto-fetch from YouTube captions, or paste manually..." value={chapterForm.video_transcript} onChange={(e) => setChapterForm({ ...chapterForm, video_transcript: e.target.value })} rows={4} />
+                    <label className="form-label">Video Transcript (optional)</label>
+                    <textarea className="form-input form-textarea" placeholder="Paste manual transcript or notes if available..." value={chapterForm.video_transcript} onChange={(e) => setChapterForm({ ...chapterForm, video_transcript: e.target.value })} rows={4} />
                     <p style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>
-                      If left empty, the system will attempt to fetch captions from YouTube automatically.
-                      If no captions are available, the field will remain empty (article content will still be used for AI context).
+                      This transcript text will be used by the AI to formulate questions and assess student comprehension.
                     </p>
                   </div>
-                  <button type="submit" className="btn btn-primary" disabled={!selectedCourseId || chapterStatus === "saving"}>
+                  <button type="submit" className="btn btn-primary" disabled={!selectedCourseId || chapterStatus === "saving" || uploading || !chapterForm.youtube_url}>
                     {chapterStatus === "saving" ? "Adding…" : "Add Module"}
                   </button>
                 </form>
