@@ -1,7 +1,7 @@
 "use client";
 import Navbar from "@/components/Navbar";
 import { useState, useEffect } from "react";
-import { useAuth } from "@/context/AuthContext";
+import { API_BASE, useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
 
 function TeacherPanel() {
@@ -50,7 +50,7 @@ function TeacherPanel() {
     formData.append("file", file);
 
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", "http://localhost:8000/api/courses/upload-video", true);
+    xhr.open("POST", `${API_BASE}/api/courses/upload-video`, true);
     if (token) {
       xhr.setRequestHeader("Authorization", `Bearer ${token}`);
     }
