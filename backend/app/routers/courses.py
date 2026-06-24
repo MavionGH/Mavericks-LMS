@@ -1,5 +1,8 @@
 import logging
 import os
+import shutil
+import tempfile
+import uuid
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, File, UploadFile
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
@@ -16,6 +19,7 @@ from app.services.transcript import fetch_youtube_transcript
 from app.services.embeddings import embed_and_store_chapter
 from app.services.storage import upload_video_to_r2
 from app.services.pinecone_store import index_module_content
+from app.services.video_transcription import extract_audio, split_audio, transcribe_chunks
 from app.services.storage import upload_video_to_r2
 
 logger = logging.getLogger(__name__)
@@ -335,3 +339,104 @@ def upload_video(
 
     url = upload_video_to_r2(file)
     return {"video_url": url}
+
+
+# ─── VIDEO TRANSCRIPTION ───
+
+# Separate upload cap for transcription (larger since we discard the file after)
+MAX_TRANSCRIBE_MB = 500
+MAX_TRANSCRIBE_BYTES = MAX_TRANSCRIBE_MB * 1024 * 1024
+ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".webm"}
+
+
+@router.post("/transcribe-video")
+def transcribe_video(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_teacher),
+):
+    """
+    Extract audio from an uploaded video file and transcribe it using
+    Groq Whisper (whisper-large-v3-turbo).  Returns the full transcript text.
+
+    Processing pipeline:
+      1. Save video to a temporary job directory.
+      2. Extract mono 16 kHz 64 kbps MP3 via ffmpeg.
+      3. If audio > 25 MB, split into time-based chunks via ffmpeg/ffprobe.
+      4. Transcribe each chunk sequentially with the Groq Whisper API.
+      5. Merge and return results; always clean up temp files in finally.
+    """
+    # ── Validate extension ──────────────────────────────────────────────────
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in ALLOWED_VIDEO_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type '{ext}'. Allowed: {', '.join(ALLOWED_VIDEO_EXTENSIONS)}",
+        )
+
+    # ── Validate size ───────────────────────────────────────────────────────
+    file.file.seek(0, 2)
+    file_size = file.file.tell()
+    file.file.seek(0)
+    if file_size > MAX_TRANSCRIBE_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File is too large for transcription. Maximum allowed: {MAX_TRANSCRIBE_MB} MB.",
+        )
+
+    # ── Set up isolated temp directory for this job ─────────────────────────
+    job_id = str(uuid.uuid4())
+    job_dir = os.path.join(tempfile.gettempdir(), f"vidscribe_{job_id}")
+    os.makedirs(job_dir, exist_ok=True)
+
+    video_path = os.path.join(job_dir, f"input{ext}")
+    audio_path = os.path.join(job_dir, "audio.mp3")
+    chunks_dir = os.path.join(job_dir, "chunks")
+
+    try:
+        # ── 1. Save video to disk ───────────────────────────────────────────
+        logger.info("[%s] Saving uploaded video (%s MB)", job_id, round(file_size / 1024 / 1024, 1))
+        with open(video_path, "wb") as fout:
+            shutil.copyfileobj(file.file, fout)
+
+        # ── 2. Extract audio ────────────────────────────────────────────────
+        logger.info("[%s] Extracting audio", job_id)
+        try:
+            extract_audio(video_path, audio_path)
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Audio extraction failed. Ensure ffmpeg is installed and on PATH. Details: {exc}",
+            )
+
+        # ── 3. Split if necessary ───────────────────────────────────────────
+        logger.info("[%s] Splitting audio if needed", job_id)
+        try:
+            chunk_paths = split_audio(audio_path, chunks_dir)
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Audio splitting failed. Details: {exc}",
+            )
+
+        # ── 4. Transcribe ───────────────────────────────────────────────────
+        logger.info("[%s] Transcribing %d chunk(s) with Groq Whisper", job_id, len(chunk_paths))
+        try:
+            transcript = transcribe_chunks(chunk_paths)
+        except EnvironmentError as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Transcription failed. Details: {exc}",
+            )
+
+        logger.info("[%s] Transcription complete: %d chars", job_id, len(transcript))
+        return {"transcript": transcript}
+
+    finally:
+        # ── 5. Always clean up temp files ───────────────────────────────────
+        try:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            logger.info("[%s] Temp directory cleaned up", job_id)
+        except Exception as cleanup_exc:
+            logger.warning("[%s] Cleanup failed: %s", job_id, cleanup_exc)
