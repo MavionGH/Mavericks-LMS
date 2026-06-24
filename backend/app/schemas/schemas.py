@@ -24,7 +24,7 @@ class UserResponse(BaseModel):
     role: str
     is_approved: bool = True
     avatar: Optional[str] = None
-    created_at: Optional[datetime] = None
+    created_at: datetime
 
     class Config:
         from_attributes = True
