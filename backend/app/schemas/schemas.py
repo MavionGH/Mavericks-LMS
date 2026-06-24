@@ -180,6 +180,13 @@ class QuizStatusResponse(BaseModel):
     score: Optional[int] = None
 
 
+class QuizWarningLog(BaseModel):
+    type: str       # "fullscreen" | "tab" | "clipboard"
+    code: str       # "fullscreen-exit" | "tab-switch" | "clipboard-action"
+    message: str
+    timestamp: str  # ISO-8601 string sent from the client
+
+
 # ─── INTERVIEW ───
 class InterviewStartRequest(BaseModel):
     chapter_id: str

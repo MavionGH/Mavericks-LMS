@@ -14,6 +14,7 @@ from app.schemas.schemas import (
 from app.auth.dependencies import get_current_user, require_teacher, require_admin
 from app.services.transcript import fetch_youtube_transcript
 from app.services.embeddings import embed_and_store_chapter
+from app.services.storage import upload_video_to_r2
 from app.services.pinecone_store import index_module_content
 from app.services.storage import upload_video_to_r2
 

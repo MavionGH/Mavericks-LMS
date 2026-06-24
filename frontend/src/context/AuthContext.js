@@ -3,7 +3,7 @@ import { createContext, useContext, useState, useEffect, useCallback } from "rea
 import { flushSync } from "react-dom";
 import { useRouter } from "next/navigation";
 
-const API_BASE = "http://localhost:8000";
+export const API_BASE = "http://localhost:8000";
 
 const AuthContext = createContext(null);
 

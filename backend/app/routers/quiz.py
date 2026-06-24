@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -6,11 +7,12 @@ from app.models.models import Chapter, QuizAttempt, QuizQuestion, User
 from app.schemas.schemas import (
     QuizQuestionsResponse, QuizQuestionItem,
     QuizSubmitRequest, QuizResultResponse, QuizResultItem,
-    QuizStatusResponse,
+    QuizStatusResponse, QuizWarningLog,
 )
 from app.auth.dependencies import get_current_user
 from app.services.llm import llm_generate_quiz
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/quiz", tags=["Quiz"])
 
 
@@ -124,3 +126,24 @@ def submit_quiz(
         attempt_id=attempt.id,
         results=result_items,
     )
+
+
+@router.post("/log-warning", status_code=200)
+async def log_quiz_warning(
+    log: QuizWarningLog,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Receive an anti-cheating violation event from the quiz frontend.
+    Logs the incident server-side for instructor review.
+    In a production system this should be persisted to a QuizViolation table.
+    """
+    logger.warning(
+        "[QUIZ INTEGRITY] user=%s  type=%s  code=%s  ts=%s  msg=%s",
+        current_user.id,
+        log.type,
+        log.code,
+        log.timestamp,
+        log.message,
+    )
+    return {"status": "logged", "user_id": current_user.id}

@@ -1,7 +1,7 @@
 "use client";
 import Navbar from "@/components/Navbar";
 import { useState, useEffect } from "react";
-import { useAuth } from "@/context/AuthContext";
+import { API_BASE, useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
 
 function TeacherPanel() {
