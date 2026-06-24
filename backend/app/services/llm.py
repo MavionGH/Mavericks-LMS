@@ -77,36 +77,59 @@ def llm_generate_question(
     history = "\n".join(
         f"{m['speaker'].upper()}: {m['text']}" for m in transcript[-6:]
     )
+
+    # Detect if the last student answer was a non-answer / skip
+    last_student = next(
+        (m["text"] for m in reversed(transcript) if m["speaker"] == "student"),
+        "",
+    )
+    _NO_ANSWER_PHRASES = (
+        "i don't know", "i dont know", "not sure", "no idea",
+        "no experience", "skip", "pass", "move on", "don't know",
+        "i have no experience", "i'm not sure",
+    )
+    last_was_skip = any(p in last_student.lower() for p in _NO_ANSWER_PHRASES)
+    skip_hint = (
+        "\nIMPORTANT: The student just said they don't know or skipped. "
+        "Ask a DIFFERENT topic from the module — do NOT follow up on the topic they skipped."
+        if last_was_skip else ""
+    )
+
     if llm:
         from langchain_core.messages import HumanMessage, SystemMessage
         system = (
             "You are an expert technical interviewer for an online learning platform. "
-            "Ask ONE clear oral interview question based ONLY on the module content provided. "
-            "Questions should test deep understanding, not memorization. "
-            "Use follow-up style when prior answers exist. "
-            "Return ONLY the question text, no preamble."
+            "Ask ONE clear, concise oral interview question based ONLY on the module content provided.\n"
+            "RULES:\n"
+            "- Keep the question UNDER 25 WORDS whenever possible.\n"
+            "- Ask only ONE thing per question. Never ask multi-part questions.\n"
+            "- Be conversational and natural — like a real interviewer speaking.\n"
+            "- Test deep understanding, not memorization.\n"
+            "- Use follow-up style when prior genuine answers exist.\n"
+            "- Return ONLY the question text, no preamble, no labels.\n"
+            "GOOD examples: 'Tell me about a data pipeline you built.' | "
+            "'What is the difference between ETL and ELT?' | "
+            "'How do you handle schema evolution in production?' | "
+            "'Explain a challenge you faced with Airflow.'\n"
+            "BAD: 'Can you walk me through a complex end-to-end enterprise-scale distributed "
+            "data processing architecture involving multiple ingestion patterns...'"
         )
         user = (
             f"Module: {chapter_title}\n\n"
             f"Content:\n{context[:6000]}\n\n"
             f"Conversation so far:\n{history or 'None yet'}\n\n"
             f"This is question #{question_number} of up to 5. "
-            "Ask the next interview question."
+            f"Ask the next interview question (under 25 words).{skip_hint}"
         )
         resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
         return resp.content.strip()
 
     fallback_questions = _fallback_questions(chapter_title, context)
     idx = min(question_number - 1, len(fallback_questions) - 1)
-    if transcript and question_number > 1:
-        last_student = next(
-            (m["text"] for m in reversed(transcript) if m["speaker"] == "student"),
-            "",
-        )
+    if transcript and question_number > 1 and not last_was_skip:
         return (
-            f"Good. Can you elaborate further on your previous point about "
-            f"'{last_student[:80]}...'? Specifically, how would you apply that concept "
-            f"from {chapter_title} in a real-world scenario?"
+            f"Can you give a real-world example from {chapter_title} "
+            f"based on your last answer?"
         )
     return fallback_questions[idx]
 
@@ -127,6 +150,18 @@ def llm_classify_response(
     """
     text = student_text.strip()
 
+    # ── Fast path: explicit skip / I-don't-know → treat as an answer to advance ──
+    _SKIP_PHRASES_SET = (
+        "i don't know", "i dont know", "i do not know",
+        "not sure", "no idea", "no experience",
+        "i have no experience", "skip", "pass", "move on",
+        "move to next", "next question", "i'm not sure",
+        "i am not sure", "don't know", "dont know",
+    )
+    text_lower = text.lower()
+    if any(phrase in text_lower for phrase in _SKIP_PHRASES_SET):
+        return "answer"
+
     # ── LLM path ──
     llm = get_llm()
     if llm:
@@ -139,6 +174,7 @@ def llm_classify_response(
             "  personal      — personal enquiries like 'how are you?'\n"
             "  clarification — asking for clarification/explanation of the question\n"
             "  offtopic      — unrelated question or casual conversation\n"
+            "IMPORTANT: 'I don't know', 'skip', 'pass', 'move on', 'not sure' = answer (attempt).\n"
             "Reply with ONLY the single category word, nothing else."
         )
         user = (
@@ -252,6 +288,20 @@ def llm_score_interview(
     pause_metrics: list,
     pass_threshold: int,
 ) -> dict:
+    student_msgs = [m for m in transcript if m["speaker"] == "student"]
+    num_answers = len(student_msgs)
+    if num_answers == 0:
+        return {
+            "technical_score": 0.0,
+            "communication_score": 0.0,
+            "confidence_score": 0.0,
+            "overall_score": 0.0,
+            "passed": False,
+            "strengths": ["None (interview ended before starting)"],
+            "weak_areas": ["Interview was terminated early without any answers."],
+            "suggested_review": [f"Please complete the oral assessment for {chapter_title}."],
+        }
+
     llm = get_llm()
     dialogue = "\n".join(
         f"{m['speaker'].upper()}: {m['text']}" for m in transcript
@@ -282,7 +332,10 @@ def llm_score_interview(
             "communication_score = clarity, structure, and coherence of speech "
             "(penalise heavily for excessive filler words); "
             "confidence_score = penalise for filler words (um, uh, mhm, hmm, like, you know) "
-            "and long hesitation pauses — these directly signal uncertainty and poor preparation."
+            "and long hesitation pauses — these directly signal uncertainty and poor preparation.\n"
+            f"IMPORTANT: The student has only answered {num_answers} out of 5 questions. "
+            "Unanswered questions must receive 0 marks. Pro-rate the technical, communication, "
+            "and confidence scores down to reflect the fraction of questions answered."
         )
         user = (
             f"Module: {chapter_title}\n\n"
@@ -297,6 +350,13 @@ def llm_score_interview(
         )
         resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
         result = _extract_json(resp.content)
+        
+        # Enforce proportional limit programmatically based on completion ratio
+        completion_ratio = num_answers / 5.0
+        result["technical_score"] = min(result.get("technical_score", 0.0), 100.0) * completion_ratio
+        result["communication_score"] = min(result.get("communication_score", 0.0), 100.0) * completion_ratio
+        result["confidence_score"] = min(result.get("confidence_score", 0.0), 100.0) * completion_ratio
+
         result["overall_score"] = round(
             result.get("technical_score", 0) * 0.5
             + result.get("communication_score", 0) * 0.3
@@ -419,10 +479,21 @@ def _fallback_questions(title: str, context: str) -> list:
 
 def _fallback_score(transcript: list, pause_metrics: list, threshold: int, title: str) -> dict:
     student_msgs = [m["text"] for m in transcript if m["speaker"] == "student"]
-    total_words = sum(len(m.split()) for m in student_msgs)
-    avg_len = total_words / max(len(student_msgs), 1)
+    num_answers = len(student_msgs)
+    if num_answers == 0:
+        return {
+            "technical_score": 0.0,
+            "communication_score": 0.0,
+            "confidence_score": 0.0,
+            "overall_score": 0.0,
+            "passed": False,
+            "strengths": ["None (interview ended before starting)"],
+            "weak_areas": ["Interview was terminated early without any answers."],
+            "suggested_review": [f"Please complete the oral assessment for {title}."],
+        }
 
-    technical = min(100, 40 + avg_len * 2 + len(student_msgs) * 8)
+    total_words = sum(len(m.split()) for m in student_msgs)
+    avg_len = total_words / max(num_answers, 1)
 
     avg_pauses = 0
     total_filler = 0
@@ -432,9 +503,16 @@ def _fallback_score(transcript: list, pause_metrics: list, threshold: int, title
         total_filler = sum(p.get("filler_word_count", 0) for p in pause_metrics)
         avg_filler = total_filler / len(pause_metrics)
 
-    # Filler words reduce communication score; pauses reduce confidence score
-    communication = min(100, max(20, 35 + avg_len * 1.5 + len(student_msgs) * 10 - avg_filler * 5))
-    confidence = max(20, min(100, 85 - avg_pauses * 8 - avg_filler * 4))
+    # Pro-rate scores based on completion fraction (each answer adds up to 1/5th of the score)
+    completion_ratio = num_answers / 5.0
+
+    raw_technical = min(100.0, 40.0 + avg_len * 2.0 + num_answers * 8.0)
+    raw_communication = min(100.0, max(20.0, 35.0 + avg_len * 1.5 + num_answers * 10.0 - avg_filler * 5.0))
+    raw_confidence = max(20.0, min(100.0, 100.0 - avg_pauses * 8.0 - avg_filler * 4.0))
+
+    technical = raw_technical * completion_ratio
+    communication = raw_communication * completion_ratio
+    confidence = raw_confidence * completion_ratio
 
     overall = round(technical * 0.5 + communication * 0.3 + confidence * 0.2, 1)
     passed = overall >= threshold
@@ -452,7 +530,7 @@ def _fallback_score(transcript: list, pause_metrics: list, threshold: int, title
         weak_areas.append(f"High use of filler words ({int(total_filler)} total: um, uh, mhm, like, you know) — practice speaking more deliberately.")
     elif avg_filler == 0:
         strengths.append("Spoke clearly without excessive filler words.")
-    if len(student_msgs) >= 3:
+    if num_answers >= 3:
         strengths.append("Engaged well across multiple interview questions.")
 
     return {

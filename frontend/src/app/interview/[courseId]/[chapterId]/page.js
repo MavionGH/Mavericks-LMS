@@ -51,13 +51,17 @@ function InterviewPage() {
   const submittingRef = useRef(false);
   const finalTextRef = useRef("");
   const fillerCountRef = useRef(0);
+  const startListeningRef = useRef(null);  // ref to break circular dep
 
   const studentInitials = user?.name
     ? user.name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2)
     : "ST";
 
-  const speakText = useCallback((text) => {
-    if (typeof window === "undefined" || !window.speechSynthesis) return;
+  const speakText = useCallback((text, onEnd) => {
+    if (typeof window === "undefined" || !window.speechSynthesis) {
+      if (onEnd) onEnd();
+      return;
+    }
     window.speechSynthesis.cancel();
     const utter = new SpeechSynthesisUtterance(text);
     utter.rate = 0.95;
@@ -69,6 +73,7 @@ function InterviewPage() {
       (v) => v.lang === "en-US" && (v.name.includes("Natural") || v.name.includes("Google") || v.name.includes("Samantha"))
     );
     if (preferred) utter.voice = preferred;
+    if (onEnd) utter.onend = () => onEnd();
     window.speechSynthesis.speak(utter);
   }, []);
 
@@ -129,8 +134,8 @@ function InterviewPage() {
         setStatus("COMPLETE");
         speakText(
           data.passed
-            ? "Congratulations! You passed the assessment. Take care, bye!"
-            : "You did not pass. Please review the module and try again. Take care, bye!"
+            ? "Congratulations! You passed the assessment. Thank you for completing the interview. Take care and goodbye!"
+            : "You did not pass. Please review the module and try again. Thank you for participating. Take care and goodbye!"
         );
       } else {
         setCurrentAIText(data.text);
@@ -139,10 +144,17 @@ function InterviewPage() {
           setQuestionNum(data.question_number);
         }
         setTranscript((prev) => [...prev, { speaker: "ai", text: data.text }]);
-        setWaitingForStudent(true);
-        setStatus("WAITING FOR YOU");
-        speakText(data.text);
-        questionStartRef.current = Date.now();
+        setStatus("AI SPEAKING");
+        setWaitingForStudent(false);
+        // Auto-open mic after Mav finishes speaking
+        speakText(data.text, () => {
+          setTimeout(() => {
+            setWaitingForStudent(true);
+            setStatus("WAITING FOR YOU");
+            questionStartRef.current = Date.now();
+            if (startListeningRef.current) startListeningRef.current();
+          }, 400);
+        });
       }
     } catch (err) {
       setError(err.message);
@@ -176,14 +188,22 @@ function InterviewPage() {
       const data = await res.json();
       setSessionId(data.session_id);
       setChapterTitle(data.chapter_title || "");
-      setCurrentAIText(data.text);
       setQuestionNum(data.question_number);
-      // Show full greeting+question text in transcript
-      setTranscript([{ speaker: "ai", text: data.text }]);
-      setWaitingForStudent(true);
-      setStatus("WAITING FOR YOU");
-      speakText(data.text);
-      questionStartRef.current = Date.now();
+
+      const msg = data.text;
+      setTranscript([{ speaker: "ai", text: msg }]);
+      setCurrentAIText(msg);
+      setStatus("AI SPEAKING");
+      setWaitingForStudent(false);
+
+      speakText(msg, () => {
+        setTimeout(() => {
+          setWaitingForStudent(true);
+          setStatus("WAITING FOR YOU");
+          questionStartRef.current = Date.now();
+          if (startListeningRef.current) startListeningRef.current();
+        }, 400);
+      });
     } catch (err) {
       setError(err.message);
     } finally {
@@ -200,6 +220,9 @@ function InterviewPage() {
       if (autoSubmitTimerRef.current) clearTimeout(autoSubmitTimerRef.current);
     };
   }, [startSession]);
+
+  // Keep startListeningRef up-to-date to avoid stale closures
+  // (startListening is defined below, so we update the ref after it stabilises)
 
   const startListening = useCallback(() => {
     const SpeechRecognition =
@@ -288,6 +311,11 @@ function InterviewPage() {
     setMicActive(true);
     setStatus("LISTENING");
   }, [submitAnswer, waitingForStudent]);
+
+  // Always keep the ref current so speakText onEnd callbacks don't go stale
+  useEffect(() => {
+    startListeningRef.current = startListening;
+  }, [startListening]);
 
   const stopListeningAndSubmit = useCallback(() => {
     if (autoSubmitTimerRef.current) clearTimeout(autoSubmitTimerRef.current);
@@ -448,7 +476,7 @@ function InterviewPage() {
     );
   }
 
-  const isAISpeaking = status === "AI PROCESSING" || (!waitingForStudent && !micActive && !isFinished);
+  const isAISpeaking = status === "AI PROCESSING" || status === "AI SPEAKING" || (!waitingForStudent && !micActive && !isFinished);
   const captionText = micActive ? liveTranscript : currentAIText;
   const captionSpeaker = micActive ? "You (Speaking)" : "AI Assessor";
 
@@ -462,7 +490,7 @@ function InterviewPage() {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
               <span className="badge badge-accent" style={{ backgroundColor: "rgba(255,255,255,0.1)", borderColor: "rgba(255,255,255,0.2)", color: "#8ab4f8", marginBottom: "6px" }}>
-                LIVE AI INTERVIEW — Q{questionNum}/5
+                LIVE AI INTERVIEW — {questionNum === 0 ? "GREETING" : `Q${questionNum}/5`}
               </span>
               <h1 style={{ fontSize: "20px", fontWeight: "600", color: "#ffffff", margin: 0 }}>
                 Module Oral Assessment
@@ -575,10 +603,12 @@ function InterviewPage() {
             <div className="meet-bar-info">
               {micActive ? (
                 <span style={{ color: "#81c995", fontWeight: "600" }}>
-                  🎙 Listening… click 🎤 to submit or wait 3s for auto-submit
+                  🎙 Listening… speak your answer. Click 🎤 to stop or wait 3s for auto-submit
                 </span>
+              ) : status === "AI SPEAKING" ? (
+                <span style={{ color: "#8ab4f8" }}>🔊 Mav is speaking… mic opens automatically when done</span>
               ) : waitingForStudent ? (
-                <span style={{ color: "#81c995", fontWeight: "600" }}>➔ Click 🎤 to start speaking</span>
+                <span style={{ color: "#81c995", fontWeight: "600" }}>🎤 Mic is open — speak your answer or click 🎤 to submit manually</span>
               ) : (
                 <span style={{ color: "#9aa0a6" }}>AI is processing your response…</span>
               )}

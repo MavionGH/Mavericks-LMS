@@ -147,23 +147,12 @@ def start_interview_session(
             detail="Pass the chapter quiz before starting the interview",
         )
 
-    existing = db.query(InterviewSession).filter(
+    db.query(InterviewSession).filter(
         InterviewSession.user_id == current_user.id,
         InterviewSession.chapter_id == data.chapter_id,
         InterviewSession.status == "active",
-    ).first()
-    if existing and existing.graph_state:
-        gs = existing.graph_state
-        last_msg = gs.get("transcript", [])[-1] if gs.get("transcript") else None
-        return InterviewTurnResponse(
-            session_id=existing.id,
-            speaker="ai",
-            text=last_msg["text"] if last_msg else gs.get("next_question", ""),
-            is_complete=gs.get("is_complete", False),
-            waiting_for_student=not gs.get("is_complete", False),
-            question_number=gs.get("question_count", 1),
-            total_questions=MAX_QUESTIONS,
-        )
+    ).update({"status": "abandoned"})
+    db.commit()
 
     # Cache the values we need BEFORE build_chapter_context runs.
     # build_chapter_context may trigger a vector-search SQL error that causes a
@@ -202,6 +191,8 @@ def start_interview_session(
         waiting_for_student=True,
         question_number=graph_state.get("question_count", 1),
         total_questions=MAX_QUESTIONS,
+        greeting=graph_state.get("greeting"),
+        greeting_completed=False,
     )
 
 
