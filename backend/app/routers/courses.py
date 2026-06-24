@@ -15,6 +15,7 @@ from app.auth.dependencies import get_current_user, require_teacher, require_adm
 from app.services.transcript import fetch_youtube_transcript
 from app.services.embeddings import embed_and_store_chapter
 from app.services.storage import upload_video_to_r2
+from app.services.pinecone_store import index_module_content
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +214,11 @@ def add_chapter(
         embed_and_store_chapter,
         chapter.id, course_id, data.article_content, video_transcript,
     )
+    # Chunk + embed + upsert module content into Pinecone (course-namespaced RAG store)
+    background_tasks.add_task(
+        index_module_content,
+        course_id, chapter.id, data.article_content, video_transcript,
+    )
 
     return ChapterResponse.model_validate(chapter)
 
@@ -250,6 +256,11 @@ def update_chapter(
     background_tasks.add_task(
         embed_and_store_chapter,
         chapter_id, course_id, data.article_content, video_transcript,
+    )
+    # Re-index module content into Pinecone (re-upserts only this module's vectors)
+    background_tasks.add_task(
+        index_module_content,
+        course_id, chapter_id, data.article_content, video_transcript,
     )
 
     return ChapterResponse.model_validate(chapter)
