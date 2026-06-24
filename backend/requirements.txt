@@ -1,18 +1,30 @@
+# ─── FastAPI & Server ─────────────────────────────────────────
 fastapi==0.115.0
 uvicorn[standard]==0.30.0
+python-multipart==0.0.9
+
+# ─── Database & ORM ───────────────────────────────────────────
 sqlalchemy==2.0.35
 psycopg[binary]
+alembic==1.13.0
+pgvector>=0.3.0
+
+# ─── Pydantic & Validation ────────────────────────────────────
 pydantic>=2.10.0
 pydantic[email]
+
+# ─── Security & Auth ──────────────────────────────────────────
 python-jose[cryptography]==3.3.0
 bcrypt==4.2.1
-python-multipart==0.0.9
-alembic==1.13.0
 python-dotenv==1.0.1
+httpx>=0.27.0
+
+# ─── LLM, LangChain & LangGraph ───────────────────────────────
 langchain==0.3.14
 langchain-openai==0.3.0
 langchain-groq==0.2.4
 langgraph==0.2.60
+
+# ─── Additional Services ──────────────────────────────────────
 youtube-transcript-api>=0.6.3
 sentence-transformers>=3.0.0
-pgvector>=0.3.0
