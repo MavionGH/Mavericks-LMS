@@ -60,7 +60,6 @@ function RulesModal({ onAccept }) {
         <div className="overlay-rules">
           <ul>
             <li>The quiz runs in <strong>fullscreen mode</strong>. Exiting fullscreen will result in <strong>0 marks</strong> for the current question and an automatic advance to the next question.</li>
-            <li><strong>Tab switching or navigating away</strong> will trigger a warning and pause your quiz timer.</li>
             <li><strong>Copy, paste, cut</strong> operations and <strong>right-click</strong> are disabled throughout the quiz.</li>
             <li>Common <strong>keyboard shortcuts</strong> (Ctrl+C/V/X/A, F12, DevTools) are blocked.</li>
             <li>All violations are <strong>logged and timestamped</strong> for instructor review.</li>
