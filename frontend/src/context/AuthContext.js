@@ -2,7 +2,7 @@
 import { createContext, useContext, useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 
-const API_BASE = "http://localhost:8000";
+export const API_BASE = "http://localhost:8000";
 
 const AuthContext = createContext(null);
 
