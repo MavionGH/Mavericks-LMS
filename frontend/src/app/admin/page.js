@@ -1,26 +1,39 @@
 "use client";
 import Navbar from "@/components/Navbar";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
-
-// Static fallback data shown until the API populates
-const COURSES_ADMIN = [
-  { id: "1", title: "JavaScript Fundamentals", chapters: 8,  students: 342, passRate: 78, published: true  },
-  { id: "2", title: "React & Next.js Mastery",  chapters: 12, students: 256, passRate: 82, published: true  },
-  { id: "3", title: "Python for Data Science",  chapters: 10, students: 189, passRate: 71, published: true  },
-  { id: "4", title: "System Design (Draft)",     chapters: 3,  students: 0,   passRate: 0,  published: false },
-];
 
 function AdminPanel() {
   const { user, authFetch } = useAuth();
   const [activeTab, setActiveTab] = useState("dashboard");
-  const [analytics, setAnalytics]     = useState(null);
-  const [students, setStudents]       = useState([]);
-  const [teachers, setTeachers]       = useState([]);
+  const [analytics, setAnalytics]       = useState(null);
+  const [students, setStudents]         = useState([]);
+  const [teachers, setTeachers]         = useState([]);
+  const [courses, setCourses]           = useState([]);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [courseActionMsg, setCourseActionMsg]   = useState("");
 
-  // Load analytics when on dashboard tab
+  const loadCourses = useCallback(() => {
+    authFetch("/api/admin/courses")
+      .then((r) => r.json())
+      .then((d) => { if (Array.isArray(d)) setCourses(d); })
+      .catch(() => {});
+  }, [authFetch]);
+
+  const handleApproveTeacher = async (teacherId, approve) => {
+    setCourseActionMsg("");
+    const res = await authFetch(`/api/admin/teachers/${teacherId}/approve?approved=${approve}`, { method: "PUT" });
+    if (res.ok) {
+      setCourseActionMsg(approve ? "Teacher approved — they can now publish courses." : "Teacher account rejected.");
+      authFetch("/api/admin/teachers")
+        .then((r) => r.json())
+        .then((d) => { if (Array.isArray(d)) setTeachers(d); })
+        .catch(() => {});
+      setTimeout(() => setCourseActionMsg(""), 4000);
+    }
+  };
+
   useEffect(() => {
     if (activeTab === "dashboard") {
       setAnalyticsLoading(true);
@@ -42,7 +55,10 @@ function AdminPanel() {
         .then((d) => { if (Array.isArray(d)) setTeachers(d); })
         .catch(() => {});
     }
-  }, [activeTab, authFetch]);
+    if (activeTab === "courses") {
+      loadCourses();
+    }
+  }, [activeTab, authFetch, loadCourses]);
 
   const STATS = analytics
     ? [
@@ -161,22 +177,22 @@ function AdminPanel() {
               <table>
                 <thead>
                   <tr>
-                    <th>Course</th><th>Chapters</th><th>Students</th><th>Pass Rate</th><th>Status</th><th>Actions</th>
+                    <th>Course</th><th>Teacher</th><th>Modules</th><th>Status</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {COURSES_ADMIN.map((c) => (
+                  {courses.length === 0 ? (
+                    <tr><td colSpan={4} style={{ textAlign: "center", color: "var(--text-muted)", padding: "32px" }}>No courses yet.</td></tr>
+                  ) : courses.map((c) => (
                     <tr key={c.id}>
                       <td style={{ fontWeight: "600", color: "var(--text-title)" }}>{c.title}</td>
-                      <td className="mono">{c.chapters}</td>
-                      <td className="mono">{c.students}</td>
-                      <td className="mono">{c.passRate}%</td>
+                      <td style={{ color: "var(--text-muted)", fontSize: "12px" }}>{c.teacher?.name || "—"}</td>
+                      <td className="mono">{c.modules?.length ?? 0}</td>
                       <td>
-                        <span className={`badge ${c.published ? "badge-success" : "badge-warning"}`}>
-                          {c.published ? "PUBLISHED" : "DRAFT"}
+                        <span className={`badge ${c.is_published ? "badge-success" : "badge-warning"}`}>
+                          {c.is_published ? "Published" : "Draft"}
                         </span>
                       </td>
-                      <td><button className="btn btn-secondary btn-sm">Configure</button></td>
                     </tr>
                   ))}
                 </tbody>
@@ -213,28 +229,46 @@ function AdminPanel() {
 
           {/* ── Teachers ── */}
           {activeTab === "teachers" && (
-            <div className="table-container">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Name</th><th>Email</th><th>Joined</th><th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {teachers.length === 0 ? (
-                    <tr><td colSpan={4} style={{ textAlign: "center", color: "var(--text-muted)", padding: "32px" }}>No teachers registered yet.</td></tr>
-                  ) : teachers.map((t) => (
-                    <tr key={t.id}>
-                      <td style={{ fontWeight: "600", color: "var(--text-title)" }}>{t.name}</td>
-                      <td style={{ color: "var(--text-muted)" }}>{t.email}</td>
-                      <td style={{ color: "var(--text-subtle)", fontSize: "12px" }}>{new Date(t.joined).toLocaleDateString()}</td>
-                      <td>
-                        <button className="btn btn-secondary btn-sm">Edit Role</button>
-                      </td>
+            <div>
+              {courseActionMsg && (
+                <div style={{ marginBottom: "16px", padding: "12px 16px", borderRadius: "var(--radius-sm)", background: "var(--bg-success)", color: "var(--color-success)", fontSize: "13px", fontWeight: "600", border: "1px solid rgba(16,185,129,0.2)" }}>
+                  {courseActionMsg}
+                </div>
+              )}
+              <div className="table-container">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Name</th><th>Email</th><th>Courses</th><th>Status</th><th>Joined</th><th>Actions</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {teachers.length === 0 ? (
+                      <tr><td colSpan={6} style={{ textAlign: "center", color: "var(--text-muted)", padding: "32px" }}>No teachers registered yet.</td></tr>
+                    ) : teachers.map((t) => (
+                      <tr key={t.id}>
+                        <td style={{ fontWeight: "600", color: "var(--text-title)" }}>{t.name}</td>
+                        <td style={{ color: "var(--text-muted)" }}>{t.email}</td>
+                        <td className="mono">{t.course_count ?? 0}</td>
+                        <td>
+                          <span className={`badge ${t.is_approved ? "badge-success" : "badge-warning"}`}>
+                            {t.is_approved ? "Approved" : "Pending"}
+                          </span>
+                        </td>
+                        <td style={{ color: "var(--text-subtle)", fontSize: "12px" }}>{new Date(t.joined).toLocaleDateString()}</td>
+                        <td style={{ display: "flex", gap: "6px" }}>
+                          {!t.is_approved && (
+                            <button className="btn btn-primary btn-sm" onClick={() => handleApproveTeacher(t.id, true)}>Approve</button>
+                          )}
+                          {t.is_approved && (
+                            <button className="btn btn-secondary btn-sm" onClick={() => handleApproveTeacher(t.id, false)}>Revoke</button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 

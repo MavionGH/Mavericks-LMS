@@ -34,9 +34,16 @@ def create_token(user_id: str, role: str) -> str:
 @router.post("/register", response_model=TokenResponse, status_code=201)
 def register(data: UserCreate, db: Session = Depends(get_db)):
     """
-    Register a new user. The `role` field accepts: student | teacher | admin.
-    Defaults to student if not provided.
+    Register a new user. The `role` field accepts: student | teacher.
+    Admin accounts can only be created via the backend seed script.
     """
+    requested_role = (data.role or "student").lower()
+    if requested_role == "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Admin accounts cannot be created via registration. Contact a system administrator.",
+        )
+
     existing = db.query(User).filter(User.email == data.email).first()
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -44,15 +51,19 @@ def register(data: UserCreate, db: Session = Depends(get_db)):
     role_map = {
         "student": UserRole.STUDENT,
         "teacher": UserRole.TEACHER,
-        "admin": UserRole.ADMIN,
     }
-    role = role_map.get(data.role.lower() if data.role else "student", UserRole.STUDENT)
+    role = role_map.get(requested_role, UserRole.STUDENT)
+
+    # Teachers start unapproved — an admin must activate their account before
+    # they can access the teacher panel or publish courses.
+    is_approved = role != UserRole.TEACHER
 
     user = User(
         name=data.name,
         email=data.email,
         password=hash_password(data.password),
         role=role,
+        is_approved=is_approved,
     )
     db.add(user)
     db.commit()

@@ -1,7 +1,7 @@
 "use client";
 import Navbar from "@/components/Navbar";
 import Link from "next/link";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 
@@ -28,17 +28,6 @@ const ROLES = [
       </svg>
     )
   },
-  {
-    value: "admin",
-    label: "Admin",
-    desc: "Full platform administration",
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-      </svg>
-    )
-  },
 ];
 
 export default function RegisterPage() {
@@ -48,9 +37,18 @@ export default function RegisterPage() {
   const [role, setRole]         = useState("student");
   const [error, setError]       = useState("");
   const [loading, setLoading]   = useState(false);
+  const [pendingApproval, setPendingApproval] = useState(false);
 
-  const { register } = useAuth();
+  const { register, user, loading: authLoading } = useAuth();
   const router = useRouter();
+
+  // Redirect already-authenticated users to their panel
+  useEffect(() => {
+    if (!authLoading && user) {
+      const panelMap = { student: "/dashboard", teacher: "/teacher", admin: "/admin" };
+      router.replace(panelMap[user.role] || "/dashboard");
+    }
+  }, [user, authLoading, router]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -61,15 +59,41 @@ export default function RegisterPage() {
     }
     setLoading(true);
     try {
-      const user = await register(name, email, password, role);
+      const registeredUser = await register(name, email, password, role);
+      if (registeredUser.role === "teacher" && !registeredUser.is_approved) {
+        setPendingApproval(true);
+        return;
+      }
       const panelMap = { student: "/dashboard", teacher: "/teacher", admin: "/admin" };
-      router.push(panelMap[user.role] || "/dashboard");
+      router.push(panelMap[registeredUser.role] || "/dashboard");
     } catch (err) {
       setError(err.message);
     } finally {
       setLoading(false);
     }
   };
+
+  if (pendingApproval) {
+    return (
+      <>
+        <Navbar />
+        <div className="page-container" style={{ display: "grid", placeItems: "center", minHeight: "100vh", padding: "24px", backgroundColor: "var(--bg-canvas)" }}>
+          <div className="card" style={{ width: "100%", maxWidth: 460, padding: "40px", backgroundColor: "#ffffff", textAlign: "center" }}>
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--color-warning)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: "20px" }}>
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+            <h2 style={{ fontSize: "20px", fontWeight: "700", color: "var(--text-title)", marginBottom: "12px" }}>Account Pending Approval</h2>
+            <p style={{ color: "var(--text-muted)", fontSize: "13.5px", lineHeight: "1.6" }}>
+              Your teacher account has been created. An admin must approve it before you can access the Teacher Studio and publish courses.
+            </p>
+            <p style={{ color: "var(--text-subtle)", fontSize: "12px", marginTop: "16px" }}>You will be able to log in once your account is approved.</p>
+          </div>
+        </div>
+      </>
+    );
+  }
 
   return (
     <>

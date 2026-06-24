@@ -5,7 +5,9 @@ import { API_BASE, useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
 
 function TeacherPanel() {
-  const { user, token, authFetch } = useAuth();
+  const { user, token, authFetch, refreshUser } = useAuth();
+  const [checkingApproval, setCheckingApproval] = useState(false);
+  const [approvalMsg, setApprovalMsg] = useState("");
   const [activeTab, setActiveTab] = useState("overview");
   const [form, setForm] = useState({ title: "", description: "", pass_threshold: 70, thumbnail: "" });
   const [formStatus, setFormStatus] = useState("");
@@ -50,7 +52,7 @@ function TeacherPanel() {
     formData.append("file", file);
 
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${API_BASE}/api/courses/upload-video`, true);
+    xhr.open("POST", "http://localhost:8000/api/courses/upload-video", true);
     if (token) {
       xhr.setRequestHeader("Authorization", `Bearer ${token}`);
     }
@@ -172,6 +174,50 @@ function TeacherPanel() {
     { key: "modules",   label: "Add Modules"  },
     { key: "create",    label: "Add Course"   },
   ];
+
+  const handleCheckApproval = async () => {
+    setCheckingApproval(true);
+    setApprovalMsg("");
+    const fresh = await refreshUser();
+    setCheckingApproval(false);
+    if (fresh && fresh.is_approved) {
+      // React will re-render with updated user — pending screen disappears automatically
+    } else {
+      setApprovalMsg("Still pending. Check back after the admin has approved your account.");
+    }
+  };
+
+  if (user && !user.is_approved) {
+    return (
+      <>
+        <Navbar />
+        <div className="page-container" style={{ display: "grid", placeItems: "center", minHeight: "100vh", backgroundColor: "var(--bg-canvas)" }}>
+          <div className="card" style={{ maxWidth: 480, padding: "40px", textAlign: "center", backgroundColor: "#ffffff" }}>
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--color-warning)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: "20px" }}>
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+            <h2 style={{ fontSize: "20px", fontWeight: "700", color: "var(--text-title)", marginBottom: "12px" }}>Awaiting Admin Approval</h2>
+            <p style={{ color: "var(--text-muted)", fontSize: "13.5px", lineHeight: "1.6" }}>
+              Your teacher account is pending approval. Once an admin approves your account, you will have full access to the Teacher Studio.
+            </p>
+            {approvalMsg && (
+              <p style={{ color: "var(--color-warning)", fontSize: "12px", marginTop: "12px" }}>{approvalMsg}</p>
+            )}
+            <button
+              className="btn btn-primary"
+              style={{ marginTop: "24px", width: "100%" }}
+              onClick={handleCheckApproval}
+              disabled={checkingApproval}
+            >
+              {checkingApproval ? "Checking…" : "Check Approval Status"}
+            </button>
+          </div>
+        </div>
+      </>
+    );
+  }
 
   return (
     <>

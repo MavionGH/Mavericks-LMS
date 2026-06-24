@@ -45,16 +45,26 @@ def get_current_user(
 
 
 def require_student(current_user: User = Depends(get_current_user)) -> User:
-    """Allow students, teachers, and admins (any authenticated user)."""
+    """Only students. Teachers and admins cannot enroll in or take courses."""
+    if current_user.role != UserRole.STUDENT:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only students can access this resource",
+        )
     return current_user
 
 
 def require_teacher(current_user: User = Depends(get_current_user)) -> User:
-    """Only teachers and admins."""
+    """Only teachers (approved) and admins."""
     if current_user.role not in (UserRole.TEACHER, UserRole.ADMIN):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Teacher or Admin access required",
+        )
+    if current_user.role == UserRole.TEACHER and not current_user.is_approved:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your teacher account is pending admin approval",
         )
     return current_user
 
