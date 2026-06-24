@@ -18,7 +18,6 @@ export function useQuizGuard({
   enabled,
   onFullscreenExit,
   onFullscreenEnter,
-  onTabSwitch,
   onToastWarning,
 }) {
   useEffect(() => {
@@ -47,15 +46,6 @@ export function useQuizGuard({
         );
       } else {
         onFullscreenEnter();
-      }
-    };
-
-    // ── Tab / window switch ───────────────────────────────────────────────
-    const handleVisibilityChange = () => {
-      if (document.hidden) {
-        onTabSwitch(
-          "Switching tabs or windows is not allowed during the quiz. This incident has been recorded."
-        );
       }
     };
 
@@ -113,7 +103,6 @@ export function useQuizGuard({
 
     // ── Bind all listeners ────────────────────────────────────────────────
     document.addEventListener("fullscreenchange", handleFullscreenChange);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
     document.addEventListener("copy", handleCopy);
     document.addEventListener("paste", handlePaste);
     document.addEventListener("cut", handleCut);
@@ -123,7 +112,6 @@ export function useQuizGuard({
 
     return () => {
       document.removeEventListener("fullscreenchange", handleFullscreenChange);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
       document.removeEventListener("copy", handleCopy);
       document.removeEventListener("paste", handlePaste);
       document.removeEventListener("cut", handleCut);
@@ -131,5 +119,5 @@ export function useQuizGuard({
       document.removeEventListener("keydown", handleKeyDown);
       document.removeEventListener("selectstart", handleSelectStart);
     };
-  }, [enabled, onFullscreenExit, onFullscreenEnter, onTabSwitch, onToastWarning]);
+  }, [enabled, onFullscreenExit, onFullscreenEnter, onToastWarning]);
 }

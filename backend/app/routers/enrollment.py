@@ -19,6 +19,8 @@ def enroll_in_course(
     course = db.query(Course).filter(Course.id == data.course_id).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
+    if not (course.is_published and course.is_approved):
+        raise HTTPException(status_code=403, detail="Course is not available for enrollment")
 
     existing = db.query(Enrollment).filter(
         Enrollment.user_id == current_user.id,

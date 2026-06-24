@@ -1,5 +1,6 @@
 "use client";
 import { createContext, useContext, useState, useEffect, useCallback } from "react";
+import { flushSync } from "react-dom";
 import { useRouter } from "next/navigation";
 
 export const API_BASE = "http://localhost:8000";
@@ -27,8 +28,12 @@ export function AuthProvider({ children }) {
   const saveSession = (accessToken, userData) => {
     localStorage.setItem("jwt_token", accessToken);
     localStorage.setItem("user_data", JSON.stringify(userData));
-    setToken(accessToken);
-    setUser(userData);
+    // flushSync ensures React commits these updates synchronously so the
+    // target page sees the correct user state immediately after router.push()
+    flushSync(() => {
+      setToken(accessToken);
+      setUser(userData);
+    });
   };
 
   const clearSession = () => {
@@ -74,6 +79,23 @@ export function AuthProvider({ children }) {
     router.push("/login");
   };
 
+  const refreshUser = useCallback(async () => {
+    const savedToken = localStorage.getItem("jwt_token");
+    if (!savedToken) return null;
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/me`, {
+        headers: { Authorization: `Bearer ${savedToken}` },
+      });
+      if (!res.ok) return null;
+      const freshUser = await res.json();
+      localStorage.setItem("user_data", JSON.stringify(freshUser));
+      setUser(freshUser);
+      return freshUser;
+    } catch {
+      return null;
+    }
+  }, []);
+
   // ─── Authenticated fetch wrapper ───
   const authFetch = useCallback(
     async (url, options = {}) => {
@@ -88,7 +110,7 @@ export function AuthProvider({ children }) {
   );
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, register, logout, authFetch }}>
+    <AuthContext.Provider value={{ user, token, loading, login, register, logout, authFetch, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );

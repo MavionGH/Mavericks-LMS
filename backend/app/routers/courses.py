@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 
 from app.database import get_db
-from app.models.models import Course, Chapter, User
+from app.models.models import Course, Chapter, User, UserRole
 from app.schemas.schemas import (
     CourseCreate, CourseResponse, CourseListResponse,
     ChapterCreate, ChapterResponse, ChapterMinResponse
@@ -20,22 +20,38 @@ from app.services.embeddings import embed_and_store_chapter
 from app.services.storage import upload_video_to_r2
 from app.services.pinecone_store import index_module_content
 from app.services.video_transcription import extract_audio, split_audio, transcribe_chunks
+from app.services.storage import upload_video_to_r2
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/courses", tags=["Courses"])
 
 
+def _assert_course_owner(course: Course, current_user: User) -> None:
+    """Raise 403 if the user is not the course owner (admins bypass this check)."""
+    if current_user.role == UserRole.ADMIN:
+        return
+    if course.teacher_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You do not own this course")
+
+
+# ─── TEACHER / ADMIN MANAGEMENT VIEWS ───
+
 @router.get("/manage/all", response_model=List[CourseResponse])
-def list_all_courses_teacher(
+def list_managed_courses(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_teacher),
 ):
-    """Teacher/admin — lists all courses including drafts."""
-    courses = db.query(Course).options(
-        joinedload(Course.chapters)
-    ).order_by(Course.created_at.desc()).all()
+    """
+    Teachers see only their own courses (all statuses).
+    Admins see every course.
+    """
+    q = db.query(Course).options(joinedload(Course.chapters))
+    if current_user.role != UserRole.ADMIN:
+        q = q.filter(Course.teacher_id == current_user.id)
+    courses = q.order_by(Course.created_at.desc()).all()
     return [CourseResponse.model_validate(c) for c in courses]
+
 
 
 @router.get("/youtube-transcript/preview")
@@ -55,7 +71,6 @@ def preview_youtube_transcript(
     if transcript:
         return {"transcript": transcript, "is_mock": False}
 
-    # Fallback: generate a mock transcript via LLM
     try:
         from app.services.llm import llm_generate_mock_transcript
         mock = llm_generate_mock_transcript(title or "this topic")
@@ -67,16 +82,18 @@ def preview_youtube_transcript(
         )
 
 
+# ─── PUBLIC LISTING ───
+
 @router.get("/", response_model=List[CourseListResponse])
 def list_courses(db: Session = Depends(get_db)):
-    """Public endpoint — lists all published courses."""
+    """Public — lists all courses published by an approved teacher."""
     query_results = db.query(
         Course,
         func.count(Chapter.id).label("chapter_count")
     ).outerjoin(
         Chapter, Course.id == Chapter.course_id
     ).filter(
-        Course.is_published == True
+        Course.is_published == True,
     ).group_by(
         Course.id
     ).all()
@@ -96,7 +113,7 @@ def list_courses(db: Session = Depends(get_db)):
 
 @router.get("/{course_id}", response_model=CourseResponse)
 def get_course(course_id: str, db: Session = Depends(get_db)):
-    """Public endpoint — returns course details."""
+    """Public — returns course details."""
     course = db.query(Course).options(
         joinedload(Course.chapters)
     ).filter(Course.id == course_id).first()
@@ -104,6 +121,8 @@ def get_course(course_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Course not found")
     return CourseResponse.model_validate(course)
 
+
+# ─── COURSE CRUD (teacher owns) ───
 
 @router.post("/", response_model=CourseResponse)
 def create_course(
@@ -116,6 +135,7 @@ def create_course(
         description=data.description,
         thumbnail=data.thumbnail,
         pass_threshold=data.pass_threshold,
+        teacher_id=current_user.id,
     )
     db.add(course)
     db.commit()
@@ -133,6 +153,8 @@ def update_course(
     course = db.query(Course).filter(Course.id == course_id).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
+    _assert_course_owner(course, current_user)
+
     course.title = data.title
     course.description = data.description
     course.thumbnail = data.thumbnail
@@ -162,12 +184,21 @@ def publish_course(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_teacher),
 ):
+    """
+    Teacher submits (or retracts) a course for admin review.
+    Submitting resets any previous approval so admin must re-approve.
+    """
     course = db.query(Course).filter(Course.id == course_id).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
+    _assert_course_owner(course, current_user)
+
     course.is_published = not course.is_published
     db.commit()
-    return {"message": f"Course {'published' if course.is_published else 'unpublished'}"}
+    if course.is_published:
+        return {"message": "Course published — students can now see it", "status": "published"}
+    return {"message": "Course retracted to draft", "status": "draft"}
+
 
 
 # ─── CHAPTER ROUTES ───
@@ -192,8 +223,8 @@ def add_chapter(
     course = db.query(Course).filter(Course.id == course_id).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
+    _assert_course_owner(course, current_user)
 
-    # Attempt inline transcript fetch so the response already contains it
     video_transcript = data.video_transcript
     if not video_transcript and data.youtube_url:
         try:
@@ -213,12 +244,10 @@ def add_chapter(
     db.commit()
     db.refresh(chapter)
 
-    # Embed in background (non-blocking — sentence-transformers can take a few seconds)
     background_tasks.add_task(
         embed_and_store_chapter,
         chapter.id, course_id, data.article_content, video_transcript,
     )
-    # Chunk + embed + upsert module content into Pinecone (course-namespaced RAG store)
     background_tasks.add_task(
         index_module_content,
         course_id, chapter.id, data.article_content, video_transcript,
@@ -238,8 +267,8 @@ def update_chapter(
     chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
+    _assert_course_owner(chapter.course, current_user)
 
-    # Re-fetch transcript if URL provided but no transcript given
     video_transcript = data.video_transcript
     if not video_transcript and data.youtube_url:
         try:
@@ -256,12 +285,10 @@ def update_chapter(
     db.refresh(chapter)
     course_id = chapter.course_id
 
-    # Re-embed updated content in background
     background_tasks.add_task(
         embed_and_store_chapter,
         chapter_id, course_id, data.article_content, video_transcript,
     )
-    # Re-index module content into Pinecone (re-upserts only this module's vectors)
     background_tasks.add_task(
         index_module_content,
         course_id, chapter_id, data.article_content, video_transcript,
@@ -279,14 +306,17 @@ def delete_chapter(
     chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
+    _assert_course_owner(chapter.course, current_user)
     db.delete(chapter)
     db.commit()
     return {"message": "Chapter deleted"}
 
 
-# Limit file uploads: max 100MB
+# ─── VIDEO UPLOAD ───
+
 MAX_FILE_SIZE = 100 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv"}
+
 
 @router.post("/upload-video")
 def upload_video(
@@ -299,18 +329,14 @@ def upload_video(
             status_code=400,
             detail=f"Invalid file type. Allowed formats: {', '.join(ALLOWED_EXTENSIONS)}"
         )
-        
-    # Read size to validate
+
     file.file.seek(0, 2)
     file_size = file.file.tell()
     file.file.seek(0)
-    
+
     if file_size > MAX_FILE_SIZE:
-        raise HTTPException(
-            status_code=400,
-            detail="File is too large. Max size is 100MB."
-        )
-        
+        raise HTTPException(status_code=400, detail="File is too large. Max size is 100MB.")
+
     url = upload_video_to_r2(file)
     return {"video_url": url}
 
