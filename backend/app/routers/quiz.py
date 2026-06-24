@@ -9,7 +9,6 @@ from app.schemas.schemas import (
     QuizStatusResponse,
 )
 from app.auth.dependencies import get_current_user
-from app.services.chapter_context import build_chapter_context
 from app.services.llm import llm_generate_quiz
 
 router = APIRouter(prefix="/api/quiz", tags=["Quiz"])
@@ -38,19 +37,26 @@ def get_quiz(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Return 5 MCQ questions for the chapter (correct answers NOT included)."""
+    """Return 10 freshly-generated MCQ questions for the chapter (correct answers NOT included)."""
     chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
 
+    # Always regenerate — questions are NOT cached, so each request is different.
+    # Built directly from the module's video transcript + article (no vector search).
+    raw_qs = llm_generate_quiz(
+        chapter.title, chapter.video_transcript, chapter.article_content
+    )
+
+    # Persist the current set so /submit can grade this attempt server-side.
     cached = db.query(QuizQuestion).filter(QuizQuestion.chapter_id == chapter_id).first()
-    if not cached:
-        context = build_chapter_context(chapter, db=db)
-        raw_qs = llm_generate_quiz(chapter.title, context)
+    if cached:
+        cached.questions = raw_qs
+    else:
         cached = QuizQuestion(chapter_id=chapter_id, questions=raw_qs)
         db.add(cached)
-        db.commit()
-        db.refresh(cached)
+    db.commit()
+    db.refresh(cached)
 
     items = [
         QuizQuestionItem(id=q["id"], question=q["question"], options=q["options"])
