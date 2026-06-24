@@ -1,10 +1,39 @@
 "use client";
 import Navbar from "@/components/Navbar";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { API_BASE, useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
 
+
+/** Animated three-dot spinner for processing stages. */
+function StageSpinner() {
+  return (
+    <span style={{ display: "inline-flex", gap: "3px", verticalAlign: "middle", marginRight: "6px" }}>
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          style={{
+            width: "5px",
+            height: "5px",
+            borderRadius: "50%",
+            background: "currentColor",
+            display: "inline-block",
+            animation: `stageSpinnerBounce 1.2s ${i * 0.2}s ease-in-out infinite`,
+          }}
+        />
+      ))}
+      <style>{`
+        @keyframes stageSpinnerBounce {
+          0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+          40% { transform: scale(1); opacity: 1; }
+        }
+      `}</style>
+    </span>
+  );
+}
+
 function TeacherPanel() {
+
   const { user, token, authFetch } = useAuth();
   const [activeTab, setActiveTab] = useState("overview");
   const [form, setForm] = useState({ title: "", description: "", pass_threshold: 70, thumbnail: "" });
@@ -25,10 +54,24 @@ function TeacherPanel() {
   const [uploadedFileName, setUploadedFileName] = useState("");
   const [uploadError, setUploadError] = useState("");
 
+  // Transcript generation state
+  const [transcribing, setTranscribing] = useState(false);
+  const [transcribeStage, setTranscribeStage] = useState(""); // "uploading" | "extracting" | "transcribing" | "done"
+  const [transcribeProgress, setTranscribeProgress] = useState(0);
+  const [transcribeError, setTranscribeError] = useState("");
+  const videoFileRef = useRef(null); // holds the raw File object for transcription
+
   const handleVideoUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
+    // Store for later transcription
+    videoFileRef.current = file;
+    // Reset transcription state when a new file is picked
+    setTranscribeStage("");
+    setTranscribeError("");
+    setTranscribeProgress(0);
+    setTranscribing(false);
     const allowedExtensions = ["mp4", "mov", "webm", "mkv"];
     const fileExtension = file.name.split(".").pop().toLowerCase();
     if (!allowedExtensions.includes(fileExtension)) {
@@ -88,6 +131,66 @@ function TeacherPanel() {
     xhr.onerror = () => {
       setUploading(false);
       setUploadError("Network error during file upload.");
+    };
+
+    xhr.send(formData);
+  };
+
+  const handleGenerateTranscript = () => {
+    const file = videoFileRef.current;
+    if (!file) return;
+
+    setTranscribing(true);
+    setTranscribeStage("uploading");
+    setTranscribeProgress(0);
+    setTranscribeError("");
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API_BASE}/api/courses/transcribe-video`, true);
+    if (token) {
+      xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    }
+
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        const pct = Math.round((event.loaded / event.total) * 100);
+        setTranscribeProgress(pct);
+        if (pct === 100) {
+          setTranscribeStage("extracting");
+          // Advance to "transcribing" stage after a short delay — the backend
+          // is now running FFmpeg; state closures would be stale so we use a
+          // timer rather than onreadystatechange.
+          setTimeout(() => setTranscribeStage((s) => s === "extracting" ? "transcribing" : s), 2500);
+        }
+      }
+    };
+
+    xhr.onload = () => {
+      if (xhr.status === 200) {
+        try {
+          const res = JSON.parse(xhr.responseText);
+          setChapterForm((prev) => ({ ...prev, video_transcript: res.transcript }));
+          setTranscribeStage("done");
+        } catch {
+          setTranscribeError("Failed to parse transcription response.");
+        }
+      } else {
+        try {
+          const res = JSON.parse(xhr.responseText);
+          setTranscribeError(res.detail || "Transcription failed.");
+        } catch {
+          setTranscribeError(`Transcription failed (HTTP ${xhr.status}).`);
+        }
+      }
+      setTranscribing(false);
+    };
+
+    xhr.onerror = () => {
+      setTranscribing(false);
+      setTranscribeError("Network error during transcription upload.");
     };
 
     xhr.send(formData);
@@ -420,6 +523,81 @@ function TeacherPanel() {
                       <p style={{ fontSize: "12px", color: "var(--color-danger)", marginTop: "8px" }}>
                         ❌ {uploadError}
                       </p>
+                    )}
+
+                    {/* ── Auto-Transcript Generation ─────────────────────── */}
+                    {videoFileRef.current && !uploading && (
+                      <div style={{ marginTop: "16px", padding: "14px 16px", borderRadius: "10px", border: "1px solid rgba(99,102,241,0.25)", background: "linear-gradient(135deg, rgba(99,102,241,0.04) 0%, rgba(139,92,246,0.04) 100%)" }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
+                          <div style={{ fontSize: "12px", color: "var(--text-main)", fontWeight: "500" }}>
+                            <span style={{ marginRight: "6px" }}>✨</span>
+                            Auto-generate transcript from this video
+                          </div>
+                          {!transcribing && transcribeStage !== "done" && (
+                            <button
+                              type="button"
+                              onClick={handleGenerateTranscript}
+                              disabled={transcribing}
+                              style={{
+                                padding: "6px 16px",
+                                fontSize: "12px",
+                                fontWeight: "600",
+                                borderRadius: "20px",
+                                border: "none",
+                                cursor: "pointer",
+                                background: "linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)",
+                                color: "#fff",
+                                letterSpacing: "0.02em",
+                                boxShadow: "0 2px 8px rgba(99,102,241,0.35)",
+                                transition: "opacity 0.2s",
+                              }}
+                            >
+                              Generate Transcript
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Stage indicator */}
+                        {transcribing && (
+                          <div style={{ marginTop: "12px" }}>
+                            {/* Upload progress bar */}
+                            {transcribeStage === "uploading" && (
+                              <>
+                                <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "6px" }}>
+                                  ⬆️ Uploading video… {transcribeProgress}%
+                                </div>
+                                <div style={{ width: "100%", height: "5px", backgroundColor: "#e5e7eb", borderRadius: "3px", overflow: "hidden" }}>
+                                  <div style={{ height: "100%", width: `${transcribeProgress}%`, background: "linear-gradient(90deg, #6366f1, #8b5cf6)", transition: "width 0.15s ease", borderRadius: "3px" }} />
+                                </div>
+                              </>
+                            )}
+                            {transcribeStage === "extracting" && (
+                              <div style={{ fontSize: "11px", color: "#6366f1", fontWeight: "500" }}>
+                                <StageSpinner /> Extracting audio with FFmpeg…
+                              </div>
+                            )}
+                            {transcribeStage === "transcribing" && (
+                              <div style={{ fontSize: "11px", color: "#8b5cf6", fontWeight: "500" }}>
+                                <StageSpinner /> Transcribing with Whisper AI…
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Done */}
+                        {transcribeStage === "done" && !transcribing && (
+                          <div style={{ marginTop: "10px", fontSize: "11px", color: "var(--color-success)", fontWeight: "600" }}>
+                            ✓ Transcript generated and filled below — review and edit if needed.
+                          </div>
+                        )}
+
+                        {/* Error */}
+                        {transcribeError && (
+                          <div style={{ marginTop: "10px", fontSize: "11px", color: "var(--color-danger)", fontWeight: "500" }}>
+                            ❌ {transcribeError}
+                          </div>
+                        )}
+                      </div>
                     )}
                   </div>
                   <div className="form-group">
