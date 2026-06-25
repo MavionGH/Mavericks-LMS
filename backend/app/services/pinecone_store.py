@@ -217,3 +217,45 @@ def index_module_content(
     except Exception as exc:
         print(f"[EMBED] ✗ FAILED for module {module_id}: {exc}\n", flush=True)
         logger.error("index_module_content failed for module %s: %s", module_id, exc)
+
+
+def query_course_content(course_id: str, query: str, top_k: int = 12) -> List[str]:
+    """
+    Semantic search across EVERY module of a course.
+
+    All of a course's module vectors live in one namespace (`course_{courseId}`),
+    so a single query retrieves the most relevant chunks drawn from any module's
+    video transcript or article. Returns the chunk texts (most relevant first).
+
+    Returns an empty list (never raises) when Pinecone or the embedding model is
+    unavailable, so callers can fall back to raw content.
+    """
+    index = _get_index()
+    if index is None:
+        return []
+    try:
+        from app.services.embeddings import _get_model
+
+        model = _get_model()
+        if model is None:
+            return []
+
+        query_vec = model.encode([query])[0].tolist()
+        namespace = f"course_{course_id}"
+        res = index.query(
+            namespace=namespace,
+            vector=query_vec,
+            top_k=top_k,
+            include_metadata=True,
+        )
+        matches = res.get("matches", []) if isinstance(res, dict) else getattr(res, "matches", [])
+        chunks: List[str] = []
+        for m in matches:
+            meta = m.get("metadata", {}) if isinstance(m, dict) else getattr(m, "metadata", {}) or {}
+            text = meta.get("text")
+            if text:
+                chunks.append(text)
+        return chunks
+    except Exception as exc:
+        logger.warning("query_course_content failed for course %s: %s", course_id, exc)
+        return []

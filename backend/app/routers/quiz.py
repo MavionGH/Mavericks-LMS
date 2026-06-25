@@ -1,9 +1,12 @@
 import logging
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.models import Chapter, QuizAttempt, QuizQuestion, User
+from app.models.models import (
+    Chapter, Enrollment, EnrollmentStatus, QuizAttempt, QuizQuestion, User,
+)
 from app.schemas.schemas import (
     QuizQuestionsResponse, QuizQuestionItem,
     QuizSubmitRequest, QuizResultResponse, QuizResultItem,
@@ -114,6 +117,41 @@ def submit_quiz(
         passed=passed,
     )
     db.add(attempt)
+
+    # ── Progression ──
+    # Passing a module's quiz is now what advances the student to the next module.
+    # (The voice interview is no longer a per-module gate; it is an optional,
+    # course-wide assessment available at any time.)
+    next_chapter_unlocked = False
+    course_completed = False
+    if passed:
+        enrollment = db.query(Enrollment).filter(
+            Enrollment.user_id == current_user.id,
+            Enrollment.course_id == chapter.course_id,
+        ).first()
+        if enrollment:
+            sorted_chapters = sorted(
+                chapter.course.chapters, key=lambda c: c.order_index
+            )
+            # Only advance when the student is passing the quiz for their CURRENT
+            # active module — retaking an earlier module's quiz must not move them.
+            current = (
+                sorted_chapters[enrollment.current_chapter_index]
+                if 0 <= enrollment.current_chapter_index < len(sorted_chapters)
+                else None
+            )
+            if current and current.id == data.chapter_id:
+                if enrollment.current_chapter_index + 1 < len(sorted_chapters):
+                    enrollment.current_chapter_index += 1
+                    enrollment.video_watched = False
+                    enrollment.article_read = False
+                    next_chapter_unlocked = True
+                else:
+                    # Passed the final module — all learning content is complete.
+                    enrollment.status = EnrollmentStatus.COMPLETED
+                    enrollment.completed_at = datetime.utcnow()
+                    course_completed = True
+
     db.commit()
     db.refresh(attempt)
 
@@ -125,6 +163,8 @@ def submit_quiz(
         threshold=threshold,
         attempt_id=attempt.id,
         results=result_items,
+        next_chapter_unlocked=next_chapter_unlocked,
+        course_completed=course_completed,
     )
 
 

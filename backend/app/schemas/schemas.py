@@ -172,6 +172,9 @@ class QuizResultResponse(BaseModel):
     threshold: int
     attempt_id: str
     results: List[QuizResultItem]
+    # Progression: set when passing the quiz advances the student in the course.
+    next_chapter_unlocked: bool = False
+    course_completed: bool = False
 
 
 class QuizStatusResponse(BaseModel):
@@ -190,6 +193,10 @@ class QuizWarningLog(BaseModel):
 # ─── INTERVIEW ───
 class InterviewStartRequest(BaseModel):
     chapter_id: str
+
+
+class CourseInterviewStartRequest(BaseModel):
+    course_id: str
 
 
 class InterviewAnswerRequest(BaseModel):

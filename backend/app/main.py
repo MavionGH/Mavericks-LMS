@@ -34,15 +34,23 @@ async def lifespan(app: FastAPI):
         "ALTER TABLE courses ADD COLUMN IF NOT EXISTS is_approved BOOLEAN NOT NULL DEFAULT FALSE",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_approved BOOLEAN NOT NULL DEFAULT TRUE",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id VARCHAR(255)",
+        # Course-wide final interview: sessions may be scoped to a course instead
+        # of a single chapter, so chapter_id becomes optional and course_id is added.
+        "ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS course_id VARCHAR REFERENCES courses(id)",
+        "ALTER TABLE interview_sessions ALTER COLUMN chapter_id DROP NOT NULL",
     ]
-    try:
-        with engine.connect() as conn:
-            for stmt in _new_cols:
+    # Run each statement in its OWN transaction. PostgreSQL aborts the whole
+    # transaction on the first failing statement, so sharing one transaction
+    # meant a single hiccup silently skipped every later migration (this is why
+    # interview_sessions.course_id was never added). Isolating them makes each
+    # idempotent ALTER apply independently.
+    for stmt in _new_cols:
+        try:
+            with engine.begin() as conn:
                 conn.execute(text(stmt))
-            conn.commit()
-        logger.info("Schema columns ensured.")
-    except Exception as exc:
-        logger.warning("Column migration warning: %s", exc)
+        except Exception as exc:
+            logger.warning("Column migration warning for [%s]: %s", stmt, exc)
+    logger.info("Schema columns ensured.")
 
     # Attempt to make password column nullable (PostgreSQL). Will fail gracefully on SQLite.
     try:

@@ -391,7 +391,13 @@ function QuizPage() {
                 <div className="progress-bar-fill" style={{ width: `${result.score}%`, backgroundColor: result.passed ? "var(--color-success)" : "var(--color-danger)" }} />
               </div>
               {result.passed ? (
-                <span className="badge badge-success">PASSED — ORAL ASSESSMENT UNLOCKED</span>
+                <span className="badge badge-success">
+                  {result.course_completed
+                    ? "PASSED — COURSE COMPLETE"
+                    : result.next_chapter_unlocked
+                    ? "PASSED — NEXT MODULE UNLOCKED"
+                    : "PASSED"}
+                </span>
               ) : (
                 <span className="badge badge-danger">FAILED — REVIEW THE MODULE AND RETRY</span>
               )}
@@ -446,9 +452,19 @@ function QuizPage() {
             {/* Actions */}
             <div style={{ display: "flex", gap: "12px", justifyContent: "center" }}>
               {result.passed ? (
-                <Link href={`/interview/${params.courseId}/${params.chapterId}`} className="btn btn-primary">
-                  Initialize Oral Assessment
-                </Link>
+                result.course_completed ? (
+                  <Link href={`/interview/${params.courseId}`} className="btn btn-primary">
+                    Take the Final AI Interview
+                  </Link>
+                ) : result.next_chapter_unlocked ? (
+                  <Link href={`/learn/${params.courseId}`} className="btn btn-primary">
+                    Continue to Next Module
+                  </Link>
+                ) : (
+                  <Link href={`/learn/${params.courseId}/${params.chapterId}`} className="btn btn-primary">
+                    Back to Module
+                  </Link>
+                )
               ) : (
                 <>
                   <Link href={`/learn/${params.courseId}/${params.chapterId}`} className="btn btn-secondary">Review Module</Link>
@@ -514,7 +530,7 @@ function QuizPage() {
               Module Quiz
             </h1>
             <p style={{ color: "var(--text-muted)", fontSize: "14px" }}>
-              Answer all {questions.length} questions before entering the AI oral assessment.
+              Answer all {questions.length} questions. Passing this quiz unlocks the next module.
             </p>
           </div>
 

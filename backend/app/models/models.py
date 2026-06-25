@@ -159,7 +159,10 @@ class InterviewSession(Base):
 
     id = Column(String, primary_key=True, default=generate_uuid)
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
-    chapter_id = Column(String, ForeignKey("chapters.id"), nullable=False)
+    # chapter_id is set for a per-module interview; course_id is set for the
+    # course-wide final interview (which spans every module). Exactly one is used.
+    chapter_id = Column(String, ForeignKey("chapters.id"), nullable=True)
+    course_id = Column(String, ForeignKey("courses.id"), nullable=True)
     status = Column(String, default="active")  # active | completed
     transcript = Column(JSON, default=list)
     pause_metrics = Column(JSON, default=list)
@@ -169,6 +172,7 @@ class InterviewSession(Base):
 
     user = relationship("User")
     chapter = relationship("Chapter")
+    course = relationship("Course")
 
 
 # ─── EVALUATION (AI Interview) ───

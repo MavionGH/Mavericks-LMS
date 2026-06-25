@@ -8,11 +8,11 @@ from app.models.models import (
     InterviewSession, QuizAttempt, User,
 )
 from app.schemas.schemas import (
-    InterviewStartRequest, InterviewAnswerRequest,
+    InterviewStartRequest, CourseInterviewStartRequest, InterviewAnswerRequest,
     InterviewTurnResponse, InterviewResultResponse, InterviewEligibilityResponse,
 )
 from app.auth.dependencies import require_student
-from app.services.chapter_context import build_chapter_context
+from app.services.chapter_context import build_chapter_context, build_course_context
 from app.services.interview_graph import start_interview, process_answer, MAX_QUESTIONS
 
 router = APIRouter(prefix="/api/interview", tags=["Interview"])
@@ -196,6 +196,101 @@ def start_interview_session(
     )
 
 
+# ─── COURSE-WIDE FINAL INTERVIEW ───
+# Optional, ungated, available at any time. The AI interviewer (Mav) draws on the
+# knowledge of EVERY module in the course (all video transcripts + articles).
+
+@router.get("/course/eligibility/{course_id}", response_model=InterviewEligibilityResponse)
+def check_course_eligibility(
+    course_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_student),
+):
+    course = db.query(Course).filter(Course.id == course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    enrollment = db.query(Enrollment).filter(
+        Enrollment.user_id == current_user.id,
+        Enrollment.course_id == course_id,
+    ).first()
+    if not enrollment:
+        return InterviewEligibilityResponse(eligible=False, reason="Enroll in this course first")
+
+    if not course.chapters:
+        return InterviewEligibilityResponse(eligible=False, reason="This course has no modules yet")
+
+    return InterviewEligibilityResponse(eligible=True, enrollment_id=enrollment.id)
+
+
+@router.post("/course/start", response_model=InterviewTurnResponse)
+def start_course_interview(
+    data: CourseInterviewStartRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_student),
+):
+    course = db.query(Course).filter(Course.id == data.course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    enrollment = db.query(Enrollment).filter(
+        Enrollment.user_id == current_user.id,
+        Enrollment.course_id == data.course_id,
+    ).first()
+    if not enrollment:
+        raise HTTPException(status_code=400, detail="Not enrolled in this course")
+
+    if not course.chapters:
+        raise HTTPException(status_code=400, detail="This course has no modules yet")
+
+    # Abandon any prior active course interview for a clean restart.
+    db.query(InterviewSession).filter(
+        InterviewSession.user_id == current_user.id,
+        InterviewSession.course_id == data.course_id,
+        InterviewSession.chapter_id.is_(None),
+        InterviewSession.status == "active",
+    ).update({"status": "abandoned"})
+    db.commit()
+
+    # Cache primitive values before building context (which may touch the network /
+    # vector store) so we never depend on the ORM session afterwards.
+    course_title = course.title
+    course_pass_threshold = course.pass_threshold or 70
+
+    context = build_course_context(
+        course,
+        query=f"key concepts and topics across all modules of {course.title} for a comprehensive oral assessment",
+        db=db,
+    )
+    graph_state = start_interview(course_title, context, course_pass_threshold)
+
+    session = InterviewSession(
+        user_id=current_user.id,
+        chapter_id=None,
+        course_id=data.course_id,
+        status="active",
+        transcript=graph_state.get("transcript", []),
+        pause_metrics=[],
+        question_count=graph_state.get("question_count", 1),
+        graph_state=graph_state,
+    )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+
+    return InterviewTurnResponse(
+        session_id=session.id,
+        speaker="ai",
+        text=graph_state.get("next_question", ""),
+        is_complete=False,
+        waiting_for_student=True,
+        question_number=graph_state.get("question_count", 1),
+        total_questions=MAX_QUESTIONS,
+        greeting=graph_state.get("greeting"),
+        greeting_completed=False,
+    )
+
+
 @router.post("/answer", response_model=Union[InterviewTurnResponse, InterviewResultResponse])
 def submit_answer(
     data: InterviewAnswerRequest,
@@ -270,8 +365,57 @@ def end_interview_early(
 def _finalize_session(db: Session, session: InterviewSession, user: User) -> InterviewResultResponse:
     graph_state = session.graph_state or {}
     evaluation = graph_state.get("evaluation", {})
+
+    # ── Course-wide final interview ──
+    # Optional and ungated: it records a CAPSTONE evaluation but never alters the
+    # student's module progression (that is driven entirely by passing quizzes).
+    if session.course_id and not session.chapter_id:
+        course = db.query(Course).filter(Course.id == session.course_id).first()
+
+        prev_attempts = db.query(Evaluation).filter(
+            Evaluation.user_id == user.id,
+            Evaluation.type == EvaluationType.CAPSTONE,
+            Evaluation.chapter_id.is_(None),
+        ).count()
+
+        ev = Evaluation(
+            user_id=user.id,
+            chapter_id=None,
+            type=EvaluationType.CAPSTONE,
+            transcript=graph_state.get("transcript", []),
+            technical_score=evaluation.get("technical_score", 0),
+            communication_score=evaluation.get("communication_score", 0),
+            confidence_score=evaluation.get("confidence_score", 0),
+            overall_score=evaluation.get("overall_score", 0),
+            passed=evaluation.get("passed", False),
+            strengths=evaluation.get("strengths", []),
+            weak_areas=evaluation.get("weak_areas", []),
+            suggested_review=evaluation.get("suggested_review", []),
+            attempt_number=prev_attempts + 1,
+        )
+        db.add(ev)
+
+        session.status = "completed"
+        session.transcript = graph_state.get("transcript", [])
+        db.commit()
+
+        return InterviewResultResponse(
+            session_id=session.id,
+            passed=evaluation.get("passed", False),
+            technical_score=evaluation.get("technical_score", 0),
+            communication_score=evaluation.get("communication_score", 0),
+            confidence_score=evaluation.get("confidence_score", 0),
+            overall_score=evaluation.get("overall_score", 0),
+            strengths=evaluation.get("strengths", []),
+            weak_areas=evaluation.get("weak_areas", []),
+            suggested_review=evaluation.get("suggested_review", []),
+            transcript=graph_state.get("transcript", []),
+            next_chapter_unlocked=False,
+            chapter_title=course.title if course else "",
+        )
+
+    # ── Per-module interview (legacy path) ──
     chapter = db.query(Chapter).filter(Chapter.id == session.chapter_id).first()
-    course = db.query(Course).filter(Course.id == chapter.course_id).first()
 
     prev_attempts = db.query(Evaluation).filter(
         Evaluation.user_id == user.id,

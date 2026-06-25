@@ -113,7 +113,7 @@ export default function CourseDetailPage() {
               <h1 style={{ fontSize: "32px", fontWeight: "700", marginBottom: "12px" }}>{course.title}</h1>
               <p style={{ color: "var(--text-main)", marginBottom: "24px", lineHeight: "1.6" }}>{course.description}</p>
               <div style={{ fontSize: "13px", color: "var(--text-muted)" }}>
-                {chapters.length} Modules · {course.pass_threshold}% pass threshold · AI oral assessment per module
+                {chapters.length} Modules · {course.pass_threshold}% pass threshold · Optional course-wide AI interview
               </div>
               <div style={{ marginTop: "28px" }}>
                 {!user ? (
@@ -170,6 +170,22 @@ export default function CourseDetailPage() {
             })}
             {chapters.length === 0 && (
               <p style={{ color: "var(--text-muted)" }}>Teacher has not added modules yet.</p>
+            )}
+
+            {/* Course-wide final AI interview — optional, drawn from every module */}
+            {isEnrolled && chapters.length > 0 && (
+              <div className="card" style={{ padding: "20px 24px", display: "flex", alignItems: "center", gap: "24px", backgroundColor: "#ffffff", border: "1px dashed var(--brand)" }}>
+                <div className="mono" style={{ width: "36px", height: "36px", borderRadius: "var(--radius-sm)", border: "1px solid var(--brand)", display: "grid", placeItems: "center", fontSize: "16px", color: "var(--brand)" }}>
+                  🎙
+                </div>
+                <div style={{ flex: 1 }}>
+                  <span style={{ fontWeight: "700", fontSize: "15px" }}>Final AI Interview</span>
+                  <p style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "4px" }}>
+                    Optional · Mav asks questions spanning every module · take it any time
+                  </p>
+                </div>
+                <Link href={`/interview/${params.id}`} className="btn btn-primary btn-sm">Start Interview</Link>
+              </div>
             )}
           </div>
         </div>

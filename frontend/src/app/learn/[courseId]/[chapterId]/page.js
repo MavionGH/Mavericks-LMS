@@ -129,10 +129,9 @@ function LearnPage() {
     video: "Video Lecture",
     article: "Documentation",
     quiz: "Concept Check",
-    interview: "AI Oral Assessment",
   };
 
-  const interviewUnlocked = videoWatched && articleRead && quizStatus.passed;
+  const allModulesComplete = chapters.length > 0 && enrollment?.status === "completed";
 
   return (
     <>
@@ -168,6 +167,18 @@ function LearnPage() {
                 {unlockedCount} / {chapters.length} UNLOCKED
               </div>
             </div>
+
+            {/* Course-wide final interview — optional, available any time, draws on
+                the knowledge of every module in the course. */}
+            <div style={{ padding: "16px", borderTop: "1px solid var(--border-muted)" }}>
+              <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "8px", fontFamily: "JetBrains Mono", fontWeight: "600" }}>FINAL AI INTERVIEW</div>
+              <p style={{ fontSize: "12px", color: "var(--text-muted)", lineHeight: "1.5", marginBottom: "12px" }}>
+                Optional. Mav, your AI interviewer, asks questions spanning all modules of this course. Take it whenever you're ready.
+              </p>
+              <Link href={`/interview/${params.courseId}`} className="btn btn-primary btn-sm" style={{ width: "100%", justifyContent: "center" }}>
+                {allModulesComplete ? "Start Final Interview" : "Start AI Interview"}
+              </Link>
+            </div>
           </aside>
 
           <main className="content-area" style={{ padding: "40px 48px", maxWidth: "900px" }}>
@@ -187,7 +198,7 @@ function LearnPage() {
             )}
 
             <div className="tabs">
-              {["video", "article", "quiz", "interview"].map((tab) => (
+              {["video", "article", "quiz"].map((tab) => (
                 <div key={tab} className={`tab ${activeTab === tab ? "active" : ""}`} onClick={() => setActiveTab(tab)}>
                   {TAB_LABELS[tab]}
                   {tab === "quiz" && quizStatus.passed && (
@@ -255,25 +266,31 @@ function LearnPage() {
                 <div className="card" style={{ padding: "32px", backgroundColor: "#ffffff" }}>
                   <h3 style={{ fontSize: "16px", fontWeight: "700", marginBottom: "8px" }}>Concept Check</h3>
                   <p style={{ color: "var(--text-muted)", marginBottom: "24px", fontSize: "13.5px" }}>
-                    Complete the 5-question quiz to verify your understanding before the AI oral assessment.
-                    You must pass to unlock the voice interview for this module.
+                    Complete the quiz to verify your understanding of this module.
+                    {isCurrentChapter && " Passing it unlocks the next module."}
                   </p>
                   {quizStatus.passed ? (
                     <div>
                       <div className="badge badge-success" style={{ marginBottom: "16px" }}>
-                        ✓ Passed ({quizStatus.score}%) — Oral assessment unlocked
+                        ✓ Passed ({quizStatus.score}%){isCurrentChapter ? " — Module complete" : ""}
                       </div>
                       <br />
                       {isCurrentChapter && (
-                        <Link href={`/quiz/${params.courseId}/${viewingChapter.id}`}>
-                          <button className="btn btn-secondary" style={{ marginTop: "12px" }}>Retake Quiz</button>
-                        </Link>
+                        allModulesComplete ? (
+                          <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+                            You&apos;ve completed every module in this course. 🎉
+                          </span>
+                        ) : (
+                          <Link href={`/learn/${params.courseId}`}>
+                            <button className="btn btn-primary" style={{ marginTop: "12px" }}>Continue to next module</button>
+                          </Link>
+                        )
                       )}
                     </div>
                   ) : quizStatus.attempted ? (
                     <div>
                       <div className="badge badge-danger" style={{ marginBottom: "16px" }}>
-                        Score: {quizStatus.score}% — Retake to unlock oral assessment
+                        Score: {quizStatus.score}% — Retake to advance
                       </div>
                       <br />
                       {isCurrentChapter && (
@@ -294,38 +311,6 @@ function LearnPage() {
                     )
                   ) : (
                     <button className="btn btn-secondary" disabled>Not your current module</button>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* INTERVIEW TAB */}
-            {activeTab === "interview" && (
-              <div>
-                <div className="card" style={{ padding: "32px", backgroundColor: "#ffffff" }}>
-                  <h3 style={{ fontSize: "16px", fontWeight: "700", marginBottom: "8px" }}>AI Voice Assessment</h3>
-                  <p style={{ color: "var(--text-muted)", marginBottom: "24px", fontSize: "13.5px" }}>
-                    After watching the video, reading the article, and passing the concept check, join a
-                    Google Meet-style oral interview. The AI has full context of your module content and will
-                    ask follow-up questions, score your technical knowledge, communication, and confidence.
-                    Pass to unlock the next module.
-                  </p>
-                  {isCurrentChapter ? (
-                    interviewUnlocked ? (
-                      <Link href={`/interview/${params.courseId}/${viewingChapter.id}`}>
-                        <button className="btn btn-primary">Start AI oral assessment</button>
-                      </Link>
-                    ) : (
-                      <button className="btn btn-primary" disabled>
-                        {!videoWatched
-                          ? "Complete video first"
-                          : !articleRead
-                          ? "Complete article first"
-                          : "Pass concept check first"}
-                      </button>
-                    )
-                  ) : (
-                    <button className="btn btn-secondary" disabled>Assessment already completed for this module</button>
                   )}
                 </div>
               </div>
