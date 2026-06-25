@@ -156,20 +156,25 @@ def index_module_content(
     model is unavailable. Vectors are namespaced by course and keyed by module so
     other modules' vectors are never affected.
     """
+    print(f"\n[EMBED] ── Indexing module {module_id} (course {course_id}) ──", flush=True)
     index = _get_index()
     if index is None:
+        print("[EMBED] ✗ Pinecone unavailable (check 'pinecone-api' in .env) — skipped.", flush=True)
         return
 
     try:
         from app.services.embeddings import _get_model
 
+        print("[EMBED] Loading HuggingFace model (all-MiniLM-L6-v2, 384-dim)…", flush=True)
         model = _get_model()
         if model is None:
+            print("[EMBED] ✗ Embedding model unavailable — skipped.", flush=True)
             logger.warning("Embedding model unavailable; skipping Pinecone index for module %s", module_id)
             return
 
         namespace = f"course_{course_id}"
         docs = build_documents(course_id, module_id, video_transcript, article_content)
+        print(f"[EMBED] Sources to embed: {[d['source'] for d in docs] or 'none'}", flush=True)
 
         vectors = []
         chunk_index = 0
@@ -177,6 +182,7 @@ def index_module_content(
             chunks = semantic_chunk_text(doc["content"])
             if not chunks:
                 continue
+            print(f"[EMBED]   • {doc['source']}: {len(chunks)} chunk(s) → embedding…", flush=True)
             embeddings = model.encode(chunks, show_progress_bar=False)
             for emb, chunk in zip(embeddings, chunks):
                 vectors.append({
@@ -193,17 +199,21 @@ def index_module_content(
                 chunk_index += 1
 
         if not vectors:
+            print("[EMBED] No transcript/article content to index — nothing upserted.", flush=True)
             logger.info("No content to index for module %s", module_id)
             return
 
         # Upsert in batches of 100. Upsert is idempotent per id and scoped to this
         # module's namespace, so existing vectors of other modules are preserved.
+        print(f"[EMBED] Upserting {len(vectors)} vector(s) to Pinecone (index='{PINECONE_INDEX}', namespace='{namespace}')…", flush=True)
         for i in range(0, len(vectors), 100):
             index.upsert(vectors=vectors[i : i + 100], namespace=namespace)
 
+        print(f"[EMBED] ✓ Done — {len(vectors)} vector(s) stored in Pinecone for module {module_id}.\n", flush=True)
         logger.info(
             "Upserted %d vectors to Pinecone (namespace=%s, module=%s).",
             len(vectors), namespace, module_id,
         )
     except Exception as exc:
+        print(f"[EMBED] ✗ FAILED for module {module_id}: {exc}\n", flush=True)
         logger.error("index_module_content failed for module %s: %s", module_id, exc)

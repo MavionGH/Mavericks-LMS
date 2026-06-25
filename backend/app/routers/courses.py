@@ -13,10 +13,9 @@ from app.schemas.schemas import (
 )
 from app.auth.dependencies import get_current_user, require_teacher, require_admin
 from app.services.transcript import fetch_youtube_transcript
-from app.services.embeddings import embed_and_store_chapter
 from app.services.storage import upload_video_to_r2
 from app.services.pinecone_store import index_module_content
-from app.services.storage import upload_video_to_r2
+from app.services.video_transcription import transcribe_video_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -240,10 +239,9 @@ def add_chapter(
     db.commit()
     db.refresh(chapter)
 
-    background_tasks.add_task(
-        embed_and_store_chapter,
-        chapter.id, course_id, data.article_content, video_transcript,
-    )
+    # Embed transcript + article with HuggingFace and store the vectors in
+    # Pinecone (the single source of truth for vectors). The transcript/article
+    # text itself stays in Supabase (the Chapter row above) for quiz generation.
     background_tasks.add_task(
         index_module_content,
         course_id, chapter.id, data.article_content, video_transcript,
@@ -281,10 +279,8 @@ def update_chapter(
     db.refresh(chapter)
     course_id = chapter.course_id
 
-    background_tasks.add_task(
-        embed_and_store_chapter,
-        chapter_id, course_id, data.article_content, video_transcript,
-    )
+    # Re-embed into Pinecone (vectors only live in Pinecone). The updated
+    # transcript/article text is already persisted on the Chapter row above.
     background_tasks.add_task(
         index_module_content,
         course_id, chapter_id, data.article_content, video_transcript,
@@ -326,12 +322,15 @@ def upload_video(
             detail=f"Invalid file type. Allowed formats: {', '.join(ALLOWED_EXTENSIONS)}"
         )
 
-    file.file.seek(0, 2)
-    file_size = file.file.tell()
+    # Read the bytes once so we can both store the video and transcribe it.
+    data = file.file.read()
+    if len(data) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="File is too large. Max size is 100MB.")
     file.file.seek(0)
 
-    if file_size > MAX_FILE_SIZE:
-        raise HTTPException(status_code=400, detail="File is too large. Max size is 100MB.")
-
     url = upload_video_to_r2(file)
-    return {"video_url": url}
+
+    # Auto-generate the transcript from the uploaded video (Groq Whisper).
+    # Returns "" on any failure so the teacher can still fill it in manually.
+    transcript = transcribe_video_bytes(data, file.filename) or ""
+    return {"video_url": url, "transcript": transcript}

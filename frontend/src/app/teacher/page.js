@@ -26,6 +26,7 @@ function TeacherPanel() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadedFileName, setUploadedFileName] = useState("");
   const [uploadError, setUploadError] = useState("");
+  const [transcribing, setTranscribing] = useState(false);
 
   const handleVideoUpload = async (e) => {
     const file = e.target.files[0];
@@ -61,17 +62,25 @@ function TeacherPanel() {
       if (event.lengthComputable) {
         const percentComplete = Math.round((event.loaded / event.total) * 100);
         setUploadProgress(percentComplete);
+        // Bytes are uploaded — the server is now transcribing before it responds.
+        if (percentComplete >= 100) {
+          setTranscribing(true);
+        }
       }
     };
 
     xhr.onload = () => {
       setUploading(false);
+      setTranscribing(false);
       if (xhr.status === 200) {
         try {
           const res = JSON.parse(xhr.responseText);
           setChapterForm((prev) => ({
             ...prev,
             youtube_url: res.video_url,
+            // Auto-fill the transcript box from the video's audio. Keep any
+            // text the teacher already typed if transcription returned nothing.
+            video_transcript: res.transcript ? res.transcript : prev.video_transcript,
           }));
           setUploadProgress(100);
         } catch (e) {
@@ -89,6 +98,7 @@ function TeacherPanel() {
 
     xhr.onerror = () => {
       setUploading(false);
+      setTranscribing(false);
       setUploadError("Network error during file upload.");
     };
 
@@ -156,6 +166,7 @@ function TeacherPanel() {
       setChapterForm({ title: "", article_content: "", youtube_url: "", video_transcript: "" });
       setUploadedFileName("");
       setUploadProgress(0);
+      setTranscribing(false);
       loadCourses();
       setTimeout(() => setChapterStatus(""), 3000);
     } catch (err) {
@@ -449,6 +460,13 @@ function TeacherPanel() {
                       </div>
                     )}
 
+                    {transcribing && (
+                      <div style={{ marginTop: "12px", fontSize: "12px", color: "var(--brand)", display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span className="spinner" style={{ width: 12, height: 12, border: "2px solid var(--brand)", borderTopColor: "transparent", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
+                        Transcribing video audio… the transcript box will fill in automatically.
+                      </div>
+                    )}
+
                     {uploadedFileName && !uploading && (
                       <div style={{ marginTop: "12px", padding: "10px", backgroundColor: "#f9fafb", border: "1px solid var(--border-muted)", borderRadius: "var(--radius-sm)" }}>
                         <div style={{ fontSize: "12px", fontWeight: "600", color: "var(--text-main)" }}>
@@ -457,6 +475,7 @@ function TeacherPanel() {
                         {chapterForm.youtube_url && (
                           <div style={{ fontSize: "11px", color: "var(--color-success)", marginTop: "4px" }}>
                             Successfully uploaded!
+                            {chapterForm.video_transcript ? " Transcript auto-generated below." : " No speech detected — add a transcript manually below if needed."}
                           </div>
                         )}
                       </div>
@@ -473,10 +492,10 @@ function TeacherPanel() {
                     <textarea className="form-input form-textarea" placeholder="## Topic&#10;Explain key concepts..." value={chapterForm.article_content} onChange={(e) => setChapterForm({ ...chapterForm, article_content: e.target.value })} required rows={8} />
                   </div>
                   <div className="form-group">
-                    <label className="form-label">Video Transcript (optional)</label>
-                    <textarea className="form-input form-textarea" placeholder="Paste manual transcript or notes if available..." value={chapterForm.video_transcript} onChange={(e) => setChapterForm({ ...chapterForm, video_transcript: e.target.value })} rows={4} />
+                    <label className="form-label">Video Transcript (auto-generated — editable)</label>
+                    <textarea className="form-input form-textarea" placeholder="Auto-filled from the uploaded video. You can edit or paste your own transcript here..." value={chapterForm.video_transcript} onChange={(e) => setChapterForm({ ...chapterForm, video_transcript: e.target.value })} rows={6} />
                     <p style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>
-                      This transcript text will be used by the AI to formulate questions and assess student comprehension.
+                      Generated automatically from the video's audio when you upload it. Review/edit before saving — this text is embedded and used by the AI to formulate questions and assess student comprehension.
                     </p>
                   </div>
                   <button type="submit" className="btn btn-primary" disabled={!selectedCourseId || chapterStatus === "saving" || uploading || !chapterForm.youtube_url}>

@@ -1,6 +1,7 @@
 import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.pool import NullPool
 from dotenv import load_dotenv
 
 # Load .env file
@@ -14,14 +15,21 @@ if not DATABASE_URL:
         "Format: postgresql+psycopg2://postgres.PROJECT_REF:PASSWORD@HOST:PORT/postgres"
     )
 
-# Use NullPool for Supabase transaction-mode pooler (port 6543)
-# Use standard pool for session-mode pooler (port 5432) — default here
+# Supabase's pooler runs in transaction mode, so a physical backend connection
+# is shared across clients. psycopg3 names its server-side prepared statements
+# (_pg3_0, _pg3_1, ...) per session, which collide on a shared backend and raise
+# "DuplicatePreparedStatement: prepared statement _pg3_0 already exists".
+#
+# Fixes:
+#   - prepare_threshold=None  -> psycopg never uses server-side prepared statements
+#   - NullPool                -> don't keep/reuse pooled connections client-side
+#     (the Supabase pooler does the pooling); avoids stale prepared statements.
 engine = create_engine(
     DATABASE_URL,
-    echo=False,            # set True to log all SQL during debugging
-    pool_pre_ping=True,    # verify connections before using them
-    pool_size=5,
-    max_overflow=10,
+    echo=False,                 # set True to log all SQL during debugging
+    poolclass=NullPool,         # let the Supabase transaction pooler manage pooling
+    pool_pre_ping=True,         # verify connections before using them
+    connect_args={"prepare_threshold": None},  # disable psycopg3 prepared statements
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

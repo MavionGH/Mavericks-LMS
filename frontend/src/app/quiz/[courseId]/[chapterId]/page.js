@@ -116,7 +116,7 @@ function QuizPage() {
 
   // ── Quiz data ──
   const [questions, setQuestions]   = useState([]);
-  const [loading, setLoading]       = useState(true);
+  const [loading, setLoading]       = useState(false);
   const [error, setError]           = useState("");
   const [currentQ, setCurrentQ]     = useState(0);
   const [answers, setAnswers]       = useState({});
@@ -143,8 +143,12 @@ function QuizPage() {
   const submissionLockRef           = useRef(false);
   const timeoutHandledRef           = useRef(false);
 
-  // ── Fetch questions on mount ──
+  // ── Fetch questions only once the student starts the quiz ──
+  // Questions are generated on-demand by the backend, so we deliberately wait
+  // until the rules modal is accepted (quizStarted) — nothing is generated just
+  // by opening the page.
   useEffect(() => {
+    if (!quizStarted) return;
     async function fetchQuiz() {
       setLoading(true);
       setError("");
@@ -163,7 +167,7 @@ function QuizPage() {
       }
     }
     fetchQuiz();
-  }, [params.chapterId]);
+  }, [params.chapterId, quizStarted]);
 
   // ── Stable callbacks for useQuizGuard ────────────────────────────────────
   const handleFullscreenExit = useCallback(
