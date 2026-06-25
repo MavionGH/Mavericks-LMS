@@ -511,7 +511,13 @@ function InterviewPage() {
           {/* Video panels */}
           <div className="meet-grid">
             <div className={`meet-panel ${isAISpeaking ? "speaking" : ""}`}>
-              <div className="meet-avatar">AI</div>
+              <div className="meet-avatar" style={{ backgroundColor: 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+                <img
+                  src={isAISpeaking ? "/opened.png" : "/closed.png"}
+                  alt="AI Avatar"
+                  style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "50%" }}
+                />
+              </div>
               <div className="meet-nametag">
                 <span className="meet-nametag-icon">
                   {isAISpeaking ? (
