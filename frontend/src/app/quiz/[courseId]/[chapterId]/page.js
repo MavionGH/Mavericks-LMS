@@ -139,7 +139,7 @@ function QuizPage() {
   // ── Timer ──
   const [remaining, setRemaining]   = useState(QUIZ_TIME_LIMIT);
   const questionEndRef              = useRef(Date.now() + QUIZ_TIME_LIMIT * 1000);
-  const lastQIndexRef               = useRef(0);
+  const lastQIndexRef               = useRef(-1);
   const submissionLockRef           = useRef(false);
   const timeoutHandledRef           = useRef(false);
 
@@ -229,6 +229,10 @@ function QuizPage() {
   // ── Countdown timer ───────────────────────────────────────────────────────
   useEffect(() => {
     if (!quizStarted || submitted) return;
+    // Don't start (or resume) the countdown until the question is actually on
+    // screen. Questions are generated on-demand, so starting the timer at
+    // quizStarted would let generation latency silently eat into question 1.
+    if (loading || questions.length === 0) return;
     // Pause while any overlay is blocking the quiz
     if (fsWarningVisible) return;
 
@@ -274,7 +278,7 @@ function QuizPage() {
 
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [quizStarted, submitted, currentQ, fsWarningVisible]);
+  }, [quizStarted, submitted, currentQ, fsWarningVisible, loading, questions.length]);
 
   // ── Answer selection ──────────────────────────────────────────────────────
   const handleSelect = (qId, option) => {

@@ -18,9 +18,9 @@ def get_analytics(
 ):
     total_students = db.query(User).filter(User.role == UserRole.STUDENT).count()
     total_courses = db.query(Course).count()
-    # A course is "live" only when both teacher-published and admin-approved
+    # A course is "live" to students once it is published (the enrollment gate).
     published_courses = db.query(Course).filter(
-        Course.is_published == True, Course.is_approved == True
+        Course.is_published == True
     ).count()
     total_enrollments = db.query(Enrollment).count()
     completed = db.query(Enrollment).filter(Enrollment.status == "completed").count()

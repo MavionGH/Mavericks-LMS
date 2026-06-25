@@ -16,6 +16,7 @@ from app.services.transcript import fetch_youtube_transcript
 from app.services.storage import upload_video_to_r2
 from app.services.pinecone_store import index_module_content
 from app.services.video_transcription import transcribe_video_bytes
+from app.services.document_parser import extract_text_from_document
 
 logger = logging.getLogger(__name__)
 
@@ -334,3 +335,25 @@ def upload_video(
     # Returns "" on any failure so the teacher can still fill it in manually.
     transcript = transcribe_video_bytes(data, file.filename) or ""
     return {"video_url": url, "transcript": transcript}
+
+
+# ─── ARTICLE DOCUMENT IMPORT ───
+
+@router.post("/extract-article")
+def extract_article(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_teacher),
+):
+    """
+    Convert an uploaded article document (.txt / .md / .pdf / .docx) into plain
+    text. The text is returned to the teacher UI to populate the article box —
+    it is then saved to Chapter.article_content exactly like typed text, so the
+    rest of the pipeline (embeddings, quiz generation) is unchanged.
+    """
+    data = file.file.read()
+    text = extract_text_from_document(file.filename, data)
+    return {
+        "article_content": text,
+        "filename": file.filename,
+        "char_count": len(text),
+    }

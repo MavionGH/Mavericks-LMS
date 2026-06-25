@@ -45,7 +45,13 @@ function LearnPage() {
             body: JSON.stringify({ course_id: params.courseId }),
           });
         }
-        if (!enrollRes.ok) throw new Error("Could not enroll");
+        if (!enrollRes.ok) {
+          const detail = await enrollRes
+            .json()
+            .then((d) => d?.detail)
+            .catch(() => null);
+          throw new Error(detail || "Could not enroll in this course");
+        }
         const enrollData = await enrollRes.json();
         setEnrollment(enrollData);
 

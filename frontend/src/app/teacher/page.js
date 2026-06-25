@@ -28,6 +28,11 @@ function TeacherPanel() {
   const [uploadError, setUploadError] = useState("");
   const [transcribing, setTranscribing] = useState(false);
 
+  // Article document import state (txt / md / pdf / docx → article text)
+  const [articleUploading, setArticleUploading] = useState(false);
+  const [articleFileName, setArticleFileName] = useState("");
+  const [articleError, setArticleError] = useState("");
+
   const handleVideoUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -105,6 +110,53 @@ function TeacherPanel() {
     xhr.send(formData);
   };
 
+  // Upload a text/PDF/DOCX file → backend extracts plain text → fills the
+  // article box. The extracted text is saved to article_content like typed text.
+  const handleArticleUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const allowed = ["txt", "md", "pdf", "docx"];
+    const ext = file.name.split(".").pop().toLowerCase();
+    if (!allowed.includes(ext)) {
+      setArticleError("Invalid file format. Allowed: txt, md, pdf, docx.");
+      return;
+    }
+    if (file.size > 15 * 1024 * 1024) {
+      setArticleError("File is too large. Maximum size allowed is 15MB.");
+      return;
+    }
+
+    setArticleError("");
+    setArticleUploading(true);
+    setArticleFileName(file.name);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      // Note: don't use authFetch here — it forces a JSON Content-Type which
+      // would break the multipart upload. Send the bearer token manually and
+      // let the browser set the multipart boundary.
+      const res = await fetch(`${API_BASE}/api/courses/extract-article`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: fd,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Could not extract text from the file.");
+      }
+      const data = await res.json();
+      setChapterForm((prev) => ({ ...prev, article_content: data.article_content }));
+    } catch (err) {
+      setArticleError(err.message);
+      setArticleFileName("");
+    } finally {
+      setArticleUploading(false);
+    }
+    // Allow re-selecting the same file again later
+    e.target.value = "";
+  };
+
   const loadCourses = async () => {
     try {
       const res = await authFetch("/api/courses/manage/all");
@@ -167,6 +219,8 @@ function TeacherPanel() {
       setUploadedFileName("");
       setUploadProgress(0);
       setTranscribing(false);
+      setArticleFileName("");
+      setArticleError("");
       loadCourses();
       setTimeout(() => setChapterStatus(""), 3000);
     } catch (err) {
@@ -489,6 +543,33 @@ function TeacherPanel() {
                   </div>
                   <div className="form-group">
                     <label className="form-label">Article Content (markdown)</label>
+                    <div style={{ marginBottom: "10px" }}>
+                      <input
+                        type="file"
+                        accept=".txt,.md,.pdf,.docx"
+                        onChange={handleArticleUpload}
+                        disabled={articleUploading}
+                        className="form-input"
+                        style={{ padding: "8px" }}
+                      />
+                      {articleUploading && (
+                        <div style={{ marginTop: "8px", fontSize: "12px", color: "var(--brand)", display: "flex", alignItems: "center", gap: "8px" }}>
+                          <span className="spinner" style={{ width: 12, height: 12, border: "2px solid var(--brand)", borderTopColor: "transparent", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
+                          Extracting text from {articleFileName}…
+                        </div>
+                      )}
+                      {articleFileName && !articleUploading && !articleError && (
+                        <div style={{ marginTop: "8px", fontSize: "11px", color: "var(--color-success)" }}>
+                          ✓ Imported text from {articleFileName}. Review/edit below before saving.
+                        </div>
+                      )}
+                      {articleError && (
+                        <p style={{ fontSize: "12px", color: "var(--color-danger)", marginTop: "8px" }}>❌ {articleError}</p>
+                      )}
+                      <p style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "6px" }}>
+                        Optional — upload a .txt, .md, .pdf, or .docx file to auto-fill the article from a document. You can still edit the text below.
+                      </p>
+                    </div>
                     <textarea className="form-input form-textarea" placeholder="## Topic&#10;Explain key concepts..." value={chapterForm.article_content} onChange={(e) => setChapterForm({ ...chapterForm, article_content: e.target.value })} required rows={8} />
                   </div>
                   <div className="form-group">
