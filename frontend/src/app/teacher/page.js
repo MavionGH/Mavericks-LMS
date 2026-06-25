@@ -6,7 +6,6 @@ import { withAuth } from "@/components/withAuth";
 
 function TeacherPanel() {
   const { user, token, authFetch, refreshUser } = useAuth();
-  const [toast, setToast] = useState(null); // { message, type: 'success'|'error' }
   const [checkingApproval, setCheckingApproval] = useState(false);
   const [approvalMsg, setApprovalMsg] = useState("");
   const [activeTab, setActiveTab] = useState("overview");
@@ -21,7 +20,7 @@ function TeacherPanel() {
     video_transcript: "",
   });
   const [chapterStatus, setChapterStatus] = useState("");
-
+  
   // Video upload state
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -175,41 +174,16 @@ function TeacherPanel() {
     }
   };
 
-  const showToast = (message, type = "success") => {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 3000);
-  };
-
   const handlePublish = async (courseId, isPublished) => {
-    // 1. Capture previous state for precise rollback (no full refetch needed)
-    const previousCourses = courses;
-
-    // 2. Optimistic update — only mutates the affected course, O(n) single pass
-    setCourses((prev) =>
-      prev.map((c) => (c.id === courseId ? { ...c, is_published: !isPublished } : c))
-    );
-    showToast(
-      isPublished ? "Course unpublished!" : "Course published!",
-      isPublished ? "warning" : "success"
-    );
-
-    // 3. Persist in background — no await on UI path
-    try {
-      const res = await authFetch(`/api/courses/${courseId}/publish`, { method: "PUT" });
-      if (!res.ok) throw new Error((await res.json()).detail || "Failed");
-      // Success: local state is already correct — no refetch required
-    } catch (err) {
-      // 4. Precise rollback — restore only what we captured, not a full network round-trip
-      setCourses(previousCourses);
-      showToast(err.message || "Something went wrong.", "error");
-    }
+    await authFetch(`/api/courses/${courseId}/publish`, { method: "PUT" });
+    loadCourses();
   };
 
   const TABS = [
-    { key: "overview", label: "Overview" },
-    { key: "courses", label: "My Courses" },
-    { key: "modules", label: "Add Modules" },
-    { key: "create", label: "Add Course" },
+    { key: "overview",  label: "Overview"     },
+    { key: "courses",   label: "My Courses"   },
+    { key: "modules",   label: "Add Modules"  },
+    { key: "create",    label: "Add Course"   },
   ];
 
   const handleCheckApproval = async () => {
@@ -463,7 +437,7 @@ function TeacherPanel() {
                       style={{ padding: "8px" }}
                       required={!chapterForm.youtube_url}
                     />
-
+                    
                     {uploading && (
                       <div style={{ marginTop: "12px" }}>
                         <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "4px" }}>
@@ -651,57 +625,6 @@ function TeacherPanel() {
           )}
         </div>
       </div>
-
-      {/* Toast Notification */}
-      {toast && (
-        <div style={{
-          position: "fixed",
-          bottom: "32px",
-          right: "32px",
-          zIndex: 9999,
-          display: "flex",
-          alignItems: "center",
-          gap: "10px",
-          padding: "14px 20px",
-          borderRadius: "10px",
-          boxShadow: "0 8px 32px rgba(0,0,0,0.14)",
-          fontSize: "13.5px",
-          fontWeight: "600",
-          minWidth: "260px",
-          animation: "slideInToast 0.3s ease",
-          background: toast.type === "success" ? "var(--bg-success, #ecfdf5)" : toast.type === "warning" ? "#fffbeb" : "var(--bg-danger, #fef2f2)",
-          border: `1px solid ${toast.type === "success" ? "rgba(16,185,129,0.3)" : toast.type === "warning" ? "rgba(245,158,11,0.3)" : "rgba(239,68,68,0.3)"}`,
-          color: toast.type === "success" ? "var(--color-success, #059669)" : toast.type === "warning" ? "#b45309" : "var(--color-danger, #dc2626)",
-        }}>
-          {toast.type === "success" && (
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="20 6 9 17 4 12" />
-            </svg>
-          )}
-          {toast.type === "warning" && (
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
-            </svg>
-          )}
-          {toast.type === "error" && (
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" />
-            </svg>
-          )}
-          {toast.message}
-          <button
-            onClick={() => setToast(null)}
-            style={{ marginLeft: "auto", background: "none", border: "none", cursor: "pointer", opacity: 0.5, fontSize: "16px", lineHeight: 1, color: "inherit" }}
-          >×</button>
-        </div>
-      )}
-
-      <style>{`
-        @keyframes slideInToast {
-          from { opacity: 0; transform: translateY(16px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
     </>
   );
 }
