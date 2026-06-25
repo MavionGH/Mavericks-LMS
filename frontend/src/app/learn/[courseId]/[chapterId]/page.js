@@ -33,12 +33,26 @@ function LearnPage() {
     async function load() {
       setLoading(true);
       try {
-        const courseRes = await authFetch(`/api/courses/${params.courseId}`);
+        // The course, the student's enrollment, the chapter detail and the quiz
+        // status are independent reads — the chapter id is already in the URL —
+        // so fire them together instead of in a serial waterfall. (Enrollment
+        // may need a follow-up POST to auto-enroll; that is the only dependency.)
+        const [courseRes, enrollGetRes, chRes, qRes] = await Promise.all([
+          authFetch(`/api/courses/${params.courseId}`),
+          authFetch(`/api/enrollment/course/${params.courseId}`),
+          params.chapterId
+            ? authFetch(`/api/courses/chapters/${params.chapterId}`)
+            : Promise.resolve(null),
+          params.chapterId
+            ? authFetch(`/api/quiz/${params.chapterId}/my-status`)
+            : Promise.resolve(null),
+        ]);
+
         if (!courseRes.ok) throw new Error("Course not found");
         const courseData = await courseRes.json();
         setCourse(courseData);
 
-        let enrollRes = await authFetch(`/api/enrollment/course/${params.courseId}`);
+        let enrollRes = enrollGetRes;
         if (enrollRes.status === 404) {
           enrollRes = await authFetch("/api/enrollment/enroll", {
             method: "POST",
@@ -62,19 +76,11 @@ function LearnPage() {
           return;
         }
 
-        const chapterIdToFetch = params.chapterId || active?.id;
-        if (chapterIdToFetch) {
-          const chRes = await authFetch(`/api/courses/chapters/${chapterIdToFetch}`);
-          if (chRes.ok) {
-            const chData = await chRes.json();
-            setChapterDetail(chData);
-          }
+        if (chRes && chRes.ok) {
+          setChapterDetail(await chRes.json());
         }
-
-        const qRes = await authFetch(`/api/quiz/${params.chapterId}/my-status`);
-        if (qRes.ok) {
-          const qData = await qRes.json();
-          setQuizStatus(qData);
+        if (qRes && qRes.ok) {
+          setQuizStatus(await qRes.json());
         }
       } catch (err) {
         setError(err.message);

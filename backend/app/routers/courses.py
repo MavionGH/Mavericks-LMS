@@ -2,14 +2,14 @@ import logging
 import os
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, File, UploadFile
 from sqlalchemy import func
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, load_only
 from typing import List, Optional
 
 from app.database import get_db
 from app.models.models import Course, Chapter, User, UserRole
 from app.schemas.schemas import (
     CourseCreate, CourseResponse, CourseListResponse,
-    ChapterCreate, ChapterResponse, ChapterMinResponse
+    ChapterCreate, ChapterResponse, ChapterMinResponse, ChapterDetailResponse
 )
 from app.auth.dependencies import get_current_user, require_teacher, require_admin
 from app.services.transcript import fetch_youtube_transcript
@@ -199,13 +199,30 @@ def publish_course(
 
 # ─── CHAPTER ROUTES ───
 
-@router.get("/chapters/{chapter_id}", response_model=ChapterResponse)
+@router.get("/chapters/{chapter_id}", response_model=ChapterDetailResponse)
 def get_chapter(chapter_id: str, db: Session = Depends(get_db)):
-    """Get details of a single chapter (includes article_content)."""
-    chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
+    """Get details of a single chapter for the learner view (article + video).
+
+    Only the columns the UI needs are loaded — the potentially large
+    `video_transcript` is intentionally not fetched or returned here.
+    """
+    chapter = (
+        db.query(Chapter)
+        .options(
+            load_only(
+                Chapter.title,
+                Chapter.order_index,
+                Chapter.article_content,
+                Chapter.youtube_url,
+                Chapter.course_id,
+            )
+        )
+        .filter(Chapter.id == chapter_id)
+        .first()
+    )
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
-    return ChapterResponse.model_validate(chapter)
+    return ChapterDetailResponse.model_validate(chapter)
 
 
 @router.post("/{course_id}/chapters", response_model=ChapterResponse)

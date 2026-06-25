@@ -4,6 +4,10 @@ import Link from "next/link";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
+// AI avatar frames (in frontend/local). Swapping between them while the AI
+// speaks makes the avatar look like it's talking.
+import avatarClosed from "../../local/closed.png";
+import avatarOpened from "../../local/opened.png";
 
 // Filler words to detect and penalise in scoring
 const FILLER_REGEX = /\b(um+|uh+|m+hm+|h+m+|err+|erm+|like|you know|basically|literally|right\?|i mean|kind of|sort of)\b/gi;
@@ -16,6 +20,17 @@ function countFillers(text) {
 // Strip filler words from answer text before sending (keeps them counted but not submitted verbatim)
 function cleanAnswer(text) {
   return text.replace(FILLER_REGEX, "").replace(/\s{2,}/g, " ").trim();
+}
+
+// Turn a raw fetch/network rejection into a calm, actionable message for the UI.
+function friendlyNetworkError(err) {
+  if (err?.name === "AbortError") {
+    return "The server took too long to respond — please try answering again.";
+  }
+  if (/failed to fetch|networkerror|load failed|fetch failed/i.test(err?.message || "")) {
+    return "Couldn't reach the server. Check your connection, then tap the mic and answer again.";
+  }
+  return err?.message || "Something went wrong — please try again.";
 }
 
 /**
@@ -62,8 +77,15 @@ export default function InterviewRoom({
   const [status, setStatus] = useState("CONNECTING");
   const [fillerCount, setFillerCount] = useState(0);
   const [typedAnswer, setTypedAnswer] = useState("");
+  const [avatarMouthOpen, setAvatarMouthOpen] = useState(false);
+  const [aiVoiceActive, setAiVoiceActive] = useState(false);
+  const [cameraOn, setCameraOn] = useState(false);
+  const [cameraError, setCameraError] = useState("");
 
   const recognitionRef = useRef(null);
+  const studentVideoRef = useRef(null);
+  const cameraStreamRef = useRef(null);
+  const speakWatchdogRef = useRef(null);
   const questionStartRef = useRef(null);
   const pauseCountRef = useRef(0);
   const longPauseMsRef = useRef(0);
@@ -79,9 +101,35 @@ export default function InterviewRoom({
     ? user.name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2)
     : "ST";
 
+  // "Thinking/talking" — used only for the panel activity indicator, NOT for the
+  // avatar mouth (the avatar must move only while Mav's voice is actually playing).
+  const isAISpeaking =
+    status === "AI PROCESSING" ||
+    status === "AI SPEAKING" ||
+    (!waitingForStudent && !micActive && !isFinished);
+
+  // Speak `text` via TTS. `aiVoiceActive` is kept true ONLY while the voice is
+  // actually audible, and `onEnd` is guaranteed to fire exactly once — even in
+  // browsers where SpeechSynthesis `onend` is flaky — so the mic always reopens.
   const speakText = useCallback((text, onEnd) => {
-    if (typeof window === "undefined" || !window.speechSynthesis) {
+    if (speakWatchdogRef.current) {
+      clearInterval(speakWatchdogRef.current);
+      speakWatchdogRef.current = null;
+    }
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      if (speakWatchdogRef.current) {
+        clearInterval(speakWatchdogRef.current);
+        speakWatchdogRef.current = null;
+      }
+      setAiVoiceActive(false);
       if (onEnd) onEnd();
+    };
+
+    if (typeof window === "undefined" || !window.speechSynthesis) {
+      finish();
       return;
     }
     window.speechSynthesis.cancel();
@@ -95,8 +143,23 @@ export default function InterviewRoom({
       (v) => v.lang === "en-US" && (v.name.includes("Natural") || v.name.includes("Google") || v.name.includes("Samantha"))
     );
     if (preferred) utter.voice = preferred;
-    if (onEnd) utter.onend = () => onEnd();
+    utter.onend = finish;
+    utter.onerror = finish;
+
+    setAiVoiceActive(true);
     window.speechSynthesis.speak(utter);
+
+    // Watchdog: poll the engine so we detect the real end-of-speech even when
+    // `onend` never fires, and bail out if speech never actually starts.
+    let ticks = 0;
+    let started = false;
+    speakWatchdogRef.current = setInterval(() => {
+      ticks += 1;
+      if (window.speechSynthesis.speaking) started = true;
+      const reallyEnded = started && !window.speechSynthesis.speaking && !window.speechSynthesis.pending;
+      const neverStarted = !started && ticks > 8; // ~2s with no audible speech
+      if (reallyEnded || neverStarted) finish();
+    }, 250);
   }, []);
 
   const submitAnswer = useCallback(async (answerText) => {
@@ -126,20 +189,42 @@ export default function InterviewRoom({
     // Send cleaned answer (fillers removed) to backend for fairer technical scoring
     const cleaned = cleanAnswer(trimmed);
 
+    // Resilient POST: each attempt has a timeout, and transient network failures
+    // (brief connection drop, slow LLM turn) are retried so a raw "Failed to fetch"
+    // never lands on screen.
+    const postAnswer = async (payload) => {
+      let lastErr = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 45000);
+        try {
+          const r = await authFetch("/api/interview/answer", {
+            method: "POST",
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+          });
+          clearTimeout(timer);
+          return r; // got an HTTP response (even if non-2xx) — stop retrying
+        } catch (e) {
+          clearTimeout(timer);
+          lastErr = e;
+          if (attempt < 2) await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+        }
+      }
+      throw lastErr || new Error("Network error");
+    };
+
     try {
-      const res = await authFetch("/api/interview/answer", {
-        method: "POST",
-        body: JSON.stringify({
-          session_id: sessionId,
-          answer_text: cleaned || trimmed,
-          response_time_ms: responseTime,
-          pause_count: pauseCount,
-          long_pause_ms: longPauseMs,
-          filler_word_count: fillerWordCount,
-        }),
+      const res = await postAnswer({
+        session_id: sessionId,
+        answer_text: cleaned || trimmed,
+        response_time_ms: responseTime,
+        pause_count: pauseCount,
+        long_pause_ms: longPauseMs,
+        filler_word_count: fillerWordCount,
       });
       if (!res.ok) {
-        const err = await res.json();
+        const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || "Failed to submit answer");
       }
       const data = await res.json();
@@ -179,9 +264,11 @@ export default function InterviewRoom({
         });
       }
     } catch (err) {
-      setError(err.message);
+      // Friendly, recoverable: keep the student in the flow so they can simply
+      // tap the mic and answer again (or type) — no dead "ERROR" state.
+      setError(friendlyNetworkError(err));
       setWaitingForStudent(true);
-      setStatus("ERROR");
+      setStatus("WAITING FOR YOU");
     } finally {
       submittingRef.current = false;
     }
@@ -211,7 +298,7 @@ export default function InterviewRoom({
         }, 400);
       });
     } catch (err) {
-      setError(err.message);
+      setError(friendlyNetworkError(err));
     } finally {
       setLoading(false);
     }
@@ -224,8 +311,77 @@ export default function InterviewRoom({
       if (typeof window !== "undefined") window.speechSynthesis?.cancel();
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       if (autoSubmitTimerRef.current) clearTimeout(autoSubmitTimerRef.current);
+      if (speakWatchdogRef.current) clearInterval(speakWatchdogRef.current);
     };
   }, [startSession]);
+
+  // Animate the avatar's mouth ONLY while Mav's voice is actually playing
+  // (asking/answering aloud) by swapping closed/opened frames. At every other
+  // time — including while the AI is processing the student's answer — it stays
+  // on the closed frame.
+  useEffect(() => {
+    if (!aiVoiceActive) {
+      setAvatarMouthOpen(false);
+      return;
+    }
+    const interval = setInterval(() => {
+      setAvatarMouthOpen((prev) => !prev);
+    }, 200);
+    return () => clearInterval(interval);
+  }, [aiVoiceActive]);
+
+  // Keep the student's camera on for the duration of the interview.
+  useEffect(() => {
+    let cancelled = false;
+    async function startCamera() {
+      if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+        setCameraError("Camera isn't supported in this browser.");
+        return;
+      }
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        if (cancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        cameraStreamRef.current = stream;
+        if (studentVideoRef.current) studentVideoRef.current.srcObject = stream;
+        setCameraOn(true);
+        setCameraError("");
+      } catch {
+        setCameraError("Camera is off — allow camera access to show your video.");
+        setCameraOn(false);
+      }
+    }
+    startCamera();
+    return () => {
+      cancelled = true;
+      if (cameraStreamRef.current) {
+        cameraStreamRef.current.getTracks().forEach((t) => t.stop());
+        cameraStreamRef.current = null;
+      }
+    };
+  }, []);
+
+  // Release the camera once the assessment is complete.
+  useEffect(() => {
+    if (isFinished && cameraStreamRef.current) {
+      cameraStreamRef.current.getTracks().forEach((t) => t.stop());
+      cameraStreamRef.current = null;
+      setCameraOn(false);
+    }
+  }, [isFinished]);
+
+  // Stable callback ref for the student's <video>. Must NOT be an inline arrow:
+  // an inline ref is re-invoked on every render (e.g. the 200ms avatar swap),
+  // which would re-assign srcObject and make the camera flicker/jump. Here we
+  // only (re)attach the stream when the element or stream actually changes.
+  const attachStudentVideo = useCallback((el) => {
+    studentVideoRef.current = el;
+    if (el && cameraStreamRef.current && el.srcObject !== cameraStreamRef.current) {
+      el.srcObject = cameraStreamRef.current;
+    }
+  }, []);
 
   const startListening = useCallback(() => {
     const SpeechRecognition =
@@ -296,19 +452,36 @@ export default function InterviewRoom({
     };
 
     recognition.onerror = (e) => {
-      if (e.error !== "no-speech") setError(`Mic error: ${e.error}. Please retry.`);
+      // Ignore events from a recognition instance we've already replaced, so a
+      // stale "aborted" can't switch the mic indicator off after a new one opened.
+      if (recognitionRef.current !== recognition) return;
+      // Chrome's SpeechRecognition fires transient "network"/"no-speech"/"aborted"/
+      // "audio-capture" errors even while the mic keeps working fine — never surface
+      // those. Only a genuine permission block is worth telling the student about.
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        setError("Microphone access is blocked. Allow mic permission, or type your answer below.");
+      }
       setMicActive(false);
     };
 
     recognition.onend = () => {
+      // Guard against a superseded recognition's late onend killing the live mic.
+      if (recognitionRef.current !== recognition) return;
       setMicActive(false);
-      // If recognition ended naturally (not by user) and we have text, submit
+      // If recognition ended (silence/stop) and we have text, submit it.
       const answer = finalTextRef.current.trim();
       if (answer && !submittingRef.current && waitingForStudent) {
         submitAnswer(answer);
       }
     };
 
+    // Detach the previous instance's handlers before replacing it, then make
+    // this the current one *before* start() so the guards above resolve correctly.
+    if (recognitionRef.current) {
+      recognitionRef.current.onend = null;
+      recognitionRef.current.onerror = null;
+      recognitionRef.current.onresult = null;
+    }
     recognitionRef.current = recognition;
     recognition.start();
     setMicActive(true);
@@ -481,9 +654,19 @@ export default function InterviewRoom({
     );
   }
 
-  const isAISpeaking = status === "AI PROCESSING" || status === "AI SPEAKING" || (!waitingForStudent && !micActive && !isFinished);
-  const captionText = micActive ? liveTranscript : currentAIText;
-  const captionSpeaker = micActive ? "You (Speaking)" : "AI Assessor";
+  // Captions follow whoever is *actively* talking, and disappear during silence:
+  //  • student speaking (mic on, words detected) → show the live transcript
+  //  • Mav's voice playing → show her line
+  //  • nobody talking → no caption
+  let captionText = "";
+  let captionSpeaker = "";
+  if (micActive && liveTranscript.trim()) {
+    captionText = liveTranscript;
+    captionSpeaker = "You (Speaking)";
+  } else if (aiVoiceActive && currentAIText) {
+    captionText = currentAIText;
+    captionSpeaker = "AI Assessor";
+  }
 
   return (
     <>
@@ -516,7 +699,19 @@ export default function InterviewRoom({
           {/* Video panels */}
           <div className="meet-grid">
             <div className={`meet-panel ${isAISpeaking ? "speaking" : ""}`}>
-              <div className="meet-avatar">AI</div>
+              <img
+                src={(avatarMouthOpen ? avatarOpened : avatarClosed).src}
+                alt="Mav — AI Assessor avatar"
+                draggable={false}
+                style={{
+                  width: 168,
+                  height: 168,
+                  borderRadius: "50%",
+                  objectFit: "cover",
+                  boxShadow: "var(--shadow-lg)",
+                  userSelect: "none",
+                }}
+              />
               <div className="meet-nametag">
                 <span className="meet-nametag-icon">
                   {isAISpeaking ? (
@@ -535,7 +730,37 @@ export default function InterviewRoom({
             </div>
 
             <div className={`meet-panel meet-panel-student ${micActive ? "speaking" : ""}`}>
-              <div className="meet-avatar">{studentInitials}</div>
+              <video
+                ref={attachStudentVideo}
+                autoPlay
+                playsInline
+                muted
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "cover",
+                  transform: "scaleX(-1)",
+                  display: cameraOn ? "block" : "none",
+                }}
+              />
+              {!cameraOn && <div className="meet-avatar">{studentInitials}</div>}
+              {!cameraOn && cameraError && (
+                <div
+                  style={{
+                    position: "absolute",
+                    top: 16,
+                    left: 16,
+                    right: 16,
+                    fontSize: "12px",
+                    color: "#f28b82",
+                    textAlign: "center",
+                  }}
+                >
+                  {cameraError}
+                </div>
+              )}
               <div className="meet-nametag">
                 <span className="meet-nametag-icon">
                   {micActive ? (
