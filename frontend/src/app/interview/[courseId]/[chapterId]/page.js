@@ -40,6 +40,21 @@ function InterviewPage() {
   const [status, setStatus] = useState("CONNECTING");
   const [fillerCount, setFillerCount] = useState(0);
   const [typedAnswer, setTypedAnswer] = useState("");
+  const [avatarMouthOpen, setAvatarMouthOpen] = useState(false);
+
+  const isAISpeaking = status === "AI PROCESSING" || status === "AI SPEAKING" || (!waitingForStudent && !micActive && !isFinished);
+
+  useEffect(() => {
+    let interval;
+    if (isAISpeaking) {
+      interval = setInterval(() => {
+        setAvatarMouthOpen((prev) => !prev);
+      }, 200); // Swap every 200ms
+    } else {
+      setAvatarMouthOpen(false);
+    }
+    return () => clearInterval(interval);
+  }, [isAISpeaking]);
 
   const recognitionRef = useRef(null);
   const questionStartRef = useRef(null);
@@ -476,7 +491,6 @@ function InterviewPage() {
     );
   }
 
-  const isAISpeaking = status === "AI PROCESSING" || status === "AI SPEAKING" || (!waitingForStudent && !micActive && !isFinished);
   const captionText = micActive ? liveTranscript : currentAIText;
   const captionSpeaker = micActive ? "You (Speaking)" : "AI Assessor";
 
@@ -513,7 +527,7 @@ function InterviewPage() {
             <div className={`meet-panel ${isAISpeaking ? "speaking" : ""}`}>
               <div className="meet-avatar" style={{ backgroundColor: 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
                 <img
-                  src={isAISpeaking ? "/opened.png" : "/closed.png"}
+                  src={avatarMouthOpen ? "/opened.png" : "/closed.png"}
                   alt="AI Avatar"
                   style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "50%" }}
                 />
