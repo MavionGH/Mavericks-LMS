@@ -74,6 +74,25 @@ export function AuthProvider({ children }) {
     return data.user;
   };
 
+  const loginWithGoogle = async (credentialToken, role = null) => {
+    const res = await fetch(`${API_BASE}/api/auth/google`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credential_token: credentialToken, role }),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || "Google authentication failed");
+    }
+    const data = await res.json();
+    // If the backend says "needs_role", we return the status to let the frontend prompt the user
+    if (data.status === "needs_role") {
+      return data;
+    }
+    saveSession(data.access_token, data.user);
+    return data.user;
+  };
+
   const logout = () => {
     clearSession();
     router.push("/login");
@@ -110,7 +129,7 @@ export function AuthProvider({ children }) {
   );
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, register, logout, authFetch, refreshUser }}>
+    <AuthContext.Provider value={{ user, token, loading, login, register, loginWithGoogle, logout, authFetch, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );

@@ -44,10 +44,11 @@ class User(Base):
     id = Column(String, primary_key=True, default=generate_uuid)
     name = Column(String(100), nullable=False)
     email = Column(String(255), unique=True, nullable=False, index=True)
-    password = Column(String(255), nullable=False)
+    password = Column(String(255), nullable=True)  # Nullable for OAuth users
     role = Column(Enum(UserRole), default=UserRole.STUDENT)
     is_approved = Column(Boolean, default=True)
     avatar = Column(String(500), nullable=True)
+    google_id = Column(String(255), unique=True, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

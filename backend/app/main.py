@@ -33,6 +33,7 @@ async def lifespan(app: FastAPI):
         "ALTER TABLE courses ADD COLUMN IF NOT EXISTS teacher_id VARCHAR REFERENCES users(id) ON DELETE SET NULL",
         "ALTER TABLE courses ADD COLUMN IF NOT EXISTS is_approved BOOLEAN NOT NULL DEFAULT FALSE",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_approved BOOLEAN NOT NULL DEFAULT TRUE",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id VARCHAR(255)",
     ]
     try:
         with engine.connect() as conn:
@@ -42,6 +43,15 @@ async def lifespan(app: FastAPI):
         logger.info("Schema columns ensured.")
     except Exception as exc:
         logger.warning("Column migration warning: %s", exc)
+
+    # Attempt to make password column nullable (PostgreSQL). Will fail gracefully on SQLite.
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE users ALTER COLUMN password DROP NOT NULL"))
+            conn.commit()
+            logger.info("Ensured password column is nullable.")
+    except Exception as exc:
+        logger.debug("Non-critical password nullability migration skipped: %s", exc)
 
     yield
 
