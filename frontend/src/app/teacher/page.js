@@ -1,8 +1,43 @@
 "use client";
 import Navbar from "@/components/Navbar";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { API_BASE, useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
+
+// Player for interview recordings. Files produced by the browser's MediaRecorder
+// are streamed without a duration in their header, so a plain <video> reports
+// duration = Infinity and its scrub bar can't seek. On metadata load we force the
+// browser to read to the end (seek to a huge time), which makes it compute the real
+// duration; after that the timeline is fully seekable. Runs once per recording.
+function RecordingPlayer({ src }) {
+  const ref = useRef(null);
+  const fixedRef = useRef(false);
+
+  const handleLoadedMetadata = () => {
+    const v = ref.current;
+    if (!v || fixedRef.current) return;
+    if (v.duration === Infinity || Number.isNaN(v.duration)) {
+      fixedRef.current = true;
+      const onUpdate = () => {
+        v.removeEventListener("timeupdate", onUpdate);
+        v.currentTime = 0; // snap back to the start now that duration is known
+      };
+      v.addEventListener("timeupdate", onUpdate);
+      v.currentTime = 1e101; // jump past the end → browser resolves the duration
+    }
+  };
+
+  return (
+    <video
+      ref={ref}
+      src={src}
+      controls
+      preload="metadata"
+      onLoadedMetadata={handleLoadedMetadata}
+      style={{ width: "100%", borderRadius: "var(--radius-sm)", backgroundColor: "#000", maxHeight: 240 }}
+    />
+  );
+}
 
 function TeacherPanel() {
   const { user, token, authFetch, refreshUser } = useAuth();
@@ -32,6 +67,11 @@ function TeacherPanel() {
   const [articleUploading, setArticleUploading] = useState(false);
   const [articleFileName, setArticleFileName] = useState("");
   const [articleError, setArticleError] = useState("");
+
+  // Student interview recordings (screen + voice, stored in R2)
+  const [recordings, setRecordings] = useState([]);
+  const [recordingsLoading, setRecordingsLoading] = useState(false);
+  const [recordingsError, setRecordingsError] = useState("");
 
   const handleVideoUpload = async (e) => {
     const file = e.target.files[0];
@@ -175,6 +215,26 @@ function TeacherPanel() {
     loadCourses();
   }, [loadCourses]);
 
+  const loadRecordings = useCallback(async () => {
+    setRecordingsLoading(true);
+    setRecordingsError("");
+    try {
+      const res = await authFetch("/api/teacher/recordings");
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "Failed to load recordings");
+      setRecordings(await res.json());
+    } catch (err) {
+      setRecordingsError(err.message);
+    } finally {
+      setRecordingsLoading(false);
+    }
+  }, [authFetch]);
+
+  // Load recordings the first time the teacher opens that tab.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (activeTab === "recordings") loadRecordings();
+  }, [activeTab, loadRecordings]);
+
   const selectedCourse = courses.find((c) => c.id === selectedCourseId);
 
   const handleCreateCourse = async (e) => {
@@ -241,6 +301,7 @@ function TeacherPanel() {
     { key: "courses",   label: "My Courses"   },
     { key: "modules",   label: "Add Modules"  },
     { key: "create",    label: "Add Course"   },
+    { key: "recordings", label: "Student Recordings" },
   ];
 
   const handleCheckApproval = async () => {
@@ -705,6 +766,69 @@ function TeacherPanel() {
                   </button>
                 </div>
               </form>
+            </div>
+          )}
+
+          {/* Student Recordings */}
+          {activeTab === "recordings" && (
+            <div>
+              <div style={{ display: "flex", alignItems: "center", marginBottom: "20px" }}>
+                <div style={{ flex: 1 }}>
+                  <h3 style={{ fontSize: "14px", fontWeight: "700", textTransform: "uppercase", fontFamily: "JetBrains Mono", margin: 0 }}>
+                    AI Interview Recordings
+                  </h3>
+                  <p style={{ color: "var(--text-muted)", fontSize: "13px", marginTop: "4px" }}>
+                    Screen + voice recordings of each student&apos;s oral interview in your courses.
+                  </p>
+                </div>
+                <button className="btn btn-secondary" onClick={loadRecordings} style={{ fontSize: "11px", padding: "4px 10px" }}>
+                  Refresh
+                </button>
+              </div>
+
+              {recordingsLoading && (
+                <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>Loading recordings…</p>
+              )}
+              {recordingsError && (
+                <p style={{ color: "var(--color-danger)", fontSize: "13px" }}>❌ {recordingsError}</p>
+              )}
+              {!recordingsLoading && !recordingsError && recordings.length === 0 && (
+                <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+                  No interview recordings yet. They appear here once your students complete recorded interviews.
+                </p>
+              )}
+
+              <div className="grid-2" style={{ alignItems: "start" }}>
+                {recordings.map((r) => (
+                  <div key={r.session_id} className="card" style={{ padding: "16px", backgroundColor: "#ffffff" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px" }}>
+                      <div>
+                        <div style={{ fontWeight: "700", fontSize: "14px", color: "var(--text-title)" }}>{r.student?.name}</div>
+                        <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>{r.student?.email}</div>
+                      </div>
+                      {r.overall_score !== null && r.overall_score !== undefined && (
+                        <span className={`badge ${r.passed ? "badge-success" : "badge-warning"}`} style={{ fontSize: "10px" }}>
+                          {r.passed ? "PASSED" : "NEEDS REVIEW"} · {r.overall_score}%
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "10px" }}>
+                      <strong style={{ color: "var(--text-main)" }}>{r.course?.title}</strong>
+                      {r.module ? ` · ${r.module}` : " · Course-wide interview"}
+                      {r.created_at ? ` · ${new Date(r.created_at).toLocaleDateString()}` : ""}
+                    </div>
+                    <RecordingPlayer src={r.recording_url} />
+                    <a
+                      href={r.recording_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ display: "inline-block", marginTop: "8px", fontSize: "12px", color: "var(--brand)" }}
+                    >
+                      Open in new tab ↗
+                    </a>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>

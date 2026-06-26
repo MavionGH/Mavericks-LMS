@@ -115,6 +115,10 @@ export default function InterviewRoom({
   const [aiVoiceActive, setAiVoiceActive] = useState(false);
   const [cameraOn, setCameraOn] = useState(false);
   const [cameraError, setCameraError] = useState("");
+  // Whole-session recording (screen + Mav's voice + student mic → R2).
+  const [hasStarted, setHasStarted] = useState(false);   // consent gate passed
+  const [preparing, setPreparing] = useState(false);     // acquiring screen share
+  const [recordingNotice, setRecordingNotice] = useState(""); // non-fatal warning
 
   const studentVideoRef = useRef(null);
   const cameraStreamRef = useRef(null);
@@ -138,6 +142,23 @@ export default function InterviewRoom({
   const lastVoiceRef = useRef(0);          // last moment voice was above threshold
   const recordStartRef = useRef(0);        // when recording began
   const transcribingRef = useRef(false);   // awaiting server transcription
+
+  // ── Whole-session recorder refs (independent of the per-answer mic capture) ──
+  // We record the ENTIRE interview — the shared screen, Mav's TTS voice (captured
+  // from the tab/system audio of the screen share) and the student's mic — into a
+  // single file, then upload it to Cloudflare R2 when the interview ends.
+  const sessionIdRef = useRef(null);          // live mirror of sessionId for late callbacks
+  const sessionRecorderRef = useRef(null);    // MediaRecorder for the full session
+  const sessionChunksRef = useRef([]);        // recorded blob chunks
+  const displayStreamRef = useRef(null);      // getDisplayMedia (screen + system audio)
+  const recordMicStreamRef = useRef(null);    // dedicated mic stream for the recording mix
+  const recordAudioCtxRef = useRef(null);     // AudioContext that mixes screen + mic audio
+  const recordingActiveRef = useRef(false);   // true while the session recorder is running
+  const recordingPreparedRef = useRef(false); // devices acquired + recorder built, not yet started
+  const recordingUploadedRef = useRef(false); // guard: upload/stop runs exactly once
+  // Stable handle to the latest finalizer so the (once-registered) screen-share
+  // "ended" listener and the unmount cleanup always call the current version.
+  const finalizeSessionRecordingRef = useRef(null);
 
   const studentInitials = user?.name
     ? user.name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2)
@@ -342,12 +363,188 @@ export default function InterviewRoom({
     }
   }, [authFetch, sessionId, speakText]);
 
+  // Begin recording the whole interview: screen + system/tab audio (which carries
+  // Mav's TTS voice) from getDisplayMedia, mixed with the student's mic. Returns
+  // true if recording is running, false if the student declined / it's unsupported
+  // (the interview still proceeds in that case — recording is best-effort).
+  const startSessionRecording = useCallback(async () => {
+    if (recordingActiveRef.current) return true;
+    if (
+      typeof navigator === "undefined" ||
+      !navigator.mediaDevices?.getDisplayMedia ||
+      typeof window === "undefined" ||
+      !window.MediaRecorder
+    ) {
+      setRecordingNotice("Recording isn't supported in this browser — the interview will continue without it.");
+      return false;
+    }
+
+    // 1) Screen + audio. The browser shows its screen-share picker here; the
+    //    student must tick "share tab/system audio" so Mav's voice is captured.
+    let display;
+    try {
+      display = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: 15 },
+        audio: true,
+      });
+    } catch {
+      return false; // declined / dismissed — caller decides what to do next
+    }
+    displayStreamRef.current = display;
+
+    // 2) Student mic (separate from the per-answer STT mic so the two never fight).
+    let mic = null;
+    try {
+      mic = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false,
+      });
+      recordMicStreamRef.current = mic;
+    } catch {
+      // No mic → we still record the screen + Mav's voice (student audio missing).
+    }
+
+    // 3) Mix the screen audio and the mic into one track via an AudioContext.
+    const videoTrack = display.getVideoTracks()[0];
+    const tracks = [];
+    if (videoTrack) tracks.push(videoTrack);
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      const ctx = new AudioCtx();
+      recordAudioCtxRef.current = ctx;
+      const dest = ctx.createMediaStreamDestination();
+      if (display.getAudioTracks().length) {
+        ctx.createMediaStreamSource(new MediaStream(display.getAudioTracks())).connect(dest);
+      }
+      if (mic && mic.getAudioTracks().length) {
+        ctx.createMediaStreamSource(new MediaStream(mic.getAudioTracks())).connect(dest);
+      }
+      const mixed = dest.stream.getAudioTracks()[0];
+      if (mixed) tracks.push(mixed);
+    } catch {
+      // Mixing failed → fall back to the raw screen audio track alone.
+      const a = display.getAudioTracks()[0];
+      if (a) tracks.push(a);
+    }
+
+    const combined = new MediaStream(tracks);
+
+    // 4) Record the combined stream for the whole session.
+    let recorder;
+    try {
+      const mime = window.MediaRecorder.isTypeSupported?.("video/webm;codecs=vp9,opus")
+        ? "video/webm;codecs=vp9,opus"
+        : (window.MediaRecorder.isTypeSupported?.("video/webm") ? "video/webm" : "");
+      recorder = mime ? new MediaRecorder(combined, { mimeType: mime }) : new MediaRecorder(combined);
+    } catch {
+      setRecordingNotice("Couldn't start the recorder — the interview will continue without recording.");
+      display.getTracks().forEach((t) => t.stop());
+      if (mic) mic.getTracks().forEach((t) => t.stop());
+      return false;
+    }
+    sessionChunksRef.current = [];
+    recordingUploadedRef.current = false;
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) sessionChunksRef.current.push(e.data); };
+    sessionRecorderRef.current = recorder;
+
+    // If the student stops the screen share from the browser's own UI, end the
+    // recording gracefully (the interview itself keeps going).
+    if (videoTrack) {
+      videoTrack.addEventListener("ended", () => {
+        if (recordingActiveRef.current) finalizeSessionRecordingRef.current?.();
+      });
+    }
+
+    // NOTE: we do NOT call recorder.start() here. The screen-share permission must
+    // be acquired during the user's click (above), but the model can take 1-2 min
+    // to return the first question, and we don't want that loading time in the
+    // recording. beginSessionCapture() actually starts the recorder once the
+    // interview screen is ready.
+    recordingPreparedRef.current = true;
+    tlog("session recording prepared (waiting for interview screen)");
+    return true;
+  }, []);
+
+  // Start the prepared recorder. Called the moment the interview screen is ready
+  // (first question received) so the model-loading wait is never recorded.
+  const beginSessionCapture = useCallback(() => {
+    if (!recordingPreparedRef.current || recordingActiveRef.current) return;
+    const rec = sessionRecorderRef.current;
+    if (!rec) return;
+    try {
+      rec.start(1000); // gather data every second so nothing is lost on stop
+      recordingActiveRef.current = true;
+      tlog("session recording started (interview screen visible)");
+    } catch (e) {
+      tlog("failed to start prepared recorder: " + (e?.message || e));
+    }
+  }, []);
+
+  // Stop the full-session recorder, upload the resulting file to R2, and release
+  // the screen/mic devices. Idempotent — safe to call from finish, end-call, and
+  // unmount; only the first call does the work.
+  const finalizeSessionRecording = useCallback(async () => {
+    if (recordingUploadedRef.current) return;
+    const recorder = sessionRecorderRef.current;
+    if (!recorder || !recordingActiveRef.current) {
+      // Recorder was never started (e.g. prepared, then the interview aborted
+      // before the screen appeared). Just release the captured devices.
+      recordingActiveRef.current = false;
+      recordingPreparedRef.current = false;
+      if (recordAudioCtxRef.current) { try { recordAudioCtxRef.current.close(); } catch { /* noop */ } recordAudioCtxRef.current = null; }
+      if (displayStreamRef.current) { displayStreamRef.current.getTracks().forEach((t) => t.stop()); displayStreamRef.current = null; }
+      if (recordMicStreamRef.current) { recordMicStreamRef.current.getTracks().forEach((t) => t.stop()); recordMicStreamRef.current = null; }
+      return;
+    }
+    recordingUploadedRef.current = true;
+    recordingActiveRef.current = false;
+
+    // Wait for the recorder to flush its final chunk before building the blob.
+    const stopped = new Promise((resolve) => {
+      recorder.onstop = () => resolve();
+      try { recorder.stop(); } catch { resolve(); }
+    });
+    await stopped;
+
+    // Tear down capture devices now that recording has ended.
+    if (recordAudioCtxRef.current) { try { recordAudioCtxRef.current.close(); } catch { /* noop */ } recordAudioCtxRef.current = null; }
+    if (displayStreamRef.current) { displayStreamRef.current.getTracks().forEach((t) => t.stop()); displayStreamRef.current = null; }
+    if (recordMicStreamRef.current) { recordMicStreamRef.current.getTracks().forEach((t) => t.stop()); recordMicStreamRef.current = null; }
+
+    const chunks = sessionChunksRef.current;
+    sessionChunksRef.current = [];
+    const sid = sessionIdRef.current;
+    if (!chunks.length || !sid) {
+      tlog("session recording: nothing to upload");
+      return;
+    }
+
+    const blob = new Blob(chunks, { type: chunks[0].type || "video/webm" });
+    tlog(`uploading interview recording ${(blob.size / (1024 * 1024)).toFixed(1)}MB`);
+    try {
+      const form = new FormData();
+      form.append("recording", blob, "interview.webm");
+      const res = await authFetch(`/api/interview/recording/${sid}`, { method: "POST", body: form });
+      if (!res.ok) throw new Error("upload failed");
+      tlog("interview recording uploaded");
+    } catch (e) {
+      // Non-fatal: the student already has their result; the recording just won't
+      // appear in the teacher panel.
+      tlog("interview recording upload failed: " + (e?.message || e));
+    }
+  }, [authFetch]);
+
+  useEffect(() => {
+    finalizeSessionRecordingRef.current = finalizeSessionRecording;
+  }, [finalizeSessionRecording]);
+
   const startSession = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
       const data = await doStart();
       setSessionId(data.session_id);
+      sessionIdRef.current = data.session_id;
       setTitleText(data.chapter_title || "");
       setQuestionNum(data.question_number);
 
@@ -356,6 +553,11 @@ export default function InterviewRoom({
       setCurrentAIText(msg);
       setStatus("AI SPEAKING");
       setWaitingForStudent(false);
+
+      // The interview screen is now ready — START recording here so the (often
+      // 1-2 min) model-loading wait above is never captured. The greeting and the
+      // whole conversation that follow ARE recorded.
+      beginSessionCapture();
 
       speakText(msg, () => {
         setTimeout(() => {
@@ -368,10 +570,13 @@ export default function InterviewRoom({
       });
     } catch (err) {
       setError(friendlyNetworkError(err));
+      // The interview never started — release the prepared (never-recorded) screen
+      // share so the student isn't left sharing their screen for nothing.
+      if (!recordingActiveRef.current) finalizeSessionRecordingRef.current?.();
     } finally {
       setLoading(false);
     }
-  }, [doStart, speakText]);
+  }, [doStart, speakText, beginSessionCapture]);
 
   // Warm the TTS voice list on mount. Browsers load voices asynchronously, so
   // touching getVoices() (and listening for "voiceschanged") here means the list
@@ -385,11 +590,37 @@ export default function InterviewRoom({
     return () => window.speechSynthesis.removeEventListener?.("voiceschanged", onVoices);
   }, []);
 
+  // Begin the recorded interview once the student has consented to screen sharing.
+  // We acquire the screen+audio capture FIRST (needs the click's user gesture),
+  // then kick off the interview turn. If sharing is declined the student can still
+  // continue without a recording.
+  const beginInterview = useCallback(async () => {
+    setPreparing(true);
+    setRecordingNotice("");
+    const ok = await startSessionRecording();
+    setPreparing(false);
+    if (ok) {
+      setHasStarted(true);
+    } else {
+      setRecordingNotice(
+        "Screen sharing wasn't enabled, so this interview can't be recorded. Click “Share screen & begin” to try again, or continue without recording."
+      );
+    }
+  }, [startSessionRecording]);
+
+  const continueWithoutRecording = useCallback(() => {
+    setRecordingNotice("");
+    setHasStarted(true);
+  }, []);
+
   useEffect(() => {
-    // Mount-time kickoff of the interview (fetches the first turn, then setStates).
+    // Kick off the interview turn only AFTER the consent gate is passed.
+    if (!hasStarted) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     startSession();
     return () => {
+      // Flush/upload the recording if the student leaves mid-interview.
+      finalizeSessionRecordingRef.current?.();
       if (vadIntervalRef.current) clearInterval(vadIntervalRef.current);
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
         try { mediaRecorderRef.current.stop(); } catch { /* noop */ }
@@ -402,7 +633,7 @@ export default function InterviewRoom({
       if (typeof window !== "undefined") window.speechSynthesis?.cancel();
       if (speakWatchdogRef.current) clearInterval(speakWatchdogRef.current);
     };
-  }, [startSession]);
+  }, [hasStarted, startSession]);
 
   // Animate the avatar's mouth ONLY while Mav's voice is actually playing
   // (asking/answering aloud) by swapping closed/opened frames. When the voice is
@@ -494,6 +725,13 @@ export default function InterviewRoom({
       micStreamRef.current = null;
     }
   }, [isFinished]);
+
+  // Once the interview is over, stop the full-session recorder and upload it to R2.
+  // Idempotent (covers normal completion, "end early", and the unmount path).
+  useEffect(() => {
+    if (!isFinished) return;
+    finalizeSessionRecording();
+  }, [isFinished, finalizeSessionRecording]);
 
   // Stable callback ref for the student's <video>. Must NOT be an inline arrow:
   // an inline ref is re-invoked on every render (e.g. the 200ms avatar swap),
@@ -737,6 +975,53 @@ export default function InterviewRoom({
       setError(err.message);
     }
   };
+
+  // ── Consent gate ──────────────────────────────────────────────────────────
+  // Screen capture can only be requested from a user gesture, and recording the
+  // interview requires the student's explicit consent, so we gate the whole
+  // session behind a single "Share screen & begin" click.
+  if (!hasStarted) {
+    return (
+      <>
+        <Navbar />
+        <div className="page-container" style={{ display: "grid", placeItems: "center", minHeight: "100vh", backgroundColor: "var(--bg-canvas)" }}>
+          <div className="card" style={{ maxWidth: 520, padding: "40px", textAlign: "center", backgroundColor: "#ffffff" }}>
+            <h2 style={{ fontSize: "22px", fontWeight: "700", color: "var(--text-title)", marginBottom: "12px" }}>{heading}</h2>
+            <p style={{ color: "var(--text-muted)", fontSize: "14px", lineHeight: "1.6", marginBottom: "20px" }}>
+              This oral interview is <strong>recorded</strong> (your screen, the
+              interviewer&apos;s voice and your microphone) so your teacher can review it
+              afterwards. When you click below, choose your screen or this tab and
+              <strong> tick “Share tab/system audio”</strong> so the interviewer&apos;s voice is captured.
+            </p>
+            {recordingNotice && (
+              <p style={{ color: "var(--color-warning)", fontSize: "13px", marginBottom: "16px" }}>{recordingNotice}</p>
+            )}
+            <button
+              className="btn btn-primary"
+              style={{ width: "100%" }}
+              onClick={beginInterview}
+              disabled={preparing}
+            >
+              {preparing ? "Waiting for screen permission…" : "Share screen & begin"}
+            </button>
+            {recordingNotice && (
+              <button
+                className="btn btn-secondary"
+                style={{ width: "100%", marginTop: "12px" }}
+                onClick={continueWithoutRecording}
+                disabled={preparing}
+              >
+                Continue without recording
+              </button>
+            )}
+            <Link href={backHref} style={{ display: "inline-block", marginTop: "16px", fontSize: "13px", color: "var(--text-muted)" }}>
+              Cancel
+            </Link>
+          </div>
+        </div>
+      </>
+    );
+  }
 
   if (loading) {
     return (

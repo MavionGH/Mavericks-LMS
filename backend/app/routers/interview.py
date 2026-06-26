@@ -17,6 +17,12 @@ from app.auth.dependencies import require_student
 from app.services.chapter_context import build_chapter_context, build_course_context
 from app.services.interview_graph import start_interview, process_answer, MAX_QUESTIONS
 from app.services.stt import transcribe_audio
+from app.services.storage import upload_recording_to_r2
+
+# Hard cap on the uploaded interview recording (screen + audio for the whole
+# session). Generous because a multi-minute screen capture is far larger than a
+# single spoken answer, but still bounded to stop a runaway upload.
+MAX_RECORDING_BYTES = 200 * 1024 * 1024
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +81,43 @@ async def transcribe_answer(
         raise HTTPException(status_code=413, detail="Audio too large")
     text = transcribe_audio(audio_bytes, audio.filename or "answer.webm")
     return {"text": text}
+
+
+@router.post("/recording/{session_id}")
+async def upload_interview_recording(
+    session_id: str,
+    recording: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_student),
+):
+    """Store the full screen+audio recording of an interview in Cloudflare R2.
+
+    The browser records the entire session (shared screen + Mav's voice + the
+    student's mic) and uploads the finished blob here when the interview ends. We
+    push it to R2 and save the public URL on the session so a teacher can replay it.
+    """
+    session = db.query(InterviewSession).filter(
+        InterviewSession.id == session_id,
+        InterviewSession.user_id == current_user.id,
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Interview session not found")
+
+    # Stream-size guard: read into memory once (boto3 needs a seekable body) but
+    # reject anything implausibly large before touching R2.
+    data = await recording.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty recording upload")
+    if len(data) > MAX_RECORDING_BYTES:
+        raise HTTPException(status_code=413, detail="Recording too large")
+
+    # Rewind so upload_recording_to_r2 reads from the start.
+    recording.file.seek(0)
+    url = upload_recording_to_r2(recording)
+
+    session.recording_url = url
+    db.commit()
+    return {"recording_url": url}
 
 
 @router.post("/start", response_model=InterviewTurnResponse)
