@@ -78,6 +78,9 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Let the browser cache the CORS preflight so it doesn't send an OPTIONS
+    # request before every POST/PUT (cuts the duplicate-looking OPTIONS traffic).
+    max_age=3600,
 )
 
 # Register routers

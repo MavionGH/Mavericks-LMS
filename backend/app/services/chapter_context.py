@@ -10,34 +10,38 @@ logger = logging.getLogger(__name__)
 _MAX_COURSE_CONTEXT_CHARS = 12000
 
 
+# A single chapter's article + transcript is small enough to hand to the LLM
+# whole, so we never need vector retrieval here. Cap it so a pathologically long
+# transcript can't blow the prompt (the LLM prompt builders also slice further).
+_MAX_CHAPTER_CONTEXT_CHARS = 12000
+
+
 def build_chapter_context(
     chapter: Chapter,
     query: Optional[str] = None,
     db=None,
 ) -> str:
     """
-    Build a context string for LLM prompts.
+    Build a context string for LLM prompts from a single module's own content.
 
-    When db is provided, retrieves the most relevant chunks via pgvector cosine
-    similarity (RAG). Falls back to raw text concatenation when embeddings are
-    not yet available or the vector search fails.
+    A per-module interview only concerns ONE chapter, whose article + transcript
+    already fit comfortably in the prompt, so we use the raw text directly.
+
+    This deliberately performs NO embedding/vector search: the embedding model is
+    a ~90 MB lazy-loaded download whose first call dominated interview startup,
+    and the pgvector `chunk_embeddings` table it queried is never populated (module
+    content is indexed into Pinecone at upload time, not pgvector) — so retrieval
+    always fell back to this same raw text anyway. Skipping it is behaviour-
+    preserving and removes the cold-load entirely. `query`/`db` are accepted for
+    backward compatibility and intentionally unused.
     """
-    if db is not None:
-        try:
-            from app.services.embeddings import retrieve_relevant_chunks
-            chunks = retrieve_relevant_chunks(chapter.id, query or chapter.title, db)
-            if chunks:
-                return f"# Module: {chapter.title}\n\n" + "\n\n---\n\n".join(chunks)
-        except Exception:
-            pass
-
     parts = [
         f"# Module: {chapter.title}",
         f"\n## Article Content\n{chapter.article_content}",
     ]
     if chapter.video_transcript:
         parts.append(f"\n## Video Transcript\n{chapter.video_transcript}")
-    return "\n".join(parts)
+    return "\n".join(parts)[:_MAX_CHAPTER_CONTEXT_CHARS]
 
 
 def _raw_course_context(course: Course) -> str:

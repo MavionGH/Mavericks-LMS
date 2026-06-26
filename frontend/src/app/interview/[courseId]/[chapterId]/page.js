@@ -12,11 +12,8 @@ function ChapterInterviewPage() {
   const { authFetch } = useAuth();
 
   const doStart = useCallback(async () => {
-    const eligRes = await authFetch(`/api/interview/eligibility/${params.chapterId}`);
-    const elig = await eligRes.json();
-    if (!elig.eligible) {
-      throw new Error(elig.reason || "Not eligible for interview");
-    }
+    // `/start` already enforces eligibility (enrollment) server-side and returns
+    // a descriptive error, so we skip the separate eligibility round-trip.
     const res = await authFetch("/api/interview/start", {
       method: "POST",
       body: JSON.stringify({ chapter_id: params.chapterId }),

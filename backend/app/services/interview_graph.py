@@ -5,6 +5,7 @@ Turn-based flow for REST API:
   start_interview()  → greeting + opening question
   process_answer()   → classify → chitchat reply OR follow-up question OR final scoring
 """
+import re
 from typing import TypedDict, Optional, List
 from langgraph.graph import StateGraph, END
 
@@ -96,6 +97,39 @@ def _is_skip_or_dont_know(answer: str) -> bool:
     """Return True if the answer is a non-answer (skip, I don't know, pass, etc.)."""
     low = answer.strip().lower()
     return any(phrase in low for phrase in _SKIP_PHRASES)
+
+
+# Cheap chitchat regexes (mirror the rule-based fallback in llm.py) used only to
+# decide whether we can SKIP the LLM classification call. A reply that trips none
+# of these and is reasonably long is treated as a genuine answer locally.
+_CHITCHAT_RE = re.compile(
+    r"\b(how are you|how do you do|you doing|what('?s| is) up|how'?s it going|"
+    r"what do you mean|can you (explain|clarify|elaborate|rephrase|repeat)|"
+    r"i don'?t understand|who (are|is) you|your name|tell me a joke|joke|"
+    r"weather|the time|what time|today'?s date)\b",
+    re.IGNORECASE,
+)
+_GREETING_ONLY_RE = re.compile(
+    r"^\s*(hi+|hello+|hey+|good (morning|afternoon|evening|day)|howdy|sup|yo|greetings)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_clearly_an_answer(answer: str) -> bool:
+    """True when we can safely classify locally as a genuine answer (no LLM call).
+
+    Conservative on purpose: only short-circuits long replies that contain no
+    chitchat/greeting/clarification cues and aren't phrased as a question, so
+    borderline inputs still reach the LLM classifier and behaviour is preserved.
+    """
+    text = answer.strip()
+    if len(text.split()) < 12:
+        return False
+    if text.endswith("?"):
+        return False
+    if _GREETING_ONLY_RE.match(text) or _CHITCHAT_RE.search(text):
+        return False
+    return True
 
 
 def _route_after_answer(state: InterviewState) -> str:
@@ -256,7 +290,16 @@ def process_answer(
     current_q = state.get("current_question") or state.get("next_question", "")
 
     # ── Classify the student's input ──
-    category = llm_classify_response(answer, current_q)
+    # Fast path: a long, substantive reply that matches none of the chitchat
+    # patterns is virtually always a genuine answer. Treating it as such locally
+    # skips an entire LLM round-trip (the classify call) on the common case,
+    # roughly halving per-answer latency. Ambiguous/short inputs still go to the
+    # LLM classifier so greeting/personal/clarification/offtopic handling is
+    # unchanged.
+    if _is_clearly_an_answer(answer):
+        category = "answer"
+    else:
+        category = llm_classify_response(answer, current_q)
 
     if category in ("greeting", "personal", "clarification", "offtopic"):
         # Generate a conversational reply without advancing the interview

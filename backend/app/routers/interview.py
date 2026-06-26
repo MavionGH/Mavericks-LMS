@@ -1,11 +1,13 @@
+import logging
+import time
 from typing import Union
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, load_only
 
 from app.database import get_db
 from app.models.models import (
     Chapter, Course, Enrollment, Evaluation, EvaluationType,
-    InterviewSession, QuizAttempt, User,
+    InterviewSession, User,
 )
 from app.schemas.schemas import (
     InterviewStartRequest, CourseInterviewStartRequest, InterviewAnswerRequest,
@@ -15,27 +17,9 @@ from app.auth.dependencies import require_student
 from app.services.chapter_context import build_chapter_context, build_course_context
 from app.services.interview_graph import start_interview, process_answer, MAX_QUESTIONS
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/interview", tags=["Interview"])
-
-
-def _get_chapter_and_enrollment(db: Session, user_id: str, chapter_id: str):
-    chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
-    if not chapter:
-        raise HTTPException(status_code=404, detail="Chapter not found")
-
-    enrollment = db.query(Enrollment).filter(
-        Enrollment.user_id == user_id,
-        Enrollment.course_id == chapter.course_id,
-    ).first()
-    if not enrollment:
-        raise HTTPException(status_code=400, detail="Not enrolled in this course")
-
-    sorted_chapters = sorted(chapter.course.chapters, key=lambda c: c.order_index)
-    current = sorted_chapters[enrollment.current_chapter_index] if sorted_chapters else None
-    if not current or current.id != chapter_id:
-        raise HTTPException(status_code=403, detail="This module is not your current active chapter")
-
-    return chapter, enrollment, sorted_chapters
 
 
 @router.get("/eligibility/{chapter_id}", response_model=InterviewEligibilityResponse)
@@ -44,7 +28,15 @@ def check_eligibility(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_student),
 ):
-    chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
+    # Enrollment is the ONLY requirement (requirement #2). A single indexed
+    # lookup on (chapter_id) + (user_id, course_id) — no chapter/quiz/session
+    # fan-out — keeps this endpoint cheap.
+    chapter = (
+        db.query(Chapter)
+        .options(load_only(Chapter.course_id))
+        .filter(Chapter.id == chapter_id)
+        .first()
+    )
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
 
@@ -54,64 +46,6 @@ def check_eligibility(
     ).first()
     if not enrollment:
         return InterviewEligibilityResponse(eligible=False, reason="Not enrolled in this course")
-
-    sorted_chapters = sorted(chapter.course.chapters, key=lambda c: c.order_index)
-    current = sorted_chapters[enrollment.current_chapter_index] if sorted_chapters else None
-    if not current or current.id != chapter_id:
-        return InterviewEligibilityResponse(
-            eligible=False,
-            reason="Complete previous modules first",
-            video_watched=enrollment.video_watched,
-            article_read=enrollment.article_read,
-            enrollment_id=enrollment.id,
-        )
-
-    if not enrollment.video_watched:
-        return InterviewEligibilityResponse(
-            eligible=False,
-            reason="Watch the module video first",
-            video_watched=False,
-            article_read=enrollment.article_read,
-            enrollment_id=enrollment.id,
-        )
-
-    if not enrollment.article_read:
-        return InterviewEligibilityResponse(
-            eligible=False,
-            reason="Read the module article first",
-            video_watched=True,
-            article_read=False,
-            enrollment_id=enrollment.id,
-        )
-
-    # Check quiz passed
-    quiz_passed = db.query(QuizAttempt).filter(
-        QuizAttempt.user_id == current_user.id,
-        QuizAttempt.chapter_id == chapter_id,
-        QuizAttempt.passed == True,
-    ).first()
-    if not quiz_passed:
-        return InterviewEligibilityResponse(
-            eligible=False,
-            reason="Pass the chapter quiz first",
-            video_watched=True,
-            article_read=True,
-            enrollment_id=enrollment.id,
-        )
-
-    active = db.query(InterviewSession).filter(
-        InterviewSession.user_id == current_user.id,
-        InterviewSession.chapter_id == chapter_id,
-        InterviewSession.status == "active",
-    ).first()
-    if active:
-        return InterviewEligibilityResponse(
-            eligible=True,
-            reason="Resuming active session",
-            video_watched=True,
-            article_read=True,
-            enrollment_id=enrollment.id,
-        )
 
     return InterviewEligibilityResponse(
         eligible=True,
@@ -127,25 +61,25 @@ def start_interview_session(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_student),
 ):
-    chapter, enrollment, _ = _get_chapter_and_enrollment(db, current_user.id, data.chapter_id)
+    _t0 = time.perf_counter()
 
-    if not enrollment.video_watched or not enrollment.article_read:
-        raise HTTPException(
-            status_code=400,
-            detail="Complete the video and article before starting the interview",
-        )
+    # ── Eligibility: enrollment is the ONLY requirement to start an interview ──
+    # (video/article/quiz gating intentionally removed — see requirement #2.)
+    chapter = (
+        db.query(Chapter)
+        .options(joinedload(Chapter.course))
+        .filter(Chapter.id == data.chapter_id)
+        .first()
+    )
+    if not chapter:
+        raise HTTPException(status_code=404, detail="Chapter not found")
 
-    # Enforce quiz-pass gating
-    quiz_passed = db.query(QuizAttempt).filter(
-        QuizAttempt.user_id == current_user.id,
-        QuizAttempt.chapter_id == data.chapter_id,
-        QuizAttempt.passed == True,
+    enrollment = db.query(Enrollment).filter(
+        Enrollment.user_id == current_user.id,
+        Enrollment.course_id == chapter.course_id,
     ).first()
-    if not quiz_passed:
-        raise HTTPException(
-            status_code=400,
-            detail="Pass the chapter quiz before starting the interview",
-        )
+    if not enrollment:
+        raise HTTPException(status_code=400, detail="Not enrolled in this course")
 
     db.query(InterviewSession).filter(
         InterviewSession.user_id == current_user.id,
@@ -154,21 +88,25 @@ def start_interview_session(
     ).update({"status": "abandoned"})
     db.commit()
 
-    # Cache the values we need BEFORE build_chapter_context runs.
-    # build_chapter_context may trigger a vector-search SQL error that causes a
-    # DB rollback (poisoning the transaction).  Reading these values first means
-    # we don't need to issue any further DB queries after that point.
-    course = db.query(Course).filter(Course.id == chapter.course_id).first()
+    # Pull primitives off the ORM objects up front so we don't depend on the
+    # session after this point (the course is already loaded via joinedload, so
+    # no extra query is issued).
+    course = chapter.course
     course_pass_threshold = course.pass_threshold if course else 70
     chapter_title = chapter.title
-    chapter_course_id = chapter.course_id
+    _t_db = time.perf_counter()
 
-    context = build_chapter_context(
-        chapter,
-        query=f"important concepts and topics in {chapter.title} for oral assessment",
-        db=db,
-    )
+    # No vector search / embedding model: a single module's text is used directly.
+    context = build_chapter_context(chapter)
+    _t_ctx = time.perf_counter()
+
     graph_state = start_interview(chapter_title, context, course_pass_threshold)
+    _t_graph = time.perf_counter()
+    logger.info(
+        "interview/start timing — db=%.0fms context=%.0fms graph=%.0fms total=%.0fms",
+        (_t_db - _t0) * 1000, (_t_ctx - _t_db) * 1000,
+        (_t_graph - _t_ctx) * 1000, (_t_graph - _t0) * 1000,
+    )
 
     session = InterviewSession(
         user_id=current_user.id,
@@ -308,6 +246,7 @@ def submit_answer(
     if not data.answer_text.strip():
         raise HTTPException(status_code=400, detail="Answer cannot be empty")
 
+    _t0 = time.perf_counter()
     graph_state = process_answer(
         session.graph_state,
         data.answer_text.strip(),
@@ -315,6 +254,11 @@ def submit_answer(
         data.pause_count,
         data.long_pause_ms,
         data.filler_word_count,
+    )
+    logger.info(
+        "interview/answer process_answer=%.0fms (complete=%s chitchat=%s)",
+        (time.perf_counter() - _t0) * 1000,
+        graph_state.get("is_complete"), graph_state.get("is_chitchat"),
     )
 
     session.graph_state = graph_state
