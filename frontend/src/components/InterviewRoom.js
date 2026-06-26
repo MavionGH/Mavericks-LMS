@@ -9,6 +9,40 @@ import { useAuth } from "@/context/AuthContext";
 import avatarClosed from "../../local/closed.png";
 import avatarOpened from "../../local/opened.png";
 
+// Handoff gap between TTS ending and the mic opening. speechSynthesis needs a tick
+// to release the audio session before we start recording. Small and deterministic.
+const MIC_HANDOFF_MS = 150;
+
+// ── Voice capture (MediaRecorder + local VAD) ──────────────────────────────────
+// The browser Web Speech API (Google cloud STT) is unreachable on many networks,
+// so we record the answer locally and transcribe it server-side (Groq Whisper).
+// A lightweight Voice Activity Detector watches the mic level to auto-stop on
+// silence — no cloud dependency, works everywhere the backend can reach Groq.
+//
+// VAD_THRESHOLD : normalized RMS above which we consider the student to be speaking
+// SILENCE_MS    : trailing silence (after speech) that triggers auto-submit
+// MAX_RECORD_MS : hard cap on a single answer's recording length
+// MIN_SPEECH_MS : minimum voiced time before a silence is allowed to auto-submit
+const VAD_THRESHOLD = 0.02;
+const SILENCE_MS = 2500;
+const MAX_RECORD_MS = 60000;
+const MIN_SPEECH_MS = 300;
+
+// TEMP instrumentation: timestamped logs across the whole voice pipeline so the
+// exact latency of every stage (TTS end → mic → audiostart → first word →
+// caption) is measurable in the console. Flip to false to silence.
+const VOICE_DEBUG = true;
+function tlog(label) {
+  if (!VOICE_DEBUG || typeof console === "undefined") return;
+  const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+  console.log(`[voice ${now.toFixed(0)}ms] ${label}`);
+}
+
+// Known FEMALE TTS voice names across Windows / Chrome / macOS / Android. The
+// Web Speech API exposes no gender field, so name-matching is the reliable way to
+// keep Mav's voice female regardless of the device's installed voices.
+const FEMALE_VOICE_HINTS = /(zira|aria|jenny|jessa|michelle|female|samantha|victoria|karen|moira|tessa|fiona|serena|allison|ava|susan|google us english|google uk english female|libby|sonia|natasha|clara|amber|emma|hazel|catherine|linda|heera|hoda|salli|joanna|kimberly|ivy|kendra)/i;
+
 // Filler words to detect and penalise in scoring
 const FILLER_REGEX = /\b(um+|uh+|m+hm+|h+m+|err+|erm+|like|you know|basically|literally|right\?|i mean|kind of|sort of)\b/gi;
 
@@ -82,20 +116,28 @@ export default function InterviewRoom({
   const [cameraOn, setCameraOn] = useState(false);
   const [cameraError, setCameraError] = useState("");
 
-  const recognitionRef = useRef(null);
   const studentVideoRef = useRef(null);
   const cameraStreamRef = useRef(null);
   const speakWatchdogRef = useRef(null);
   const questionStartRef = useRef(null);
   const pauseCountRef = useRef(0);
   const longPauseMsRef = useRef(0);
-  const lastSpeechRef = useRef(Date.now());
-  const silenceTimerRef = useRef(null);
-  const autoSubmitTimerRef = useRef(null);
   const submittingRef = useRef(false);
-  const finalTextRef = useRef("");
   const fillerCountRef = useRef(0);
   const startListeningRef = useRef(null);  // ref to break circular dep
+  const waitingForStudentRef = useRef(false); // live mirror of waitingForStudent
+
+  // ── Recording / VAD refs ──
+  const micStreamRef = useRef(null);       // held mic capture (reused each turn)
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);       // recorded blob chunks for this answer
+  const audioCtxRef = useRef(null);        // AudioContext for VAD analysis
+  const vadIntervalRef = useRef(null);     // VAD polling interval
+  const speechDetectedRef = useRef(false); // any voiced audio captured this turn
+  const speechStartedAtRef = useRef(0);    // when voice first detected this turn
+  const lastVoiceRef = useRef(0);          // last moment voice was above threshold
+  const recordStartRef = useRef(0);        // when recording began
+  const transcribingRef = useRef(false);   // awaiting server transcription
 
   const studentInitials = user?.name
     ? user.name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2)
@@ -108,9 +150,12 @@ export default function InterviewRoom({
     status === "AI SPEAKING" ||
     (!waitingForStudent && !micActive && !isFinished);
 
-  // Speak `text` via TTS. `aiVoiceActive` is kept true ONLY while the voice is
-  // actually audible, and `onEnd` is guaranteed to fire exactly once — even in
-  // browsers where SpeechSynthesis `onend` is flaky — so the mic always reopens.
+  // Speak `text` via TTS. Audio is the single source of truth for timing:
+  // `aiVoiceActive` flips on only when the voice ACTUALLY starts (utterance
+  // `onstart`, or the watchdog detecting real playback) — never before audio
+  // begins — and off the instant it ends. `onEnd` is guaranteed to fire exactly
+  // once, even when the browser's `onstart`/`onend` are flaky, so the mic always
+  // reopens after Mav finishes.
   const speakText = useCallback((text, onEnd) => {
     if (speakWatchdogRef.current) {
       clearInterval(speakWatchdogRef.current);
@@ -124,6 +169,7 @@ export default function InterviewRoom({
         clearInterval(speakWatchdogRef.current);
         speakWatchdogRef.current = null;
       }
+      tlog("TTS finished (audio playback ended, avatar stops)");
       setAiVoiceActive(false);
       if (onEnd) onEnd();
     };
@@ -135,29 +181,53 @@ export default function InterviewRoom({
     window.speechSynthesis.cancel();
     const utter = new SpeechSynthesisUtterance(text);
     utter.rate = 0.95;
-    utter.pitch = 1.0;
+    utter.pitch = 1.1; // slightly higher → reads as a female voice on generic engines
     utter.volume = 1;
-    // Prefer a natural-sounding voice if available
+    // Mav is female, so prefer a FEMALE en-US voice. There is no standard gender
+    // field, so we match the well-known female voice names across Windows / Chrome
+    // / macOS / Android, preferring a local (low-latency) one. Falls back to any
+    // en voice so the greeting is never skipped.
     const voices = window.speechSynthesis.getVoices();
-    const preferred = voices.find(
-      (v) => v.lang === "en-US" && (v.name.includes("Natural") || v.name.includes("Google") || v.name.includes("Samantha"))
-    );
+    const en = voices.filter((v) => /^en(-|_|$)/i.test(v.lang));
+    const isFemale = (v) => FEMALE_VOICE_HINTS.test(v.name);
+    const preferred =
+      en.find((v) => isFemale(v) && v.localService && /en-US/i.test(v.lang)) ||
+      en.find((v) => isFemale(v) && /en-US/i.test(v.lang)) ||
+      en.find((v) => isFemale(v)) ||
+      en.find((v) => v.localService && /en-US/i.test(v.lang)) ||
+      en.find((v) => /en-US/i.test(v.lang)) ||
+      en[0] ||
+      voices[0];
     if (preferred) utter.voice = preferred;
+    tlog(`TTS voice: ${preferred ? `${preferred.name} (${preferred.lang})` : "default"}`);
+
+    // Audio events are the ONLY thing that turns the avatar/captions on, so they
+    // can never appear before sound. `onstart` (and `onboundary`, which fires as
+    // words are actually spoken) signal real playback; the watchdog below is used
+    // solely to detect the END and to bail out if speech never starts — it does
+    // NOT switch the avatar on from the queued `speaking` flag.
+    let loggedFirstAudio = false;
+    const markSpeaking = () => {
+      if (!loggedFirstAudio) { loggedFirstAudio = true; tlog("TTS first audio (onstart/onboundary)"); }
+      setAiVoiceActive(true);
+    };
+    utter.onstart = markSpeaking;
+    utter.onboundary = markSpeaking;
     utter.onend = finish;
     utter.onerror = finish;
 
-    setAiVoiceActive(true);
+    tlog("TTS speak() called");
     window.speechSynthesis.speak(utter);
 
-    // Watchdog: poll the engine so we detect the real end-of-speech even when
-    // `onend` never fires, and bail out if speech never actually starts.
+    // Watchdog: detect real end-of-speech even when `onend` never fires, and bail
+    // out if speech never starts. `everSpoke` is for END detection only.
     let ticks = 0;
-    let started = false;
+    let everSpoke = false;
     speakWatchdogRef.current = setInterval(() => {
       ticks += 1;
-      if (window.speechSynthesis.speaking) started = true;
-      const reallyEnded = started && !window.speechSynthesis.speaking && !window.speechSynthesis.pending;
-      const neverStarted = !started && ticks > 8; // ~2s with no audible speech
+      if (window.speechSynthesis.speaking) everSpoke = true;
+      const reallyEnded = everSpoke && !window.speechSynthesis.speaking && !window.speechSynthesis.pending;
+      const neverStarted = !everSpoke && ticks > 8; // ~2s with no speech at all
       if (reallyEnded || neverStarted) finish();
     }, 250);
   }, []);
@@ -166,10 +236,6 @@ export default function InterviewRoom({
     if (submittingRef.current || !sessionId) return;
     const trimmed = answerText.trim();
     if (!trimmed) return;
-
-    // Cancel any pending auto-submit
-    if (autoSubmitTimerRef.current) clearTimeout(autoSubmitTimerRef.current);
-    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
 
     submittingRef.current = true;
     setStatus("AI PROCESSING");
@@ -181,9 +247,11 @@ export default function InterviewRoom({
     const longPauseMs = longPauseMsRef.current;
     const fillerWordCount = fillerCountRef.current;
 
-    // Show the raw (filler-included) answer in the UI transcript
+    // Show the raw (filler-included) answer in the UI transcript. Keep it visible
+    // as the caption (don't clear liveTranscript) until Mav starts speaking, so the
+    // student sees what was transcribed.
     setTranscript((prev) => [...prev, { speaker: "student", text: trimmed }]);
-    setLiveTranscript("");
+    setLiveTranscript(trimmed);
     setFillerCount(0);
 
     // Send cleaned answer (fillers removed) to backend for fairer technical scoring
@@ -233,7 +301,6 @@ export default function InterviewRoom({
       pauseCountRef.current = 0;
       longPauseMsRef.current = 0;
       fillerCountRef.current = 0;
-      finalTextRef.current = "";
 
       if (data.passed !== undefined) {
         setResults(data);
@@ -259,8 +326,9 @@ export default function InterviewRoom({
             setWaitingForStudent(true);
             setStatus("WAITING FOR YOU");
             questionStartRef.current = Date.now();
+            tlog("handoff: opening mic for student answer");
             if (startListeningRef.current) startListeningRef.current();
-          }, 400);
+          }, MIC_HANDOFF_MS);
         });
       }
     } catch (err) {
@@ -294,8 +362,9 @@ export default function InterviewRoom({
           setWaitingForStudent(true);
           setStatus("WAITING FOR YOU");
           questionStartRef.current = Date.now();
+          tlog("handoff: opening mic after greeting");
           if (startListeningRef.current) startListeningRef.current();
-        }, 400);
+        }, MIC_HANDOFF_MS);
       });
     } catch (err) {
       setError(friendlyNetworkError(err));
@@ -304,31 +373,74 @@ export default function InterviewRoom({
     }
   }, [doStart, speakText]);
 
+  // Warm the TTS voice list on mount. Browsers load voices asynchronously, so
+  // touching getVoices() (and listening for "voiceschanged") here means the list
+  // is ready by the time the start-interview network call returns — the greeting
+  // then speaks with the preferred voice and is never skipped due to loading.
   useEffect(() => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    window.speechSynthesis.getVoices();
+    const onVoices = () => window.speechSynthesis.getVoices();
+    window.speechSynthesis.addEventListener?.("voiceschanged", onVoices);
+    return () => window.speechSynthesis.removeEventListener?.("voiceschanged", onVoices);
+  }, []);
+
+  useEffect(() => {
+    // Mount-time kickoff of the interview (fetches the first turn, then setStates).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     startSession();
     return () => {
-      if (recognitionRef.current) recognitionRef.current.stop();
+      if (vadIntervalRef.current) clearInterval(vadIntervalRef.current);
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        try { mediaRecorderRef.current.stop(); } catch { /* noop */ }
+      }
+      if (audioCtxRef.current) { try { audioCtxRef.current.close(); } catch { /* noop */ } audioCtxRef.current = null; }
+      if (micStreamRef.current) {
+        micStreamRef.current.getTracks().forEach((t) => t.stop());
+        micStreamRef.current = null;
+      }
       if (typeof window !== "undefined") window.speechSynthesis?.cancel();
-      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-      if (autoSubmitTimerRef.current) clearTimeout(autoSubmitTimerRef.current);
       if (speakWatchdogRef.current) clearInterval(speakWatchdogRef.current);
     };
   }, [startSession]);
 
   // Animate the avatar's mouth ONLY while Mav's voice is actually playing
-  // (asking/answering aloud) by swapping closed/opened frames. At every other
-  // time — including while the AI is processing the student's answer — it stays
-  // on the closed frame.
+  // (asking/answering aloud) by swapping closed/opened frames. When the voice is
+  // not playing we simply don't run the interval; the render gates the open frame
+  // on `aiVoiceActive`, so the avatar shows the closed frame at every other time
+  // (including while the AI processes the student's answer) — no reset setState.
   useEffect(() => {
-    if (!aiVoiceActive) {
-      setAvatarMouthOpen(false);
-      return;
-    }
+    if (!aiVoiceActive) return;
     const interval = setInterval(() => {
       setAvatarMouthOpen((prev) => !prev);
     }, 200);
     return () => clearInterval(interval);
   }, [aiVoiceActive]);
+
+  // Mirror waitingForStudent into a ref so recognition's late `onend` reads the
+  // CURRENT value, not the value captured when the (stale) callback was built.
+  useEffect(() => {
+    waitingForStudentRef.current = waitingForStudent;
+  }, [waitingForStudent]);
+
+  // Prime the mic PERMISSION once up front, then immediately release the device so
+  // the permission prompt is resolved before the first question. startListening()
+  // acquires (and then holds) its own stream for recording when the mic opens.
+  useEffect(() => {
+    let cancelled = false;
+    async function primeMicPermission() {
+      if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) return;
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        stream.getTracks().forEach((t) => t.stop());
+        if (!cancelled) tlog("mic permission primed");
+      } catch {
+        // The recorder will request permission later; non-fatal.
+      }
+    }
+    primeMicPermission();
+    return () => { cancelled = true; };
+  }, []);
 
   // Keep the student's camera on for the duration of the interview.
   useEffect(() => {
@@ -363,12 +475,23 @@ export default function InterviewRoom({
     };
   }, []);
 
-  // Release the camera once the assessment is complete.
+  // Release the camera AND microphone once the assessment is complete.
   useEffect(() => {
-    if (isFinished && cameraStreamRef.current) {
+    if (!isFinished) return;
+    if (cameraStreamRef.current) {
       cameraStreamRef.current.getTracks().forEach((t) => t.stop());
       cameraStreamRef.current = null;
       setCameraOn(false);
+    }
+    if (vadIntervalRef.current) { clearInterval(vadIntervalRef.current); vadIntervalRef.current = null; }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.onstop = null;
+      try { mediaRecorderRef.current.stop(); } catch { /* noop */ }
+    }
+    if (audioCtxRef.current) { try { audioCtxRef.current.close(); } catch { /* noop */ } audioCtxRef.current = null; }
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach((t) => t.stop());
+      micStreamRef.current = null;
     }
   }, [isFinished]);
 
@@ -383,110 +506,186 @@ export default function InterviewRoom({
     }
   }, []);
 
-  const startListening = useCallback(() => {
-    const SpeechRecognition =
-      typeof window !== "undefined" &&
-      (window.SpeechRecognition || window.webkitSpeechRecognition);
-    if (!SpeechRecognition) {
-      setError("Speech recognition not supported in this browser. Use Chrome or Edge, or type below.");
+  // Stop the active recorder + VAD. The recorder's onstop handler then builds the
+  // blob, transcribes it server-side, and submits. Idempotent.
+  const stopRecording = useCallback(() => {
+    if (vadIntervalRef.current) { clearInterval(vadIntervalRef.current); vadIntervalRef.current = null; }
+    if (audioCtxRef.current) { try { audioCtxRef.current.close(); } catch { /* noop */ } audioCtxRef.current = null; }
+    const rec = mediaRecorderRef.current;
+    if (rec && rec.state !== "inactive") {
+      try { rec.stop(); } catch { /* noop */ }
+    }
+  }, []);
+
+  // Open the mic and RECORD the student's answer, then transcribe it server-side
+  // (Groq Whisper). The browser Web Speech API is unreliable/blocked on many
+  // networks, so we never depend on it. A local Voice Activity Detector watches
+  // the mic level and auto-stops after a trailing silence; the student can also
+  // tap the mic to submit immediately.
+  const startListening = useCallback(async () => {
+    if (
+      typeof navigator === "undefined" ||
+      !navigator.mediaDevices?.getUserMedia ||
+      typeof window === "undefined" ||
+      !window.MediaRecorder
+    ) {
+      setError("Voice recording isn't supported in this browser. Please type your answer below.");
+      setMicActive(false);
       return;
     }
 
-    // Stop TTS so it doesn't feed back into the mic
-    if (typeof window !== "undefined") window.speechSynthesis?.cancel();
+    // Stop TTS so Mav's voice isn't recorded into the answer.
+    window.speechSynthesis?.cancel();
 
-    if (recognitionRef.current) recognitionRef.current.stop();
+    // Acquire (or reuse) a held mic stream.
+    let stream = micStreamRef.current;
+    try {
+      if (!stream || !stream.active) {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          video: false,
+        });
+        micStreamRef.current = stream;
+      }
+    } catch {
+      setError("Couldn't access your microphone. Allow mic permission, or type your answer below.");
+      setMicActive(false);
+      return;
+    }
 
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = "en-US";
-
-    finalTextRef.current = "";
+    // Reset per-answer state.
     fillerCountRef.current = 0;
     pauseCountRef.current = 0;
     longPauseMsRef.current = 0;
-    lastSpeechRef.current = Date.now();
+    speechDetectedRef.current = false;
+    speechStartedAtRef.current = 0;
+    audioChunksRef.current = [];
+    recordStartRef.current = Date.now();
+    lastVoiceRef.current = Date.now();
+    setLiveTranscript("");
+    setFillerCount(0);
 
-    recognition.onresult = (event) => {
-      lastSpeechRef.current = Date.now();
-
-      // Clear existing timers on new speech
-      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-      if (autoSubmitTimerRef.current) clearTimeout(autoSubmitTimerRef.current);
-
-      let interim = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const t = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          finalTextRef.current += t + " ";
-          // Count filler words in each final segment
-          const newFillers = countFillers(t);
-          fillerCountRef.current += newFillers;
-          setFillerCount(fillerCountRef.current);
-        } else {
-          interim += t;
-        }
-      }
-      setLiveTranscript(finalTextRef.current + interim);
-
-      // Silence = pause detection (3s gap)
-      silenceTimerRef.current = setTimeout(() => {
-        const gap = Date.now() - lastSpeechRef.current;
-        if (gap >= 3000) {
-          pauseCountRef.current += 1;
-          longPauseMsRef.current += gap;
-        }
-      }, 3100);
-
-      // Auto-submit after 3 seconds of silence if answer is non-empty
-      if (finalTextRef.current.trim()) {
-        autoSubmitTimerRef.current = setTimeout(() => {
-          const answer = finalTextRef.current.trim();
-          if (answer && !submittingRef.current) {
-            if (recognitionRef.current) recognitionRef.current.stop();
-            submitAnswer(answer);
-          }
-        }, 3000);
-      }
-    };
-
-    recognition.onerror = (e) => {
-      // Ignore events from a recognition instance we've already replaced, so a
-      // stale "aborted" can't switch the mic indicator off after a new one opened.
-      if (recognitionRef.current !== recognition) return;
-      // Chrome's SpeechRecognition fires transient "network"/"no-speech"/"aborted"/
-      // "audio-capture" errors even while the mic keeps working fine — never surface
-      // those. Only a genuine permission block is worth telling the student about.
-      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-        setError("Microphone access is blocked. Allow mic permission, or type your answer below.");
-      }
+    // Build the recorder.
+    let recorder;
+    try {
+      const mime = window.MediaRecorder.isTypeSupported?.("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : (window.MediaRecorder.isTypeSupported?.("audio/webm") ? "audio/webm" : "");
+      recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+    } catch {
+      setError("Couldn't start the recorder. Please type your answer below.");
       setMicActive(false);
-    };
-
-    recognition.onend = () => {
-      // Guard against a superseded recognition's late onend killing the live mic.
-      if (recognitionRef.current !== recognition) return;
-      setMicActive(false);
-      // If recognition ended (silence/stop) and we have text, submit it.
-      const answer = finalTextRef.current.trim();
-      if (answer && !submittingRef.current && waitingForStudent) {
-        submitAnswer(answer);
-      }
-    };
-
-    // Detach the previous instance's handlers before replacing it, then make
-    // this the current one *before* start() so the guards above resolve correctly.
-    if (recognitionRef.current) {
-      recognitionRef.current.onend = null;
-      recognitionRef.current.onerror = null;
-      recognitionRef.current.onresult = null;
+      return;
     }
-    recognitionRef.current = recognition;
-    recognition.start();
+    mediaRecorderRef.current = recorder;
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data); };
+
+    recorder.onstop = async () => {
+      if (vadIntervalRef.current) { clearInterval(vadIntervalRef.current); vadIntervalRef.current = null; }
+      if (audioCtxRef.current) { try { audioCtxRef.current.close(); } catch { /* noop */ } audioCtxRef.current = null; }
+      setMicActive(false);
+
+      const chunks = audioChunksRef.current;
+      audioChunksRef.current = [];
+      // Transcribe whenever we have audio. We intentionally do NOT gate on the VAD
+      // (speechDetected): the recorder captures audio independently, so a manual
+      // mic-off always submits even if VAD/AudioContext misbehaves. Pure silence
+      // simply transcribes to "" and is handled below.
+      if (!chunks.length) {
+        tlog("recording stopped — no audio captured, not submitting");
+        setLiveTranscript("");
+        if (waitingForStudentRef.current && !submittingRef.current) setStatus("WAITING FOR YOU");
+        return;
+      }
+
+      const blob = new Blob(chunks, { type: chunks[0].type || "audio/webm" });
+      tlog(`transcribing ${(blob.size / 1024).toFixed(0)}KB audio`);
+      transcribingRef.current = true;
+      setStatus("TRANSCRIBING");
+      setLiveTranscript("Transcribing your answer…");
+      try {
+        const form = new FormData();
+        form.append("audio", blob, "answer.webm");
+        const res = await authFetch("/api/interview/transcribe", { method: "POST", body: form });
+        if (!res.ok) throw new Error("Transcription failed");
+        const data = await res.json();
+        const text = (data.text || "").trim();
+        transcribingRef.current = false;
+        tlog("transcript: " + JSON.stringify(text));
+        if (!text) {
+          setLiveTranscript("");
+          setError("I couldn't hear that clearly — tap the mic to try again, or type your answer below.");
+          setStatus("WAITING FOR YOU");
+          return;
+        }
+        fillerCountRef.current = countFillers(text);
+        submitAnswer(text);
+      } catch (err) {
+        transcribingRef.current = false;
+        setLiveTranscript("");
+        setError(friendlyNetworkError(err));
+        setStatus("WAITING FOR YOU");
+      }
+    };
+
+    try {
+      recorder.start();
+    } catch {
+      setError("Couldn't start recording. Please type your answer below.");
+      setMicActive(false);
+      return;
+    }
     setMicActive(true);
     setStatus("LISTENING");
-  }, [submitAnswer, waitingForStudent]);
+    tlog("MediaRecorder.start() — recording answer");
+
+    // ── Voice Activity Detection: auto-submit on trailing silence ──
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      const ctx = new AudioCtx();
+      audioCtxRef.current = ctx;
+      // The context can start "suspended" under autoplay policy → resume so the
+      // analyser actually receives samples (otherwise VAD reads constant silence).
+      if (ctx.state === "suspended") ctx.resume().catch(() => {});
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      source.connect(analyser);
+      const buf = new Uint8Array(analyser.fftSize);
+
+      vadIntervalRef.current = setInterval(() => {
+        analyser.getByteTimeDomainData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
+        const rms = Math.sqrt(sum / buf.length);
+        const now = Date.now();
+
+        if (rms > VAD_THRESHOLD) {
+          if (!speechDetectedRef.current) {
+            speechDetectedRef.current = true;
+            speechStartedAtRef.current = now;
+            tlog("VAD: speech detected");
+          }
+          lastVoiceRef.current = now;
+        } else if (speechDetectedRef.current) {
+          const voiced = lastVoiceRef.current - speechStartedAtRef.current;
+          const silence = now - lastVoiceRef.current;
+          if (silence >= SILENCE_MS && voiced >= MIN_SPEECH_MS) {
+            tlog(`VAD: ${SILENCE_MS}ms trailing silence → auto-submitting`);
+            stopRecording();
+            return;
+          }
+        }
+        if (now - recordStartRef.current >= MAX_RECORD_MS) {
+          tlog("VAD: max record length reached → auto-submitting");
+          stopRecording();
+        }
+      }, 100);
+    } catch (e) {
+      // VAD is best-effort; without it the student can still submit via the mic button.
+      tlog("VAD init failed (non-fatal): " + (e?.message || e));
+    }
+  }, [submitAnswer, authFetch, stopRecording]);
 
   // Always keep the ref current so speakText onEnd callbacks don't go stale
   useEffect(() => {
@@ -494,19 +693,19 @@ export default function InterviewRoom({
   }, [startListening]);
 
   const stopListeningAndSubmit = useCallback(() => {
-    if (autoSubmitTimerRef.current) clearTimeout(autoSubmitTimerRef.current);
-    if (recognitionRef.current) recognitionRef.current.stop();
-    setMicActive(false);
-    const answer = finalTextRef.current.trim();
-    if (answer) {
-      submitAnswer(answer);
+    // Manual stop: finalize the recording. Its onstop handler transcribes + submits
+    // (or returns to WAITING if nothing was actually spoken).
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      tlog("manual stop → finalizing answer");
+      stopRecording();
     } else {
+      setMicActive(false);
       setStatus("WAITING FOR YOU");
     }
-  }, [submitAnswer]);
+  }, [stopRecording]);
 
   const handleToggleMic = () => {
-    if (!waitingForStudent || submittingRef.current) return;
+    if (!waitingForStudent || submittingRef.current || transcribingRef.current) return;
     if (micActive) {
       stopListeningAndSubmit();
     } else {
@@ -516,8 +715,16 @@ export default function InterviewRoom({
 
   const handleEndCall = async () => {
     if (!sessionId) return;
-    if (autoSubmitTimerRef.current) clearTimeout(autoSubmitTimerRef.current);
-    if (recognitionRef.current) recognitionRef.current.stop();
+    if (vadIntervalRef.current) { clearInterval(vadIntervalRef.current); vadIntervalRef.current = null; }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.onstop = null; // don't transcribe/submit a half answer
+      try { mediaRecorderRef.current.stop(); } catch { /* noop */ }
+    }
+    if (audioCtxRef.current) { try { audioCtxRef.current.close(); } catch { /* noop */ } audioCtxRef.current = null; }
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach((t) => t.stop());
+      micStreamRef.current = null;
+    }
     try {
       const res = await authFetch(`/api/interview/end/${sessionId}`, { method: "POST" });
       if (!res.ok) throw new Error("Failed to end interview");
@@ -654,18 +861,21 @@ export default function InterviewRoom({
     );
   }
 
-  // Captions follow whoever is *actively* talking, and disappear during silence:
-  //  • student speaking (mic on, words detected) → show the live transcript
-  //  • Mav's voice playing → show her line
-  //  • nobody talking → no caption
+  // Captions follow whoever is *actively* talking:
+  //  • Mav's voice playing       → show her line
+  //  • mic recording             → "Listening…" prompt (server STT isn't live)
+  //  • transcribing / transcript → show the student's transcribed answer
   let captionText = "";
   let captionSpeaker = "";
-  if (micActive && liveTranscript.trim()) {
-    captionText = liveTranscript;
-    captionSpeaker = "You (Speaking)";
-  } else if (aiVoiceActive && currentAIText) {
+  if (aiVoiceActive && currentAIText) {
     captionText = currentAIText;
     captionSpeaker = "AI Assessor";
+  } else if (micActive) {
+    captionText = liveTranscript.trim() ? liveTranscript : "🎙 Listening… speak your answer";
+    captionSpeaker = "You (Speaking)";
+  } else if (liveTranscript.trim()) {
+    captionText = liveTranscript;
+    captionSpeaker = "You";
   }
 
   return (
@@ -699,8 +909,11 @@ export default function InterviewRoom({
           {/* Video panels */}
           <div className="meet-grid">
             <div className={`meet-panel ${isAISpeaking ? "speaking" : ""}`}>
+              {/* eslint-disable-next-line @next/next/no-img-element -- two tiny
+                  local avatar frames swapped every 200ms; next/image's optimizer
+                  pipeline would add latency/flicker to the lip-sync animation. */}
               <img
-                src={(avatarMouthOpen ? avatarOpened : avatarClosed).src}
+                src={(aiVoiceActive && avatarMouthOpen ? avatarOpened : avatarClosed).src}
                 alt="Mav — AI Assessor avatar"
                 draggable={false}
                 style={{
@@ -797,9 +1010,9 @@ export default function InterviewRoom({
           )}
 
           {/* Auto-submit hint */}
-          {micActive && finalTextRef.current.trim() && (
+          {micActive && (
             <div style={{ textAlign: "center", marginTop: "8px", fontSize: "12px", color: "#9aa0a6" }}>
-              Stop speaking for 3 seconds to auto-submit, or click 🎤 to submit now
+              Speak your answer — it submits automatically after a short pause, or click 🎤 to submit now
             </div>
           )}
 
@@ -831,9 +1044,11 @@ export default function InterviewRoom({
           {/* Bottom control bar */}
           <div className="meet-bottom-bar">
             <div className="meet-bar-info">
-              {micActive ? (
+              {status === "TRANSCRIBING" ? (
+                <span style={{ color: "#8ab4f8" }}>📝 Transcribing your answer…</span>
+              ) : micActive ? (
                 <span style={{ color: "#81c995", fontWeight: "600" }}>
-                  🎙 Listening… speak your answer. Click 🎤 to stop or wait 3s for auto-submit
+                  🎙 Listening… speak your answer. Click 🎤 to submit, or just pause when done
                 </span>
               ) : status === "AI SPEAKING" ? (
                 <span style={{ color: "#8ab4f8" }}>🔊 Mav is speaking… mic opens automatically when done</span>

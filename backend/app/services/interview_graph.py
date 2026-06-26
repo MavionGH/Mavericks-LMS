@@ -179,8 +179,9 @@ def _score_interview(state: InterviewState) -> InterviewState:
 
 def _greet_student(state: InterviewState) -> InterviewState:
     greeting = (
-        "Hello, I'm Mav, your AI interviewer today. "
-        "I'll be asking a few questions related to your profile and skills. Let's get started."
+        "Hello! Welcome to your interview. I'm Mav, your AI interviewer, and I'm glad "
+        "to be speaking with you today. We'll go through a few questions about this module. "
+        "Feel free to ask me to repeat or clarify anything at any time. Let's begin."
     )
     transcript = list(state.get("transcript", []))
     if not any(m.get("text") == greeting for m in transcript):
@@ -197,11 +198,18 @@ def _greet_student(state: InterviewState) -> InterviewState:
 
 
 def _build_start_graph():
-    """Graph for interview start: execute GreetingNode first."""
+    """Graph for interview start: greet, then immediately generate Question 1.
+
+    Per the interview spec, the greeting flows straight into the first question
+    in a single turn — the student's first spoken reply is the answer to Q1, not
+    a reply to the greeting.
+    """
     g = StateGraph(InterviewState)
     g.add_node("GreetingNode", _greet_student)
+    g.add_node("FirstQuestion", _generate_question)
     g.set_entry_point("GreetingNode")
-    g.add_edge("GreetingNode", END)
+    g.add_edge("GreetingNode", "FirstQuestion")
+    g.add_edge("FirstQuestion", END)
     return g.compile()
 
 
@@ -260,7 +268,13 @@ def start_interview(chapter_title: str, chapter_context: str, pass_threshold: in
     }
     # Invoke start graph (runs greet_student -> generate_question)
     result = dict(_get_start_graph().invoke(initial))
-    # Return results (has both greeting and next_question set by start graph nodes)
+    # Deliver greeting + Question 1 as ONE spoken turn so the avatar speaks them
+    # back-to-back and the student's first answer is for Q1. `current_question`
+    # stays Q1 (used for classification / re-asks); `greeting` stays separate.
+    greeting = result.get("greeting", "")
+    first_question = result.get("current_question", "")
+    if greeting and first_question and not result.get("is_complete"):
+        result["next_question"] = f"{greeting}\n\n{first_question}"
     return result
 
 
@@ -275,8 +289,10 @@ def process_answer(
     """Process the student's message — classify first, then route appropriately."""
     state = dict(state)
 
-    # ── Fast path: if question_count is 0, the student is replying to the initial greeting ──
-    # We directly transition to generate Question #1 and do not classify or record greeting as chitchat
+    # ── Backward-compat path: question_count == 0 means this session was started
+    # under the old flow (greeting-only first turn). New sessions arrive with Q1
+    # already asked (question_count == 1), so this branch only runs for sessions
+    # that were already active before greeting+Q1 were merged into one turn. ──
     if state.get("question_count", 0) == 0:
         state["last_answer"] = answer
         state["last_response_time_ms"] = 0

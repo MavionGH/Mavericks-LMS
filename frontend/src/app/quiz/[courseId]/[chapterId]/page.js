@@ -138,7 +138,7 @@ function QuizPage() {
 
   // ── Timer ──
   const [remaining, setRemaining]   = useState(QUIZ_TIME_LIMIT);
-  const questionEndRef              = useRef(Date.now() + QUIZ_TIME_LIMIT * 1000);
+  const questionEndRef              = useRef(0); // set before the countdown reads it
   const lastQIndexRef               = useRef(-1);
   const submissionLockRef           = useRef(false);
   const timeoutHandledRef           = useRef(false);
@@ -167,7 +167,7 @@ function QuizPage() {
       }
     }
     fetchQuiz();
-  }, [params.chapterId, quizStarted]);
+  }, [params.chapterId, quizStarted, authFetch]);
 
   // ── Stable callbacks for useQuizGuard ────────────────────────────────────
   const handleFullscreenExit = useCallback(
@@ -239,6 +239,8 @@ function QuizPage() {
     // Pause timer and show 0 if current question was violated
     const q = questions[currentQ];
     if (q && fsViolatedQuestions.includes(String(q.id))) {
+      // Intentional: freeze the timer at 0 while this question is in a violated state.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setRemaining(0);
       return;
     }

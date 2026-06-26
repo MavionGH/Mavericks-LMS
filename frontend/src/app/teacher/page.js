@@ -1,6 +1,6 @@
 "use client";
 import Navbar from "@/components/Navbar";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { API_BASE, useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
 
@@ -157,20 +157,23 @@ function TeacherPanel() {
     e.target.value = "";
   };
 
-  const loadCourses = async () => {
+  const loadCourses = useCallback(async () => {
     try {
       const res = await authFetch("/api/courses/manage/all");
       if (res.ok) {
         const data = await res.json();
         setCourses(data);
-        if (data.length && !selectedCourseId) setSelectedCourseId(data[0].id);
+        // functional update → no dependency on selectedCourseId
+        setSelectedCourseId((cur) => (data.length && !cur ? data[0].id : cur));
       }
     } catch { /* ignore */ }
-  };
+  }, [authFetch]);
 
   useEffect(() => {
+    // Mount-time data load (loadCourses setStates after its await) — intentional.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadCourses();
-  }, []);
+  }, [loadCourses]);
 
   const selectedCourse = courses.find((c) => c.id === selectedCourseId);
 
@@ -576,7 +579,7 @@ function TeacherPanel() {
                     <label className="form-label">Video Transcript (auto-generated — editable)</label>
                     <textarea className="form-input form-textarea" placeholder="Auto-filled from the uploaded video. You can edit or paste your own transcript here..." value={chapterForm.video_transcript} onChange={(e) => setChapterForm({ ...chapterForm, video_transcript: e.target.value })} rows={6} />
                     <p style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>
-                      Generated automatically from the video's audio when you upload it. Review/edit before saving — this text is embedded and used by the AI to formulate questions and assess student comprehension.
+                      Generated automatically from the video&apos;s audio when you upload it. Review/edit before saving — this text is embedded and used by the AI to formulate questions and assess student comprehension.
                     </p>
                   </div>
                   <button type="submit" className="btn btn-primary" disabled={!selectedCourseId || chapterStatus === "saving" || uploading || !chapterForm.youtube_url}>

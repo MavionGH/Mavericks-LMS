@@ -14,7 +14,12 @@ export function AuthProvider({ children }) {
   const router = useRouter();
 
   // ─── Restore session from localStorage on mount ───
+  // Legitimate "sync from an external system" effect: localStorage is only
+  // available on the client, and reading it via a lazy useState initializer
+  // would cause an SSR/CSR hydration mismatch. Restoring after mount is correct,
+  // so the synchronous setState here is intentional.
   useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect */
     const savedToken = localStorage.getItem("jwt_token");
     const savedUser  = localStorage.getItem("user_data");
     if (savedToken && savedUser) {
@@ -22,6 +27,7 @@ export function AuthProvider({ children }) {
       setUser(JSON.parse(savedUser));
     }
     setLoading(false);
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, []);
 
   // ─── Helpers ───
@@ -118,8 +124,11 @@ export function AuthProvider({ children }) {
   // ─── Authenticated fetch wrapper ───
   const authFetch = useCallback(
     async (url, options = {}) => {
+      // For FormData (file upload) let the browser set the multipart Content-Type
+      // with its boundary — forcing application/json would corrupt the upload.
+      const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
       const headers = {
-        "Content-Type": "application/json",
+        ...(isFormData ? {} : { "Content-Type": "application/json" }),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(options.headers || {}),
       };

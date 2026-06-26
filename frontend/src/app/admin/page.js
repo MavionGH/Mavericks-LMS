@@ -36,6 +36,8 @@ function AdminPanel() {
 
   useEffect(() => {
     if (activeTab === "dashboard") {
+      // Loading flag for an in-effect data fetch — intentional sync setState.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setAnalyticsLoading(true);
       authFetch("/api/admin/analytics")
         .then((r) => r.json())

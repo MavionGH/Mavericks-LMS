@@ -1,7 +1,7 @@
 import logging
 import time
 from typing import Union
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session, joinedload, load_only
 
 from app.database import get_db
@@ -16,6 +16,7 @@ from app.schemas.schemas import (
 from app.auth.dependencies import require_student
 from app.services.chapter_context import build_chapter_context, build_course_context
 from app.services.interview_graph import start_interview, process_answer, MAX_QUESTIONS
+from app.services.stt import transcribe_audio
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,27 @@ def check_eligibility(
         article_read=True,
         enrollment_id=enrollment.id,
     )
+
+
+@router.post("/transcribe")
+async def transcribe_answer(
+    audio: UploadFile = File(...),
+    current_user: User = Depends(require_student),
+):
+    """Server-side speech-to-text for the oral assessment.
+
+    The browser records the student's spoken answer and uploads it here; we run it
+    through Groq Whisper and return the text. This replaces the browser Web Speech
+    API, which fails silently on networks that can't reach Google's STT backend.
+    """
+    audio_bytes = await audio.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Empty audio upload")
+    # Guard against runaway uploads (a normal answer is well under this).
+    if len(audio_bytes) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Audio too large")
+    text = transcribe_audio(audio_bytes, audio.filename or "answer.webm")
+    return {"text": text}
 
 
 @router.post("/start", response_model=InterviewTurnResponse)
