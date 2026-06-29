@@ -55,13 +55,12 @@ function TeacherPanel() {
     video_transcript: "",
   });
   const [chapterStatus, setChapterStatus] = useState("");
-  
+
   // Video upload state
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadedFileName, setUploadedFileName] = useState("");
   const [uploadError, setUploadError] = useState("");
-  const [transcribing, setTranscribing] = useState(false);
 
   // Article document import state (txt / md / pdf / docx → article text)
   const [articleUploading, setArticleUploading] = useState(false);
@@ -311,10 +310,10 @@ function TeacherPanel() {
   };
 
   const TABS = [
-    { key: "overview",  label: "Overview"     },
-    { key: "courses",   label: "My Courses"   },
-    { key: "modules",   label: "Add Modules"  },
-    { key: "create",    label: "Add Course"   },
+    { key: "overview", label: "Overview" },
+    { key: "courses", label: "My Courses" },
+    { key: "modules", label: "Add Modules" },
+    { key: "create", label: "Add Course" },
     { key: "recordings", label: "Student Recordings" },
   ];
 
@@ -569,7 +568,7 @@ function TeacherPanel() {
                       style={{ padding: "8px" }}
                       required={!chapterForm.youtube_url}
                     />
-                    
+
                     {uploading && (
                       <div style={{ marginTop: "12px" }}>
                         <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "4px" }}>
