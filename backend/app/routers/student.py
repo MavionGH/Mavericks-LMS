@@ -117,7 +117,8 @@ def get_student_dashboard(
             date=ev.created_at.strftime("%Y-%m-%d"),
             technical=int(ev.technical_score),
             communication=int(ev.communication_score),
-            confidence=int(ev.confidence_score)
+            confidence=int(ev.confidence_score),
+            teacher_score=int(ev.teacher_score) if getattr(ev, "teacher_score", None) is not None else None
         ))
         
     return DashboardStats(

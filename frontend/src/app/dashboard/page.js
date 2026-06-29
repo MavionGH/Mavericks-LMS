@@ -9,6 +9,7 @@ function StudentDashboard() {
   const { user, authFetch } = useAuth();
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [selectedEval, setSelectedEval] = useState(null);
 
   useEffect(() => {
     async function loadStats() {
@@ -174,7 +175,7 @@ function StudentDashboard() {
               <table>
                 <thead>
                   <tr>
-                    <th>Topic Module</th><th>Track Course</th><th>Tech</th><th>Speech</th><th>Conf</th><th>Overall</th><th>Status</th><th>Date</th>
+                    <th>Topic Module</th><th>Track Course</th><th>AI Score</th><th>Teacher Score</th><th>Status</th><th>Date</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -182,10 +183,25 @@ function StudentDashboard() {
                     <tr key={i}>
                       <td style={{ fontWeight: "700", color: "var(--text-title)" }}>{e.chapter}</td>
                       <td style={{ color: "var(--text-main)" }}>{e.course}</td>
-                      <td className="mono">{e.technical}%</td>
-                      <td className="mono">{e.communication}%</td>
-                      <td className="mono">{e.confidence}%</td>
-                      <td className="mono" style={{ fontWeight: "700", color: "var(--brand)" }}>{e.score}%</td>
+                      <td className="mono">
+                        <button
+                          onClick={() => setSelectedEval(e)}
+                          title="Click to view breakdown"
+                          style={{
+                            background: "none",
+                            border: "none",
+                            color: "var(--brand)",
+                            textDecoration: "underline",
+                            cursor: "pointer",
+                            fontWeight: "700",
+                            fontFamily: "inherit",
+                            padding: 0
+                          }}
+                        >
+                          {e.score}%
+                        </button>
+                      </td>
+                      <td className="mono">{e.teacher_score !== null && e.teacher_score !== undefined ? `${e.teacher_score}%` : "—"}</td>
                       <td><span className={`badge ${e.passed ? "badge-success" : "badge-danger"}`}>{e.passed ? "PASSED" : "FAILED"}</span></td>
                       <td style={{ color: "var(--text-muted)" }}>{e.date}</td>
                     </tr>
@@ -194,6 +210,69 @@ function StudentDashboard() {
               </table>
             )}
           </div>
+
+          {selectedEval && (
+            <div style={{
+              position: "fixed",
+              top: 0,
+              left: 0,
+              width: "100vw",
+              height: "100vh",
+              backgroundColor: "rgba(15, 23, 42, 0.6)",
+              backdropFilter: "blur(4px)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              zIndex: 1000
+            }}>
+              <div className="card" style={{
+                width: "100%",
+                maxWidth: "400px",
+                padding: "24px",
+                backgroundColor: "#ffffff",
+                boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
+                borderRadius: "12px",
+                border: "1px solid var(--border-muted)",
+                position: "relative"
+              }}>
+                <button 
+                  onClick={() => setSelectedEval(null)}
+                  style={{
+                    position: "absolute",
+                    top: "16px",
+                    right: "16px",
+                    background: "none",
+                    border: "none",
+                    fontSize: "20px",
+                    cursor: "pointer",
+                    color: "var(--text-muted)",
+                    lineHeight: 1
+                  }}
+                >
+                  &times;
+                </button>
+                <h3 style={{ fontSize: "16px", fontWeight: "700", color: "var(--text-title)", marginBottom: "4px" }}>
+                  AI Score Breakdown
+                </h3>
+                <p style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "20px" }}>
+                  {selectedEval.chapter}
+                </p>
+                
+                <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                  {[
+                    { label: "Technical Score", value: selectedEval.technical, color: "var(--brand)" },
+                    { label: "Speech & Communication", value: selectedEval.communication, color: "var(--color-success)" },
+                    { label: "Confidence Level", value: selectedEval.confidence, color: "var(--color-warning)" }
+                  ].map((item, idx) => (
+                    <div key={idx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", backgroundColor: "var(--bg-canvas)", borderRadius: "6px" }}>
+                      <span style={{ fontSize: "13px", fontWeight: "500", color: "var(--text-main)" }}>{item.label}</span>
+                      <span className="mono" style={{ fontSize: "14px", fontWeight: "700", color: item.color }}>{item.value}%</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </>
