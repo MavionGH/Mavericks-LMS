@@ -83,6 +83,18 @@ class Course(Base):
     certificates = relationship("Certificate", back_populates="course")
     chunk_embeddings = relationship("ChunkEmbedding", back_populates="course", cascade="all, delete-orphan")
 
+    @property
+    def student_count(self) -> int:
+        return len(self.enrollments)
+
+    @property
+    def pass_rate(self) -> float:
+        total = len(self.enrollments)
+        if total == 0:
+            return 0.0
+        completed = sum(1 for e in self.enrollments if e.status == EnrollmentStatus.COMPLETED)
+        return round((completed / total) * 100, 1)
+
 
 # ─── CHAPTER ───
 class Chapter(Base):
