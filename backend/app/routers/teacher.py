@@ -33,6 +33,7 @@ def _owned_course_ids(db: Session, current_user: User) -> set:
 @router.get("/recordings")
 def list_interview_recordings(
     student_id: Optional[str] = None,
+    course_id: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_teacher),
 ):
@@ -73,6 +74,8 @@ def list_interview_recordings(
             course = s.course
         if not course or course.id not in owned:
             continue
+        if course_id and course.id != course_id:
+            continue
 
         evaluation = (
             db.query(Evaluation)
@@ -106,6 +109,7 @@ def list_interview_recordings(
 
 @router.get("/students")
 def list_enrolled_students(
+    course_id: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_teacher),
 ):
@@ -117,7 +121,12 @@ def list_enrolled_students(
     published_course_ids = [row[0] for row in q.all()]
     if not published_course_ids:
         return []
-
+    if course_id:
+        if course_id not in published_course_ids:
+            return []
+        target_course_ids = [course_id]
+    else:
+        target_course_ids = published_course_ids
     # Find all enrollments in these courses
     enrollments = (
         db.query(Enrollment)
@@ -125,7 +134,7 @@ def list_enrolled_students(
             joinedload(Enrollment.user),
             joinedload(Enrollment.course)
         )
-        .filter(Enrollment.course_id.in_(published_course_ids))
+        .filter(Enrollment.course_id.in_(target_course_ids))
         .all()
     )
 
