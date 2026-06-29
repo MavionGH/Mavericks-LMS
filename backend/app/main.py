@@ -106,6 +106,24 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # pragma: no cover - best-effort check
         logger.warning("Embedding availability check skipped: %s", exc)
 
+    # ── LLM + LangGraph warm-up ──────────────────────────────────────────────
+    # The first call to get_llm() imports LangChain and builds an HTTP connection
+    # pool — this alone costs 10–60 s on a cold process. Pre-initialising here
+    # means the pool is ready before any student hits /api/interview/start, so
+    # the first interview starts in 3–8 s (normal OpenAI latency) instead of
+    # 30–120 s. Likewise, pre-compiling the LangGraph state machines avoids
+    # graph-compilation overhead on the first request.
+    try:
+        from app.services.llm import get_llm, get_grading_llm
+        from app.services.interview_graph import _get_start_graph, _get_answer_graph
+        get_llm()           # initialises ChatOpenAI + connection pool
+        get_grading_llm()   # initialises grading model client
+        _get_start_graph()  # compiles GreetingNode → FirstQuestion graph
+        _get_answer_graph() # compiles record_answer → follow_up/score graph
+        logger.info("LLM clients and LangGraph graphs warmed up — interview startup will be fast.")
+    except Exception as exc:
+        logger.warning("LLM warm-up skipped (will cold-start on first interview): %s", exc)
+
     yield
 
 
