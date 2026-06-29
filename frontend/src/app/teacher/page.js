@@ -39,6 +39,25 @@ function RecordingPlayer({ src }) {
   );
 }
 
+// Small inline spinner shown next to the per-stage transcription status text.
+function StageSpinner() {
+  return (
+    <span
+      style={{
+        width: 11,
+        height: 11,
+        border: "2px solid currentColor",
+        borderTopColor: "transparent",
+        borderRadius: "50%",
+        display: "inline-block",
+        marginRight: 6,
+        verticalAlign: "-1px",
+        animation: "spin 0.7s linear infinite",
+      }}
+    />
+  );
+}
+
 function TeacherPanel() {
   const { user, token, authFetch, refreshUser } = useAuth();
   const [checkingApproval, setCheckingApproval] = useState(false);
@@ -164,6 +183,85 @@ function TeacherPanel() {
       setUploading(false);
       setTranscribing(false);
       setUploadError("Network error during file upload.");
+    };
+
+    xhr.send(formData);
+  };
+
+  // Manually (re)generate the transcript for the already-selected video file.
+  // Drives the staged "Auto-generate transcript" panel: uploads the stored file
+  // to the same /upload-video endpoint (which extracts audio + runs Whisper
+  // server-side) and fills the transcript box from the response. Safe to run
+  // multiple times; degrades gracefully when no speech is detected or on error.
+  const handleGenerateTranscript = () => {
+    const file = videoFileRef.current;
+    if (!file) {
+      setTranscribeError("Please choose a video file first.");
+      return;
+    }
+
+    setTranscribeError("");
+    setTranscribeProgress(0);
+    setTranscribeStage("uploading");
+    setTranscribing(true);
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API_BASE}/api/courses/upload-video`, true);
+    if (token) {
+      xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    }
+
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        const pct = Math.round((event.loaded / event.total) * 100);
+        setTranscribeProgress(pct);
+        // Once bytes are uploaded the server extracts audio + runs Whisper
+        // before it responds — reflect that in the stage indicator.
+        if (pct >= 100) {
+          setTranscribeStage("transcribing");
+        }
+      }
+    };
+
+    xhr.onload = () => {
+      setTranscribing(false);
+      if (xhr.status === 200) {
+        try {
+          const res = JSON.parse(xhr.responseText);
+          setChapterForm((prev) => ({
+            ...prev,
+            youtube_url: res.video_url || prev.youtube_url,
+            // Keep any text the teacher already typed if Whisper returned nothing.
+            video_transcript: res.transcript ? res.transcript : prev.video_transcript,
+          }));
+          setUploadedFileName(file.name);
+          if (res.transcript) {
+            setTranscribeStage("done");
+          } else {
+            setTranscribeStage("");
+            setTranscribeError("No speech detected in the video — add a transcript manually below if needed.");
+          }
+        } catch {
+          setTranscribeStage("");
+          setTranscribeError("Failed to parse the transcription response.");
+        }
+      } else {
+        let detail = `Transcription failed with status code ${xhr.status}.`;
+        try {
+          detail = JSON.parse(xhr.responseText).detail || detail;
+        } catch { /* keep default */ }
+        setTranscribeStage("");
+        setTranscribeError(detail);
+      }
+    };
+
+    xhr.onerror = () => {
+      setTranscribing(false);
+      setTranscribeStage("");
+      setTranscribeError("Network error during transcription.");
     };
 
     xhr.send(formData);
@@ -643,7 +741,10 @@ function TeacherPanel() {
                     )}
 
                     {/* ── Auto-Transcript Generation ─────────────────────── */}
-                    {videoFileRef.current && !uploading && (
+                    {/* Gate on state (not the ref) so the panel re-renders
+                        reliably; the raw File is still read from videoFileRef
+                        inside the click handler, which is allowed. */}
+                    {uploadedFileName && !uploading && (
                       <div style={{ marginTop: "16px", padding: "14px 16px", borderRadius: "10px", border: "1px solid rgba(99,102,241,0.25)", background: "linear-gradient(135deg, rgba(99,102,241,0.04) 0%, rgba(139,92,246,0.04) 100%)" }}>
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
                           <div style={{ fontSize: "12px", color: "var(--text-main)", fontWeight: "500" }}>
