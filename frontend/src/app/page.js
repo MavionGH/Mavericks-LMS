@@ -1,11 +1,6 @@
 import Navbar from "@/components/Navbar";
 import Link from "next/link";
-
-const MOCK_COURSES = [
-  { id: "1", title: "JavaScript Fundamentals", description: "Master core JS concepts from variables to async/await with modular testing.", chapters: 8, icon: "JS" },
-  { id: "2", title: "React & Next.js Mastery", description: "Build scalable apps with server components, streaming, and advanced routing.", chapters: 12, icon: "RX" },
-  { id: "3", title: "Python for Data Science", description: "Analyze real datasets and build predictive models with Python.", chapters: 10, icon: "PY" },
-];
+import FeaturedCourses from "@/components/FeaturedCourses";
 
 const FEATURES = [
   { metric: "01", title: "Adaptive Voice Interviews", desc: "Interact with an AI agent that speaks, listens, and tailors technical questions dynamically." },
@@ -75,23 +70,7 @@ export default function HomePage() {
               <h2>Featured Learning Tracks</h2>
               <p>Acquire, practice, and verify your skills in real-time.</p>
             </div>
-            <div className="grid-3">
-              {MOCK_COURSES.map((c) => (
-                <div className="card course-card" key={c.id}>
-                  <div className="course-card-thumb">
-                    {c.icon}
-                  </div>
-                  <div className="course-card-body">
-                    <h3>{c.title}</h3>
-                    <p>{c.description}</p>
-                    <div className="course-card-meta">
-                      <span className="course-card-chapters">{c.chapters} chapters</span>
-                      <Link href={`/courses/${c.id}`} className="btn btn-secondary btn-sm">View details</Link>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
+            <FeaturedCourses />
           </div>
         </section>
 

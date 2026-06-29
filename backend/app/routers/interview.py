@@ -2,6 +2,7 @@ import logging
 import time
 from typing import Union
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session, joinedload, load_only
 
 from app.database import get_db
@@ -79,7 +80,10 @@ async def transcribe_answer(
     # Guard against runaway uploads (a normal answer is well under this).
     if len(audio_bytes) > 25 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="Audio too large")
-    text = transcribe_audio(audio_bytes, audio.filename or "answer.webm")
+    # transcribe_audio makes a blocking Groq HTTP call. Run it in the threadpool so
+    # it never freezes the event loop (which would stall every other request while a
+    # student's answer is being transcribed).
+    text = await run_in_threadpool(transcribe_audio, audio_bytes, audio.filename or "answer.webm")
     return {"text": text}
 
 
@@ -113,7 +117,10 @@ async def upload_interview_recording(
 
     # Rewind so upload_recording_to_r2 reads from the start.
     recording.file.seek(0)
-    url = upload_recording_to_r2(recording)
+    # boto3's R2 upload is blocking and can take many seconds for a large recording.
+    # Run it in the threadpool so the event loop stays free and other requests
+    # (interview answers, etc.) aren't blocked for the duration of the upload.
+    url = await run_in_threadpool(upload_recording_to_r2, recording)
 
     session.recording_url = url
     db.commit()

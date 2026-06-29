@@ -91,6 +91,25 @@ async def lifespan(app: FastAPI):
 
     logger.info("Schema columns ensured.")
 
+    # ── Warm the HuggingFace embedding model in the background ──
+    # The course-wide oral interview embeds its query with all-MiniLM-L6-v2, which
+    # is lazy-loaded (~90 MB download + load) on first use — that cold load is what
+    # made the first interview hang for 1-2 minutes. We kick the load off now, in a
+    # daemon thread, so it happens WHILE the server is up and students browse/learn.
+    # By the time anyone starts an interview the model is already cached in memory
+    # and start-up is instant. Non-blocking: server startup never waits on it, and a
+    # failure here is harmless (the interview falls back to raw course text).
+    def _warm_embedding_model():
+        try:
+            from app.services.embeddings import _get_model
+            if _get_model() is not None:
+                logger.info("Embedding model warmed and ready for interviews.")
+        except Exception as exc:  # pragma: no cover - best-effort warmup
+            logger.warning("Embedding model warmup skipped: %s", exc)
+
+    import threading
+    threading.Thread(target=_warm_embedding_model, name="embed-warmup", daemon=True).start()
+
     yield
 
 

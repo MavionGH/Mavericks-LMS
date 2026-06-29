@@ -324,14 +324,24 @@ export default function InterviewRoom({
       fillerCountRef.current = 0;
 
       if (data.passed !== undefined) {
+        // Interview is over, but DON'T jump to the results page yet. Mav must say
+        // her goodbye *during* the interview (avatar still on screen, lip-syncing),
+        // and only once her voice actually finishes do we switch to the results
+        // page. This avoids the jarring "goodbye plays over the results screen".
+        const goodbye = data.passed
+          ? "Congratulations! You passed the assessment. Thank you for completing the interview. Take care and goodbye!"
+          : "Thank you for participating. You can review the material and try the assessment again anytime. Take care and goodbye!";
         setResults(data);
-        setIsFinished(true);
-        setStatus("COMPLETE");
-        speakText(
-          data.passed
-            ? "Congratulations! You passed the assessment. Thank you for completing the interview. Take care and goodbye!"
-            : "Thank you for participating. You can review the material and try the assessment again anytime. Take care and goodbye!"
-        );
+        setWaitingForStudent(false);
+        setMicActive(false);
+        setStatus("AI SPEAKING");
+        setCurrentAIText(goodbye);
+        setTranscript((prev) => [...prev, { speaker: "ai", text: goodbye }]);
+        speakText(goodbye, () => {
+          // Mav has finished speaking → now end the interview and show results.
+          setIsFinished(true);
+          setStatus("COMPLETE");
+        });
       } else {
         setCurrentAIText(data.text);
         // Only advance question counter if it was a real interview answer, not chitchat
@@ -840,7 +850,7 @@ export default function InterviewRoom({
       tlog(`transcribing ${(blob.size / 1024).toFixed(0)}KB audio`);
       transcribingRef.current = true;
       setStatus("TRANSCRIBING");
-      setLiveTranscript("Transcribing your answer…");
+      setLiveTranscript("");
       try {
         const form = new FormData();
         form.append("audio", blob, "answer.webm");
@@ -1340,7 +1350,7 @@ export default function InterviewRoom({
               ) : waitingForStudent ? (
                 <span style={{ color: "#81c995", fontWeight: "600" }}>🎤 Mic is open — speak your answer or click 🎤 to submit manually</span>
               ) : (
-                <span style={{ color: "#9aa0a6" }}>AI is processing your response…</span>
+                <span style={{ color: "#9aa0a6" }}>I am processing your response…</span>
               )}
             </div>
 
