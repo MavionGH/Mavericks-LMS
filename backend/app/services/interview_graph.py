@@ -5,6 +5,7 @@ Turn-based flow for REST API:
   start_interview()  → greeting + opening question
   process_answer()   → classify → chitchat reply OR follow-up question OR final scoring
 """
+import re
 from typing import TypedDict, Optional, List
 from langgraph.graph import StateGraph, END
 
@@ -98,6 +99,39 @@ def _is_skip_or_dont_know(answer: str) -> bool:
     return any(phrase in low for phrase in _SKIP_PHRASES)
 
 
+# Cheap chitchat regexes (mirror the rule-based fallback in llm.py) used only to
+# decide whether we can SKIP the LLM classification call. A reply that trips none
+# of these and is reasonably long is treated as a genuine answer locally.
+_CHITCHAT_RE = re.compile(
+    r"\b(how are you|how do you do|you doing|what('?s| is) up|how'?s it going|"
+    r"what do you mean|can you (explain|clarify|elaborate|rephrase|repeat)|"
+    r"i don'?t understand|who (are|is) you|your name|tell me a joke|joke|"
+    r"weather|the time|what time|today'?s date)\b",
+    re.IGNORECASE,
+)
+_GREETING_ONLY_RE = re.compile(
+    r"^\s*(hi+|hello+|hey+|good (morning|afternoon|evening|day)|howdy|sup|yo|greetings)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_clearly_an_answer(answer: str) -> bool:
+    """True when we can safely classify locally as a genuine answer (no LLM call).
+
+    Conservative on purpose: only short-circuits long replies that contain no
+    chitchat/greeting/clarification cues and aren't phrased as a question, so
+    borderline inputs still reach the LLM classifier and behaviour is preserved.
+    """
+    text = answer.strip()
+    if len(text.split()) < 12:
+        return False
+    if text.endswith("?"):
+        return False
+    if _GREETING_ONLY_RE.match(text) or _CHITCHAT_RE.search(text):
+        return False
+    return True
+
+
 def _route_after_answer(state: InterviewState) -> str:
     if state.get("question_count", 0) >= MAX_QUESTIONS:
         return "score"
@@ -145,8 +179,9 @@ def _score_interview(state: InterviewState) -> InterviewState:
 
 def _greet_student(state: InterviewState) -> InterviewState:
     greeting = (
-        "Hello, I'm Mav, your AI interviewer today. "
-        "I'll be asking a few questions related to your profile and skills. Let's get started."
+        "Hello! Welcome to your interview. I'm Mav, your AI interviewer, and I'm glad "
+        "to be speaking with you today. We'll go through a few questions about this module. "
+        "Feel free to ask me to repeat or clarify anything at any time. Let's begin."
     )
     transcript = list(state.get("transcript", []))
     if not any(m.get("text") == greeting for m in transcript):
@@ -163,11 +198,18 @@ def _greet_student(state: InterviewState) -> InterviewState:
 
 
 def _build_start_graph():
-    """Graph for interview start: execute GreetingNode first."""
+    """Graph for interview start: greet, then immediately generate Question 1.
+
+    Per the interview spec, the greeting flows straight into the first question
+    in a single turn — the student's first spoken reply is the answer to Q1, not
+    a reply to the greeting.
+    """
     g = StateGraph(InterviewState)
     g.add_node("GreetingNode", _greet_student)
+    g.add_node("FirstQuestion", _generate_question)
     g.set_entry_point("GreetingNode")
-    g.add_edge("GreetingNode", END)
+    g.add_edge("GreetingNode", "FirstQuestion")
+    g.add_edge("FirstQuestion", END)
     return g.compile()
 
 
@@ -226,7 +268,13 @@ def start_interview(chapter_title: str, chapter_context: str, pass_threshold: in
     }
     # Invoke start graph (runs greet_student -> generate_question)
     result = dict(_get_start_graph().invoke(initial))
-    # Return results (has both greeting and next_question set by start graph nodes)
+    # Deliver greeting + Question 1 as ONE spoken turn so the avatar speaks them
+    # back-to-back and the student's first answer is for Q1. `current_question`
+    # stays Q1 (used for classification / re-asks); `greeting` stays separate.
+    greeting = result.get("greeting", "")
+    first_question = result.get("current_question", "")
+    if greeting and first_question and not result.get("is_complete"):
+        result["next_question"] = f"{greeting}\n\n{first_question}"
     return result
 
 
@@ -241,8 +289,10 @@ def process_answer(
     """Process the student's message — classify first, then route appropriately."""
     state = dict(state)
 
-    # ── Fast path: if question_count is 0, the student is replying to the initial greeting ──
-    # We directly transition to generate Question #1 and do not classify or record greeting as chitchat
+    # ── Backward-compat path: question_count == 0 means this session was started
+    # under the old flow (greeting-only first turn). New sessions arrive with Q1
+    # already asked (question_count == 1), so this branch only runs for sessions
+    # that were already active before greeting+Q1 were merged into one turn. ──
     if state.get("question_count", 0) == 0:
         state["last_answer"] = answer
         state["last_response_time_ms"] = 0
@@ -256,7 +306,16 @@ def process_answer(
     current_q = state.get("current_question") or state.get("next_question", "")
 
     # ── Classify the student's input ──
-    category = llm_classify_response(answer, current_q)
+    # Fast path: a long, substantive reply that matches none of the chitchat
+    # patterns is virtually always a genuine answer. Treating it as such locally
+    # skips an entire LLM round-trip (the classify call) on the common case,
+    # roughly halving per-answer latency. Ambiguous/short inputs still go to the
+    # LLM classifier so greeting/personal/clarification/offtopic handling is
+    # unchanged.
+    if _is_clearly_an_answer(answer):
+        category = "answer"
+    else:
+        category = llm_classify_response(answer, current_q)
 
     if category in ("greeting", "personal", "clarification", "offtopic"):
         # Generate a conversational reply without advancing the interview

@@ -14,11 +14,15 @@ function LearnRedirectPage() {
   useEffect(() => {
     async function redirect() {
       try {
-        const courseRes = await authFetch(`/api/courses/${params.courseId}`);
+        // Course and enrollment are independent reads — fetch them together.
+        const [courseRes, enrollGetRes] = await Promise.all([
+          authFetch(`/api/courses/${params.courseId}`),
+          authFetch(`/api/enrollment/course/${params.courseId}`),
+        ]);
         if (!courseRes.ok) throw new Error("Course not found");
         const course = await courseRes.json();
 
-        let enrollRes = await authFetch(`/api/enrollment/course/${params.courseId}`);
+        let enrollRes = enrollGetRes;
         if (enrollRes.status === 404) {
           enrollRes = await authFetch("/api/enrollment/enroll", {
             method: "POST",

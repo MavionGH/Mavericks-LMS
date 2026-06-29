@@ -1,34 +1,41 @@
 "use client";
 import Navbar from "@/components/Navbar";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { API_BASE, useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
 
+// Player for interview recordings. Files produced by the browser's MediaRecorder
+// are streamed without a duration in their header, so a plain <video> reports
+// duration = Infinity and its scrub bar can't seek. On metadata load we force the
+// browser to read to the end (seek to a huge time), which makes it compute the real
+// duration; after that the timeline is fully seekable. Runs once per recording.
+function RecordingPlayer({ src }) {
+  const ref = useRef(null);
+  const fixedRef = useRef(false);
 
-/** Animated three-dot spinner for processing stages. */
-function StageSpinner() {
+  const handleLoadedMetadata = () => {
+    const v = ref.current;
+    if (!v || fixedRef.current) return;
+    if (v.duration === Infinity || Number.isNaN(v.duration)) {
+      fixedRef.current = true;
+      const onUpdate = () => {
+        v.removeEventListener("timeupdate", onUpdate);
+        v.currentTime = 0; // snap back to the start now that duration is known
+      };
+      v.addEventListener("timeupdate", onUpdate);
+      v.currentTime = 1e101; // jump past the end → browser resolves the duration
+    }
+  };
+
   return (
-    <span style={{ display: "inline-flex", gap: "3px", verticalAlign: "middle", marginRight: "6px" }}>
-      {[0, 1, 2].map((i) => (
-        <span
-          key={i}
-          style={{
-            width: "5px",
-            height: "5px",
-            borderRadius: "50%",
-            background: "currentColor",
-            display: "inline-block",
-            animation: `stageSpinnerBounce 1.2s ${i * 0.2}s ease-in-out infinite`,
-          }}
-        />
-      ))}
-      <style>{`
-        @keyframes stageSpinnerBounce {
-          0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
-          40% { transform: scale(1); opacity: 1; }
-        }
-      `}</style>
-    </span>
+    <video
+      ref={ref}
+      src={src}
+      controls
+      preload="metadata"
+      onLoadedMetadata={handleLoadedMetadata}
+      style={{ width: "100%", borderRadius: "var(--radius-sm)", backgroundColor: "#000", maxHeight: 240 }}
+    />
   );
 }
 
@@ -54,6 +61,17 @@ function TeacherPanel() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadedFileName, setUploadedFileName] = useState("");
   const [uploadError, setUploadError] = useState("");
+  const [transcribing, setTranscribing] = useState(false);
+
+  // Article document import state (txt / md / pdf / docx → article text)
+  const [articleUploading, setArticleUploading] = useState(false);
+  const [articleFileName, setArticleFileName] = useState("");
+  const [articleError, setArticleError] = useState("");
+
+  // Student interview recordings (screen + voice, stored in R2)
+  const [recordings, setRecordings] = useState([]);
+  const [recordingsLoading, setRecordingsLoading] = useState(false);
+  const [recordingsError, setRecordingsError] = useState("");
 
   // Transcript generation state
   const [transcribing, setTranscribing] = useState(false);
@@ -103,17 +121,25 @@ function TeacherPanel() {
       if (event.lengthComputable) {
         const percentComplete = Math.round((event.loaded / event.total) * 100);
         setUploadProgress(percentComplete);
+        // Bytes are uploaded — the server is now transcribing before it responds.
+        if (percentComplete >= 100) {
+          setTranscribing(true);
+        }
       }
     };
 
     xhr.onload = () => {
       setUploading(false);
+      setTranscribing(false);
       if (xhr.status === 200) {
         try {
           const res = JSON.parse(xhr.responseText);
           setChapterForm((prev) => ({
             ...prev,
             youtube_url: res.video_url,
+            // Auto-fill the transcript box from the video's audio. Keep any
+            // text the teacher already typed if transcription returned nothing.
+            video_transcript: res.transcript ? res.transcript : prev.video_transcript,
           }));
           setUploadProgress(100);
         } catch (e) {
@@ -131,86 +157,97 @@ function TeacherPanel() {
 
     xhr.onerror = () => {
       setUploading(false);
+      setTranscribing(false);
       setUploadError("Network error during file upload.");
     };
 
     xhr.send(formData);
   };
 
-  const handleGenerateTranscript = () => {
-    const file = videoFileRef.current;
+  // Upload a text/PDF/DOCX file → backend extracts plain text → fills the
+  // article box. The extracted text is saved to article_content like typed text.
+  const handleArticleUpload = async (e) => {
+    const file = e.target.files[0];
     if (!file) return;
 
-    setTranscribing(true);
-    setTranscribeStage("uploading");
-    setTranscribeProgress(0);
-    setTranscribeError("");
-
-    const formData = new FormData();
-    formData.append("file", file);
-
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${API_BASE}/api/courses/transcribe-video`, true);
-    if (token) {
-      xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    const allowed = ["txt", "md", "pdf", "docx"];
+    const ext = file.name.split(".").pop().toLowerCase();
+    if (!allowed.includes(ext)) {
+      setArticleError("Invalid file format. Allowed: txt, md, pdf, docx.");
+      return;
+    }
+    if (file.size > 15 * 1024 * 1024) {
+      setArticleError("File is too large. Maximum size allowed is 15MB.");
+      return;
     }
 
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) {
-        const pct = Math.round((event.loaded / event.total) * 100);
-        setTranscribeProgress(pct);
-        if (pct === 100) {
-          setTranscribeStage("extracting");
-          // Advance to "transcribing" stage after a short delay — the backend
-          // is now running FFmpeg; state closures would be stale so we use a
-          // timer rather than onreadystatechange.
-          setTimeout(() => setTranscribeStage((s) => s === "extracting" ? "transcribing" : s), 2500);
-        }
+    setArticleError("");
+    setArticleUploading(true);
+    setArticleFileName(file.name);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      // Note: don't use authFetch here — it forces a JSON Content-Type which
+      // would break the multipart upload. Send the bearer token manually and
+      // let the browser set the multipart boundary.
+      const res = await fetch(`${API_BASE}/api/courses/extract-article`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: fd,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Could not extract text from the file.");
       }
-    };
-
-    xhr.onload = () => {
-      if (xhr.status === 200) {
-        try {
-          const res = JSON.parse(xhr.responseText);
-          setChapterForm((prev) => ({ ...prev, video_transcript: res.transcript }));
-          setTranscribeStage("done");
-        } catch {
-          setTranscribeError("Failed to parse transcription response.");
-        }
-      } else {
-        try {
-          const res = JSON.parse(xhr.responseText);
-          setTranscribeError(res.detail || "Transcription failed.");
-        } catch {
-          setTranscribeError(`Transcription failed (HTTP ${xhr.status}).`);
-        }
-      }
-      setTranscribing(false);
-    };
-
-    xhr.onerror = () => {
-      setTranscribing(false);
-      setTranscribeError("Network error during transcription upload.");
-    };
-
-    xhr.send(formData);
+      const data = await res.json();
+      setChapterForm((prev) => ({ ...prev, article_content: data.article_content }));
+    } catch (err) {
+      setArticleError(err.message);
+      setArticleFileName("");
+    } finally {
+      setArticleUploading(false);
+    }
+    // Allow re-selecting the same file again later
+    e.target.value = "";
   };
 
-  const loadCourses = async () => {
+  const loadCourses = useCallback(async () => {
     try {
       const res = await authFetch("/api/courses/manage/all");
       if (res.ok) {
         const data = await res.json();
         setCourses(data);
-        if (data.length && !selectedCourseId) setSelectedCourseId(data[0].id);
+        // functional update → no dependency on selectedCourseId
+        setSelectedCourseId((cur) => (data.length && !cur ? data[0].id : cur));
       }
     } catch { /* ignore */ }
-  };
+  }, [authFetch]);
 
   useEffect(() => {
+    // Mount-time data load (loadCourses setStates after its await) — intentional.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadCourses();
-  }, []);
+  }, [loadCourses]);
+
+  const loadRecordings = useCallback(async () => {
+    setRecordingsLoading(true);
+    setRecordingsError("");
+    try {
+      const res = await authFetch("/api/teacher/recordings");
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "Failed to load recordings");
+      setRecordings(await res.json());
+    } catch (err) {
+      setRecordingsError(err.message);
+    } finally {
+      setRecordingsLoading(false);
+    }
+  }, [authFetch]);
+
+  // Load recordings the first time the teacher opens that tab.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (activeTab === "recordings") loadRecordings();
+  }, [activeTab, loadRecordings]);
 
   const selectedCourse = courses.find((c) => c.id === selectedCourseId);
 
@@ -258,6 +295,9 @@ function TeacherPanel() {
       setChapterForm({ title: "", article_content: "", youtube_url: "", video_transcript: "" });
       setUploadedFileName("");
       setUploadProgress(0);
+      setTranscribing(false);
+      setArticleFileName("");
+      setArticleError("");
       loadCourses();
       setTimeout(() => setChapterStatus(""), 3000);
     } catch (err) {
@@ -275,6 +315,7 @@ function TeacherPanel() {
     { key: "courses",   label: "My Courses"   },
     { key: "modules",   label: "Add Modules"  },
     { key: "create",    label: "Add Course"   },
+    { key: "recordings", label: "Student Recordings" },
   ];
 
   const handleCheckApproval = async () => {
@@ -551,6 +592,13 @@ function TeacherPanel() {
                       </div>
                     )}
 
+                    {transcribing && (
+                      <div style={{ marginTop: "12px", fontSize: "12px", color: "var(--brand)", display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span className="spinner" style={{ width: 12, height: 12, border: "2px solid var(--brand)", borderTopColor: "transparent", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
+                        Transcribing video audio… the transcript box will fill in automatically.
+                      </div>
+                    )}
+
                     {uploadedFileName && !uploading && (
                       <div style={{ marginTop: "12px", padding: "10px", backgroundColor: "#f9fafb", border: "1px solid var(--border-muted)", borderRadius: "var(--radius-sm)" }}>
                         <div style={{ fontSize: "12px", fontWeight: "600", color: "var(--text-main)" }}>
@@ -559,6 +607,7 @@ function TeacherPanel() {
                         {chapterForm.youtube_url && (
                           <div style={{ fontSize: "11px", color: "var(--color-success)", marginTop: "4px" }}>
                             Successfully uploaded!
+                            {chapterForm.video_transcript ? " Transcript auto-generated below." : " No speech detected — add a transcript manually below if needed."}
                           </div>
                         )}
                       </div>
@@ -647,13 +696,40 @@ function TeacherPanel() {
                   </div>
                   <div className="form-group">
                     <label className="form-label">Article Content (markdown)</label>
+                    <div style={{ marginBottom: "10px" }}>
+                      <input
+                        type="file"
+                        accept=".txt,.md,.pdf,.docx"
+                        onChange={handleArticleUpload}
+                        disabled={articleUploading}
+                        className="form-input"
+                        style={{ padding: "8px" }}
+                      />
+                      {articleUploading && (
+                        <div style={{ marginTop: "8px", fontSize: "12px", color: "var(--brand)", display: "flex", alignItems: "center", gap: "8px" }}>
+                          <span className="spinner" style={{ width: 12, height: 12, border: "2px solid var(--brand)", borderTopColor: "transparent", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
+                          Extracting text from {articleFileName}…
+                        </div>
+                      )}
+                      {articleFileName && !articleUploading && !articleError && (
+                        <div style={{ marginTop: "8px", fontSize: "11px", color: "var(--color-success)" }}>
+                          ✓ Imported text from {articleFileName}. Review/edit below before saving.
+                        </div>
+                      )}
+                      {articleError && (
+                        <p style={{ fontSize: "12px", color: "var(--color-danger)", marginTop: "8px" }}>❌ {articleError}</p>
+                      )}
+                      <p style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "6px" }}>
+                        Optional — upload a .txt, .md, .pdf, or .docx file to auto-fill the article from a document. You can still edit the text below.
+                      </p>
+                    </div>
                     <textarea className="form-input form-textarea" placeholder="## Topic&#10;Explain key concepts..." value={chapterForm.article_content} onChange={(e) => setChapterForm({ ...chapterForm, article_content: e.target.value })} required rows={8} />
                   </div>
                   <div className="form-group">
-                    <label className="form-label">Video Transcript (optional)</label>
-                    <textarea className="form-input form-textarea" placeholder="Paste manual transcript or notes if available..." value={chapterForm.video_transcript} onChange={(e) => setChapterForm({ ...chapterForm, video_transcript: e.target.value })} rows={4} />
+                    <label className="form-label">Video Transcript (auto-generated — editable)</label>
+                    <textarea className="form-input form-textarea" placeholder="Auto-filled from the uploaded video. You can edit or paste your own transcript here..." value={chapterForm.video_transcript} onChange={(e) => setChapterForm({ ...chapterForm, video_transcript: e.target.value })} rows={6} />
                     <p style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>
-                      This transcript text will be used by the AI to formulate questions and assess student comprehension.
+                      Generated automatically from the video&apos;s audio when you upload it. Review/edit before saving — this text is embedded and used by the AI to formulate questions and assess student comprehension.
                     </p>
                   </div>
                   <button type="submit" className="btn btn-primary" disabled={!selectedCourseId || chapterStatus === "saving" || uploading || !chapterForm.youtube_url}>
@@ -779,6 +855,69 @@ function TeacherPanel() {
                   </button>
                 </div>
               </form>
+            </div>
+          )}
+
+          {/* Student Recordings */}
+          {activeTab === "recordings" && (
+            <div>
+              <div style={{ display: "flex", alignItems: "center", marginBottom: "20px" }}>
+                <div style={{ flex: 1 }}>
+                  <h3 style={{ fontSize: "14px", fontWeight: "700", textTransform: "uppercase", fontFamily: "JetBrains Mono", margin: 0 }}>
+                    AI Interview Recordings
+                  </h3>
+                  <p style={{ color: "var(--text-muted)", fontSize: "13px", marginTop: "4px" }}>
+                    Screen + voice recordings of each student&apos;s oral interview in your courses.
+                  </p>
+                </div>
+                <button className="btn btn-secondary" onClick={loadRecordings} style={{ fontSize: "11px", padding: "4px 10px" }}>
+                  Refresh
+                </button>
+              </div>
+
+              {recordingsLoading && (
+                <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>Loading recordings…</p>
+              )}
+              {recordingsError && (
+                <p style={{ color: "var(--color-danger)", fontSize: "13px" }}>❌ {recordingsError}</p>
+              )}
+              {!recordingsLoading && !recordingsError && recordings.length === 0 && (
+                <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+                  No interview recordings yet. They appear here once your students complete recorded interviews.
+                </p>
+              )}
+
+              <div className="grid-2" style={{ alignItems: "start" }}>
+                {recordings.map((r) => (
+                  <div key={r.session_id} className="card" style={{ padding: "16px", backgroundColor: "#ffffff" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px" }}>
+                      <div>
+                        <div style={{ fontWeight: "700", fontSize: "14px", color: "var(--text-title)" }}>{r.student?.name}</div>
+                        <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>{r.student?.email}</div>
+                      </div>
+                      {r.overall_score !== null && r.overall_score !== undefined && (
+                        <span className={`badge ${r.passed ? "badge-success" : "badge-warning"}`} style={{ fontSize: "10px" }}>
+                          {r.passed ? "PASSED" : "NEEDS REVIEW"} · {r.overall_score}%
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "10px" }}>
+                      <strong style={{ color: "var(--text-main)" }}>{r.course?.title}</strong>
+                      {r.module ? ` · ${r.module}` : " · Course-wide interview"}
+                      {r.created_at ? ` · ${new Date(r.created_at).toLocaleDateString()}` : ""}
+                    </div>
+                    <RecordingPlayer src={r.recording_url} />
+                    <a
+                      href={r.recording_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ display: "inline-block", marginTop: "8px", fontSize: "12px", color: "var(--brand)" }}
+                    >
+                      Open in new tab ↗
+                    </a>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>

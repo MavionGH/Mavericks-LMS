@@ -44,10 +44,11 @@ class User(Base):
     id = Column(String, primary_key=True, default=generate_uuid)
     name = Column(String(100), nullable=False)
     email = Column(String(255), unique=True, nullable=False, index=True)
-    password = Column(String(255), nullable=False)
+    password = Column(String(255), nullable=True)  # Nullable for OAuth users
     role = Column(Enum(UserRole), default=UserRole.STUDENT)
     is_approved = Column(Boolean, default=True)
     avatar = Column(String(500), nullable=True)
+    google_id = Column(String(255), unique=True, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -158,16 +159,23 @@ class InterviewSession(Base):
 
     id = Column(String, primary_key=True, default=generate_uuid)
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
-    chapter_id = Column(String, ForeignKey("chapters.id"), nullable=False)
+    # chapter_id is set for a per-module interview; course_id is set for the
+    # course-wide final interview (which spans every module). Exactly one is used.
+    chapter_id = Column(String, ForeignKey("chapters.id"), nullable=True)
+    course_id = Column(String, ForeignKey("courses.id"), nullable=True)
     status = Column(String, default="active")  # active | completed
     transcript = Column(JSON, default=list)
     pause_metrics = Column(JSON, default=list)
     question_count = Column(Integer, default=0)
     graph_state = Column(JSON, nullable=True)
+    # Public R2 URL of the full screen+audio recording of the interview, uploaded
+    # by the browser when the session ends. Null until the upload completes.
+    recording_url = Column(String(500), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User")
     chapter = relationship("Chapter")
+    course = relationship("Course")
 
 
 # ─── EVALUATION (AI Interview) ───

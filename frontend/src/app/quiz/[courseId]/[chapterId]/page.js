@@ -116,7 +116,7 @@ function QuizPage() {
 
   // ── Quiz data ──
   const [questions, setQuestions]   = useState([]);
-  const [loading, setLoading]       = useState(true);
+  const [loading, setLoading]       = useState(false);
   const [error, setError]           = useState("");
   const [currentQ, setCurrentQ]     = useState(0);
   const [answers, setAnswers]       = useState({});
@@ -138,13 +138,17 @@ function QuizPage() {
 
   // ── Timer ──
   const [remaining, setRemaining]   = useState(QUIZ_TIME_LIMIT);
-  const questionEndRef              = useRef(Date.now() + QUIZ_TIME_LIMIT * 1000);
-  const lastQIndexRef               = useRef(0);
+  const questionEndRef              = useRef(0); // set before the countdown reads it
+  const lastQIndexRef               = useRef(-1);
   const submissionLockRef           = useRef(false);
   const timeoutHandledRef           = useRef(false);
 
-  // ── Fetch questions on mount ──
+  // ── Fetch questions only once the student starts the quiz ──
+  // Questions are generated on-demand by the backend, so we deliberately wait
+  // until the rules modal is accepted (quizStarted) — nothing is generated just
+  // by opening the page.
   useEffect(() => {
+    if (!quizStarted) return;
     async function fetchQuiz() {
       setLoading(true);
       setError("");
@@ -163,7 +167,7 @@ function QuizPage() {
       }
     }
     fetchQuiz();
-  }, [params.chapterId]);
+  }, [params.chapterId, quizStarted, authFetch]);
 
   // ── Stable callbacks for useQuizGuard ────────────────────────────────────
   const handleFullscreenExit = useCallback(
@@ -225,12 +229,18 @@ function QuizPage() {
   // ── Countdown timer ───────────────────────────────────────────────────────
   useEffect(() => {
     if (!quizStarted || submitted) return;
+    // Don't start (or resume) the countdown until the question is actually on
+    // screen. Questions are generated on-demand, so starting the timer at
+    // quizStarted would let generation latency silently eat into question 1.
+    if (loading || questions.length === 0) return;
     // Pause while any overlay is blocking the quiz
     if (fsWarningVisible) return;
 
     // Pause timer and show 0 if current question was violated
     const q = questions[currentQ];
     if (q && fsViolatedQuestions.includes(String(q.id))) {
+      // Intentional: freeze the timer at 0 while this question is in a violated state.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setRemaining(0);
       return;
     }
@@ -270,7 +280,7 @@ function QuizPage() {
 
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [quizStarted, submitted, currentQ, fsWarningVisible]);
+  }, [quizStarted, submitted, currentQ, fsWarningVisible, loading, questions.length]);
 
   // ── Answer selection ──────────────────────────────────────────────────────
   const handleSelect = (qId, option) => {
@@ -383,7 +393,13 @@ function QuizPage() {
                 <div className="progress-bar-fill" style={{ width: `${result.score}%`, backgroundColor: result.passed ? "var(--color-success)" : "var(--color-danger)" }} />
               </div>
               {result.passed ? (
-                <span className="badge badge-success">PASSED — ORAL ASSESSMENT UNLOCKED</span>
+                <span className="badge badge-success">
+                  {result.course_completed
+                    ? "PASSED — COURSE COMPLETE"
+                    : result.next_chapter_unlocked
+                    ? "PASSED — NEXT MODULE UNLOCKED"
+                    : "PASSED"}
+                </span>
               ) : (
                 <span className="badge badge-danger">FAILED — REVIEW THE MODULE AND RETRY</span>
               )}
@@ -438,9 +454,19 @@ function QuizPage() {
             {/* Actions */}
             <div style={{ display: "flex", gap: "12px", justifyContent: "center" }}>
               {result.passed ? (
-                <Link href={`/interview/${params.courseId}/${params.chapterId}`} className="btn btn-primary">
-                  Initialize Oral Assessment
-                </Link>
+                result.course_completed ? (
+                  <Link href={`/interview/${params.courseId}`} className="btn btn-primary">
+                    Take the Final AI Interview
+                  </Link>
+                ) : result.next_chapter_unlocked ? (
+                  <Link href={`/learn/${params.courseId}`} className="btn btn-primary">
+                    Continue to Next Module
+                  </Link>
+                ) : (
+                  <Link href={`/learn/${params.courseId}/${params.chapterId}`} className="btn btn-primary">
+                    Back to Module
+                  </Link>
+                )
               ) : (
                 <>
                   <Link href={`/learn/${params.courseId}/${params.chapterId}`} className="btn btn-secondary">Review Module</Link>
@@ -506,7 +532,7 @@ function QuizPage() {
               Module Quiz
             </h1>
             <p style={{ color: "var(--text-muted)", fontSize: "14px" }}>
-              Answer all {questions.length} questions before entering the AI oral assessment.
+              Answer all {questions.length} questions. Passing this quiz unlocks the next module.
             </p>
           </div>
 

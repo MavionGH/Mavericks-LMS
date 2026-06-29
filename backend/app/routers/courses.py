@@ -5,22 +5,21 @@ import tempfile
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, File, UploadFile
 from sqlalchemy import func
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, load_only
 from typing import List, Optional
 
 from app.database import get_db
 from app.models.models import Course, Chapter, User, UserRole
 from app.schemas.schemas import (
     CourseCreate, CourseResponse, CourseListResponse,
-    ChapterCreate, ChapterResponse, ChapterMinResponse
+    ChapterCreate, ChapterResponse, ChapterMinResponse, ChapterDetailResponse
 )
 from app.auth.dependencies import get_current_user, require_teacher, require_admin
 from app.services.transcript import fetch_youtube_transcript
-from app.services.embeddings import embed_and_store_chapter
 from app.services.storage import upload_video_to_r2
 from app.services.pinecone_store import index_module_content
-from app.services.video_transcription import extract_audio, split_audio, transcribe_chunks
-from app.services.storage import upload_video_to_r2
+from app.services.video_transcription import transcribe_video_bytes
+from app.services.document_parser import extract_text_from_document
 
 logger = logging.getLogger(__name__)
 
@@ -203,13 +202,30 @@ def publish_course(
 
 # ─── CHAPTER ROUTES ───
 
-@router.get("/chapters/{chapter_id}", response_model=ChapterResponse)
+@router.get("/chapters/{chapter_id}", response_model=ChapterDetailResponse)
 def get_chapter(chapter_id: str, db: Session = Depends(get_db)):
-    """Get details of a single chapter (includes article_content)."""
-    chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
+    """Get details of a single chapter for the learner view (article + video).
+
+    Only the columns the UI needs are loaded — the potentially large
+    `video_transcript` is intentionally not fetched or returned here.
+    """
+    chapter = (
+        db.query(Chapter)
+        .options(
+            load_only(
+                Chapter.title,
+                Chapter.order_index,
+                Chapter.article_content,
+                Chapter.youtube_url,
+                Chapter.course_id,
+            )
+        )
+        .filter(Chapter.id == chapter_id)
+        .first()
+    )
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
-    return ChapterResponse.model_validate(chapter)
+    return ChapterDetailResponse.model_validate(chapter)
 
 
 @router.post("/{course_id}/chapters", response_model=ChapterResponse)
@@ -244,10 +260,9 @@ def add_chapter(
     db.commit()
     db.refresh(chapter)
 
-    background_tasks.add_task(
-        embed_and_store_chapter,
-        chapter.id, course_id, data.article_content, video_transcript,
-    )
+    # Embed transcript + article with HuggingFace and store the vectors in
+    # Pinecone (the single source of truth for vectors). The transcript/article
+    # text itself stays in Supabase (the Chapter row above) for quiz generation.
     background_tasks.add_task(
         index_module_content,
         course_id, chapter.id, data.article_content, video_transcript,
@@ -285,10 +300,8 @@ def update_chapter(
     db.refresh(chapter)
     course_id = chapter.course_id
 
-    background_tasks.add_task(
-        embed_and_store_chapter,
-        chapter_id, course_id, data.article_content, video_transcript,
-    )
+    # Re-embed into Pinecone (vectors only live in Pinecone). The updated
+    # transcript/article text is already persisted on the Chapter row above.
     background_tasks.add_task(
         index_module_content,
         course_id, chapter_id, data.article_content, video_transcript,
@@ -330,113 +343,37 @@ def upload_video(
             detail=f"Invalid file type. Allowed formats: {', '.join(ALLOWED_EXTENSIONS)}"
         )
 
-    file.file.seek(0, 2)
-    file_size = file.file.tell()
+    # Read the bytes once so we can both store the video and transcribe it.
+    data = file.file.read()
+    if len(data) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="File is too large. Max size is 100MB.")
     file.file.seek(0)
 
-    if file_size > MAX_FILE_SIZE:
-        raise HTTPException(status_code=400, detail="File is too large. Max size is 100MB.")
-
     url = upload_video_to_r2(file)
-    return {"video_url": url}
+
+    # Auto-generate the transcript from the uploaded video (Groq Whisper).
+    # Returns "" on any failure so the teacher can still fill it in manually.
+    transcript = transcribe_video_bytes(data, file.filename) or ""
+    return {"video_url": url, "transcript": transcript}
 
 
-# ─── VIDEO TRANSCRIPTION ───
+# ─── ARTICLE DOCUMENT IMPORT ───
 
-# Separate upload cap for transcription (larger since we discard the file after)
-MAX_TRANSCRIBE_MB = 500
-MAX_TRANSCRIBE_BYTES = MAX_TRANSCRIBE_MB * 1024 * 1024
-ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".webm"}
-
-
-@router.post("/transcribe-video")
-def transcribe_video(
+@router.post("/extract-article")
+def extract_article(
     file: UploadFile = File(...),
     current_user: User = Depends(require_teacher),
 ):
     """
-    Extract audio from an uploaded video file and transcribe it using
-    Groq Whisper (whisper-large-v3-turbo).  Returns the full transcript text.
-
-    Processing pipeline:
-      1. Save video to a temporary job directory.
-      2. Extract mono 16 kHz 64 kbps MP3 via ffmpeg.
-      3. If audio > 25 MB, split into time-based chunks via ffmpeg/ffprobe.
-      4. Transcribe each chunk sequentially with the Groq Whisper API.
-      5. Merge and return results; always clean up temp files in finally.
+    Convert an uploaded article document (.txt / .md / .pdf / .docx) into plain
+    text. The text is returned to the teacher UI to populate the article box —
+    it is then saved to Chapter.article_content exactly like typed text, so the
+    rest of the pipeline (embeddings, quiz generation) is unchanged.
     """
-    # ── Validate extension ──────────────────────────────────────────────────
-    ext = os.path.splitext(file.filename or "")[1].lower()
-    if ext not in ALLOWED_VIDEO_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid file type '{ext}'. Allowed: {', '.join(ALLOWED_VIDEO_EXTENSIONS)}",
-        )
-
-    # ── Validate size ───────────────────────────────────────────────────────
-    file.file.seek(0, 2)
-    file_size = file.file.tell()
-    file.file.seek(0)
-    if file_size > MAX_TRANSCRIBE_BYTES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File is too large for transcription. Maximum allowed: {MAX_TRANSCRIBE_MB} MB.",
-        )
-
-    # ── Set up isolated temp directory for this job ─────────────────────────
-    job_id = str(uuid.uuid4())
-    job_dir = os.path.join(tempfile.gettempdir(), f"vidscribe_{job_id}")
-    os.makedirs(job_dir, exist_ok=True)
-
-    video_path = os.path.join(job_dir, f"input{ext}")
-    audio_path = os.path.join(job_dir, "audio.mp3")
-    chunks_dir = os.path.join(job_dir, "chunks")
-
-    try:
-        # ── 1. Save video to disk ───────────────────────────────────────────
-        logger.info("[%s] Saving uploaded video (%s MB)", job_id, round(file_size / 1024 / 1024, 1))
-        with open(video_path, "wb") as fout:
-            shutil.copyfileobj(file.file, fout)
-
-        # ── 2. Extract audio ────────────────────────────────────────────────
-        logger.info("[%s] Extracting audio", job_id)
-        try:
-            extract_audio(video_path, audio_path)
-        except RuntimeError as exc:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Audio extraction failed. Ensure ffmpeg is installed and on PATH. Details: {exc}",
-            )
-
-        # ── 3. Split if necessary ───────────────────────────────────────────
-        logger.info("[%s] Splitting audio if needed", job_id)
-        try:
-            chunk_paths = split_audio(audio_path, chunks_dir)
-        except RuntimeError as exc:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Audio splitting failed. Details: {exc}",
-            )
-
-        # ── 4. Transcribe ───────────────────────────────────────────────────
-        logger.info("[%s] Transcribing %d chunk(s) with Groq Whisper", job_id, len(chunk_paths))
-        try:
-            transcript = transcribe_chunks(chunk_paths)
-        except EnvironmentError as exc:
-            raise HTTPException(status_code=500, detail=str(exc))
-        except RuntimeError as exc:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Transcription failed. Details: {exc}",
-            )
-
-        logger.info("[%s] Transcription complete: %d chars", job_id, len(transcript))
-        return {"transcript": transcript}
-
-    finally:
-        # ── 5. Always clean up temp files ───────────────────────────────────
-        try:
-            shutil.rmtree(job_dir, ignore_errors=True)
-            logger.info("[%s] Temp directory cleaned up", job_id)
-        except Exception as cleanup_exc:
-            logger.warning("[%s] Cleanup failed: %s", job_id, cleanup_exc)
+    data = file.file.read()
+    text = extract_text_from_document(file.filename, data)
+    return {
+        "article_content": text,
+        "filename": file.filename,
+        "char_count": len(text),
+    }

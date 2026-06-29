@@ -27,31 +27,49 @@ _OFFTOPIC_PATTERNS = re.compile(
 )
 
 
+# Cache a single chat-model client process-wide. Constructing a ChatGroq /
+# ChatOpenAI client sets up an underlying HTTP client (connection pool); doing it
+# once and reusing it across every interview turn avoids re-creating that pool on
+# each LLM call (start, classify, follow-up, score) and keeps connections warm.
+_llm_client = None
+_llm_resolved = False
+
+
 def get_llm():
-    """Return a LangChain chat model. Prefers Groq, then OpenAI."""
+    """Return a cached LangChain chat model. Prefers Groq, then OpenAI."""
+    global _llm_client, _llm_resolved
+    if _llm_resolved:
+        return _llm_client
+
     if GROQ_API_KEY:
         try:
             from langchain_groq import ChatGroq
-            return ChatGroq(
+            _llm_client = ChatGroq(
                 model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
                 temperature=0.7,
                 groq_api_key=GROQ_API_KEY,
             )
+            _llm_resolved = True
+            return _llm_client
         except Exception:
             pass
 
     if OPENAI_API_KEY:
         try:
             from langchain_openai import ChatOpenAI
-            return ChatOpenAI(
+            _llm_client = ChatOpenAI(
                 model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
                 temperature=0.7,
                 api_key=OPENAI_API_KEY,
             )
+            _llm_resolved = True
+            return _llm_client
         except Exception:
             pass
 
-    return None
+    _llm_resolved = True
+    _llm_client = None
+    return _llm_client
 
 
 def _extract_json(text: str) -> dict:
@@ -108,6 +126,10 @@ def llm_generate_question(
             "- Be conversational and natural — like a real interviewer speaking.\n"
             "- Test deep understanding, not memorization.\n"
             "- Use follow-up style when prior genuine answers exist.\n"
+            "- Adapt the difficulty to the student's previous answers: go deeper or harder "
+            "after strong answers, simpler after weak ones.\n"
+            "- Vary the style across the interview — mix conceptual, practical/applied, "
+            "scenario-based, and behavioural questions. Never repeat a question already asked.\n"
             "- Return ONLY the question text, no preamble, no labels.\n"
             "GOOD examples: 'Tell me about a data pipeline you built.' | "
             "'What is the difference between ETL and ELT?' | "

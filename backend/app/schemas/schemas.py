@@ -58,6 +58,22 @@ class ChapterResponse(BaseModel):
         from_attributes = True
 
 
+class ChapterDetailResponse(BaseModel):
+    # Student-facing single-chapter view. Deliberately omits `video_transcript`
+    # (which can be a very large block of text) because the learn UI only renders
+    # the article + video URL. The transcript stays in the DB for quiz/interview
+    # generation; it is just never shipped to the browser here.
+    id: str
+    title: str
+    order_index: int
+    article_content: str
+    youtube_url: str
+    course_id: str
+
+    class Config:
+        from_attributes = True
+
+
 class ChapterMinResponse(BaseModel):
     id: str
     title: str
@@ -172,6 +188,9 @@ class QuizResultResponse(BaseModel):
     threshold: int
     attempt_id: str
     results: List[QuizResultItem]
+    # Progression: set when passing the quiz advances the student in the course.
+    next_chapter_unlocked: bool = False
+    course_completed: bool = False
 
 
 class QuizStatusResponse(BaseModel):
@@ -190,6 +209,10 @@ class QuizWarningLog(BaseModel):
 # ─── INTERVIEW ───
 class InterviewStartRequest(BaseModel):
     chapter_id: str
+
+
+class CourseInterviewStartRequest(BaseModel):
+    course_id: str
 
 
 class InterviewAnswerRequest(BaseModel):

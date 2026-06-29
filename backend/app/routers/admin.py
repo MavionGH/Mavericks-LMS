@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import func
 from typing import List
 
@@ -18,9 +18,9 @@ def get_analytics(
 ):
     total_students = db.query(User).filter(User.role == UserRole.STUDENT).count()
     total_courses = db.query(Course).count()
-    # A course is "live" only when both teacher-published and admin-approved
+    # A course is "live" to students once it is published (the enrollment gate).
     published_courses = db.query(Course).filter(
-        Course.is_published == True, Course.is_approved == True
+        Course.is_published == True
     ).count()
     total_enrollments = db.query(Enrollment).count()
     completed = db.query(Enrollment).filter(Enrollment.status == "completed").count()
@@ -51,18 +51,40 @@ def list_students(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
-    students = db.query(User).filter(User.role == UserRole.STUDENT).all()
+    enrollment_sub = (
+        db.query(Enrollment.user_id, func.count(Enrollment.id).label("enrollment_count"))
+        .group_by(Enrollment.user_id)
+        .subquery()
+    )
+    evaluation_sub = (
+        db.query(
+            Evaluation.user_id,
+            func.count(Evaluation.id).label("evaluation_count"),
+            func.avg(Evaluation.overall_score).label("avg_score")
+        )
+        .group_by(Evaluation.user_id)
+        .subquery()
+    )
+    students_data = (
+        db.query(
+            User,
+            func.coalesce(enrollment_sub.c.enrollment_count, 0).label("enrollments"),
+            func.coalesce(evaluation_sub.c.evaluation_count, 0).label("evaluations"),
+            func.coalesce(evaluation_sub.c.avg_score, 0.0).label("average_score")
+        )
+        .outerjoin(enrollment_sub, User.id == enrollment_sub.c.user_id)
+        .outerjoin(evaluation_sub, User.id == evaluation_sub.c.user_id)
+        .filter(User.role == UserRole.STUDENT)
+        .all()
+    )
     result = []
-    for s in students:
-        enrollments = db.query(Enrollment).filter(Enrollment.user_id == s.id).count()
-        evals = db.query(Evaluation).filter(Evaluation.user_id == s.id).all()
-        avg_score = sum(e.overall_score for e in evals) / len(evals) if evals else 0
+    for s, enrollments, evaluations, avg_score in students_data:
         result.append({
             "id": s.id,
             "name": s.name,
             "email": s.email,
             "enrollments": enrollments,
-            "evaluations": len(evals),
+            "evaluations": evaluations,
             "average_score": round(avg_score, 1),
             "joined": s.created_at.isoformat(),
         })
@@ -126,10 +148,22 @@ def list_teachers(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
-    teachers = db.query(User).filter(User.role == UserRole.TEACHER).all()
+    course_sub = (
+        db.query(Course.teacher_id, func.count(Course.id).label("course_count"))
+        .group_by(Course.teacher_id)
+        .subquery()
+    )
+    teachers_data = (
+        db.query(
+            User,
+            func.coalesce(course_sub.c.course_count, 0).label("course_count")
+        )
+        .outerjoin(course_sub, User.id == course_sub.c.teacher_id)
+        .filter(User.role == UserRole.TEACHER)
+        .all()
+    )
     result = []
-    for t in teachers:
-        course_count = db.query(Course).filter(Course.teacher_id == t.id).count()
+    for t, course_count in teachers_data:
         result.append({
             "id": t.id,
             "name": t.name,
@@ -243,7 +277,7 @@ def list_all_courses(
     """Admin overview of all courses across all teachers, with module list."""
     courses = (
         db.query(Course)
-        .options(joinedload(Course.chapters), joinedload(Course.teacher))
+        .options(selectinload(Course.chapters), joinedload(Course.teacher))
         .order_by(Course.created_at.desc())
         .all()
     )
