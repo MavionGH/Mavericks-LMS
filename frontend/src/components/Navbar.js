@@ -43,7 +43,7 @@ export default function Navbar() {
           <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
           <path d="M6 12v5c0 2 2 3 6 3s6-1 6-3v-5"/>
         </svg>
-        <span style={{ fontWeight: '700', letterSpacing: '-0.02em', color: 'var(--text-title)' }}>Maverik</span>
+        <span style={{ fontWeight: '700', letterSpacing: '-0.02em', color: 'var(--text-title)' }}>Mavericks</span>
       </Link>
 
       <div className="navbar-links">

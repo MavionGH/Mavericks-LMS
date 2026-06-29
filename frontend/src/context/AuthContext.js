@@ -1,8 +1,9 @@
 "use client";
 import { createContext, useContext, useState, useEffect, useCallback } from "react";
+import { flushSync } from "react-dom";
 import { useRouter } from "next/navigation";
 
-const API_BASE = "http://localhost:8000";
+export const API_BASE = "http://localhost:8000";
 
 const AuthContext = createContext(null);
 
@@ -13,7 +14,12 @@ export function AuthProvider({ children }) {
   const router = useRouter();
 
   // ─── Restore session from localStorage on mount ───
+  // Legitimate "sync from an external system" effect: localStorage is only
+  // available on the client, and reading it via a lazy useState initializer
+  // would cause an SSR/CSR hydration mismatch. Restoring after mount is correct,
+  // so the synchronous setState here is intentional.
   useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect */
     const savedToken = localStorage.getItem("jwt_token");
     const savedUser  = localStorage.getItem("user_data");
     if (savedToken && savedUser) {
@@ -21,14 +27,19 @@ export function AuthProvider({ children }) {
       setUser(JSON.parse(savedUser));
     }
     setLoading(false);
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, []);
 
   // ─── Helpers ───
   const saveSession = (accessToken, userData) => {
     localStorage.setItem("jwt_token", accessToken);
     localStorage.setItem("user_data", JSON.stringify(userData));
-    setToken(accessToken);
-    setUser(userData);
+    // flushSync ensures React commits these updates synchronously so the
+    // target page sees the correct user state immediately after router.push()
+    flushSync(() => {
+      setToken(accessToken);
+      setUser(userData);
+    });
   };
 
   const clearSession = () => {
@@ -69,16 +80,55 @@ export function AuthProvider({ children }) {
     return data.user;
   };
 
+  const loginWithGoogle = async (credentialToken, role = null) => {
+    const res = await fetch(`${API_BASE}/api/auth/google`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credential_token: credentialToken, role }),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || "Google authentication failed");
+    }
+    const data = await res.json();
+    // If the backend says "needs_role", we return the status to let the frontend prompt the user
+    if (data.status === "needs_role") {
+      return data;
+    }
+    saveSession(data.access_token, data.user);
+    return data.user;
+  };
+
   const logout = () => {
     clearSession();
     router.push("/login");
   };
 
+  const refreshUser = useCallback(async () => {
+    const savedToken = localStorage.getItem("jwt_token");
+    if (!savedToken) return null;
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/me`, {
+        headers: { Authorization: `Bearer ${savedToken}` },
+      });
+      if (!res.ok) return null;
+      const freshUser = await res.json();
+      localStorage.setItem("user_data", JSON.stringify(freshUser));
+      setUser(freshUser);
+      return freshUser;
+    } catch {
+      return null;
+    }
+  }, []);
+
   // ─── Authenticated fetch wrapper ───
   const authFetch = useCallback(
     async (url, options = {}) => {
+      // For FormData (file upload) let the browser set the multipart Content-Type
+      // with its boundary — forcing application/json would corrupt the upload.
+      const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
       const headers = {
-        ...(options.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+        ...(isFormData ? {} : { "Content-Type": "application/json" }),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(options.headers || {}),
       };
@@ -88,7 +138,7 @@ export function AuthProvider({ children }) {
   );
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, register, logout, authFetch }}>
+    <AuthContext.Provider value={{ user, token, loading, login, register, loginWithGoogle, logout, authFetch, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );

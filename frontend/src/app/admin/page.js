@@ -1,48 +1,122 @@
 "use client";
 import Navbar from "@/components/Navbar";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
-
-// Static fallback data shown until the API populates
-const COURSES_ADMIN = [
-  { id: "1", title: "JavaScript Fundamentals", chapters: 8,  students: 342, passRate: 78, published: true  },
-  { id: "2", title: "React & Next.js Mastery",  chapters: 12, students: 256, passRate: 82, published: true  },
-  { id: "3", title: "Python for Data Science",  chapters: 10, students: 189, passRate: 71, published: true  },
-  { id: "4", title: "System Design (Draft)",     chapters: 3,  students: 0,   passRate: 0,  published: false },
-];
+import { useRouter, useSearchParams } from "next/navigation";
 
 function AdminPanel() {
   const { user, authFetch } = useAuth();
-  const [activeTab, setActiveTab] = useState("dashboard");
-  const [analytics, setAnalytics]     = useState(null);
-  const [students, setStudents]       = useState([]);
-  const [teachers, setTeachers]       = useState([]);
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const [activeTab, setActiveTab] = useState(() => searchParams.get("tab") || "dashboard");
+  const [analytics, setAnalytics]       = useState(null);
+  const [students, setStudents]         = useState([]);
+  const [teachers, setTeachers]         = useState([]);
+  const [courses, setCourses]           = useState([]);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [coursesLoading, setCoursesLoading]     = useState(false);
+  const [studentsLoading, setStudentsLoading]   = useState(false);
+  const [teachersLoading, setTeachersLoading]   = useState(false);
+  const [analyticsLoaded, setAnalyticsLoaded]   = useState(false);
+  const [coursesLoaded, setCoursesLoaded]       = useState(false);
+  const [studentsLoaded, setStudentsLoaded]     = useState(false);
+  const [teachersLoaded, setTeachersLoaded]     = useState(false);
+  const [processingTeacherId, setProcessingTeacherId] = useState(null);
+  const [courseActionMsg, setCourseActionMsg]   = useState("");
+  const [navigatingTeacherId, setNavigatingTeacherId] = useState(null);
+  const [navigatingStudentId, setNavigatingStudentId] = useState(null);
+  // per-tab search queries
+  const [teacherSearch, setTeacherSearch]   = useState("");
+  const [studentSearch, setStudentSearch]   = useState("");
+  const [approveSearch, setApproveSearch]   = useState("");
 
-  // Load analytics when on dashboard tab
+  const loadCourses = useCallback(() => {
+    setCoursesLoading(true);
+    authFetch("/api/admin/courses")
+      .then((r) => r.json())
+      .then((d) => {
+        if (Array.isArray(d)) {
+          setCourses(d);
+          setCoursesLoaded(true);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setCoursesLoading(false));
+  }, [authFetch]);
+
+  const handleApproveTeacher = async (teacherId, approve) => {
+    setCourseActionMsg(approve ? "Approving teacher account..." : "Revoking teacher account...");
+    setProcessingTeacherId(teacherId);
+    try {
+      const res = await authFetch(`/api/admin/teachers/${teacherId}/approve?approved=${approve}`, { method: "PUT" });
+      if (res.ok) {
+        setCourseActionMsg(approve ? "Teacher approved — they can now publish courses." : "Teacher account revoked.");
+        const r = await authFetch("/api/admin/teachers");
+        if (r.ok) {
+          const d = await r.json();
+          if (Array.isArray(d)) {
+            setTeachers(d);
+            setTeachersLoaded(true);
+          }
+        }
+      } else {
+        setCourseActionMsg("Failed to update teacher status.");
+      }
+    } catch (err) {
+      console.error(err);
+      setCourseActionMsg("Error connecting to server.");
+    } finally {
+      setProcessingTeacherId(null);
+      setTimeout(() => setCourseActionMsg(""), 4000);
+    }
+  };
+
+  // ── Prefetch all data in parallel on mount ─────────────────────────────────
+  // Firing all three requests simultaneously means the data for every tab is
+  // ready in parallel (one round-trip instead of three sequential ones).
   useEffect(() => {
-    if (activeTab === "dashboard") {
-      setAnalyticsLoading(true);
-      authFetch("/api/admin/analytics")
-        .then((r) => r.json())
-        .then((d) => { if (d.total_students !== undefined) setAnalytics(d); })
-        .catch(() => {})
-        .finally(() => setAnalyticsLoading(false));
-    }
-    if (activeTab === "students") {
-      authFetch("/api/admin/students")
-        .then((r) => r.json())
-        .then((d) => { if (Array.isArray(d)) setStudents(d); })
-        .catch(() => {});
-    }
-    if (activeTab === "teachers") {
-      authFetch("/api/admin/teachers")
-        .then((r) => r.json())
-        .then((d) => { if (Array.isArray(d)) setTeachers(d); })
-        .catch(() => {});
-    }
-  }, [activeTab, authFetch]);
+    // Analytics
+    setAnalyticsLoading(true);
+    authFetch("/api/admin/analytics")
+      .then((r) => r.json())
+      .then((d) => { if (d.total_students !== undefined) { setAnalytics(d); setAnalyticsLoaded(true); } })
+      .catch(() => {})
+      .finally(() => setAnalyticsLoading(false));
+
+    // Students
+    setStudentsLoading(true);
+    authFetch("/api/admin/students")
+      .then((r) => r.json())
+      .then((d) => { if (Array.isArray(d)) { setStudents(d); setStudentsLoaded(true); } })
+      .catch(() => {})
+      .finally(() => setStudentsLoading(false));
+
+    // Teachers (shared by both Teachers + Approve tabs)
+    setTeachersLoading(true);
+    authFetch("/api/admin/teachers")
+      .then((r) => r.json())
+      .then((d) => { if (Array.isArray(d)) { setTeachers(d); setTeachersLoaded(true); } })
+      .catch(() => {})
+      .finally(() => setTeachersLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);  // run once on mount only
+
+  // ── Client-side filtered lists ───────────────────────────────────────────────
+  const filteredTeachers = useMemo(() => {
+    const q = teacherSearch.trim().toLowerCase();
+    return q ? teachers.filter((t) => t.name?.toLowerCase().includes(q) || t.email?.toLowerCase().includes(q)) : teachers;
+  }, [teachers, teacherSearch]);
+
+  const filteredStudents = useMemo(() => {
+    const q = studentSearch.trim().toLowerCase();
+    return q ? students.filter((s) => s.name?.toLowerCase().includes(q) || s.email?.toLowerCase().includes(q)) : students;
+  }, [students, studentSearch]);
+
+  const filteredApprove = useMemo(() => {
+    const q = approveSearch.trim().toLowerCase();
+    return q ? teachers.filter((t) => t.name?.toLowerCase().includes(q) || t.email?.toLowerCase().includes(q)) : teachers;
+  }, [teachers, approveSearch]);
 
   const STATS = analytics
     ? [
@@ -59,10 +133,10 @@ function AdminPanel() {
       ];
 
   const TABS = [
-    { key: "dashboard", label: "Analytics"  },
-    { key: "courses",   label: "Courses"    },
-    { key: "students",  label: "Students"   },
-    { key: "teachers",  label: "Teachers"   },
+    { key: "dashboard", label: "Analytics"       },
+    { key: "teachers",  label: "Teachers"        },
+    { key: "students",  label: "Students"        },
+    { key: "approve",   label: "Approve Teachers" },
   ];
 
   return (
@@ -155,86 +229,201 @@ function AdminPanel() {
             </div>
           )}
 
-          {/* ── Courses ── */}
-          {activeTab === "courses" && (
-            <div className="table-container">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Course</th><th>Chapters</th><th>Students</th><th>Pass Rate</th><th>Status</th><th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {COURSES_ADMIN.map((c) => (
-                    <tr key={c.id}>
-                      <td style={{ fontWeight: "600", color: "var(--text-title)" }}>{c.title}</td>
-                      <td className="mono">{c.chapters}</td>
-                      <td className="mono">{c.students}</td>
-                      <td className="mono">{c.passRate}%</td>
-                      <td>
-                        <span className={`badge ${c.published ? "badge-success" : "badge-warning"}`}>
-                          {c.published ? "PUBLISHED" : "DRAFT"}
-                        </span>
-                      </td>
-                      <td><button className="btn btn-secondary btn-sm">Configure</button></td>
+          {/* ── Teachers (browse) ── */}
+          {activeTab === "teachers" && (
+            <div>
+              <div style={{ marginBottom: "16px", position: "relative", maxWidth: 360 }}>
+                <svg style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }} width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                <input type="text" placeholder="Search by name or email…" value={teacherSearch} onChange={(e) => setTeacherSearch(e.target.value)} style={{ width: "100%", padding: "9px 12px 9px 36px", background: "var(--bg-card)", border: "1px solid var(--border-muted)", borderRadius: "var(--radius-sm)", color: "var(--text-title)", fontSize: "13px", outline: "none", boxSizing: "border-box" }} />
+                {teacherSearch && <button onClick={() => setTeacherSearch("")} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "18px", lineHeight: 1, padding: 0 }}>×</button>}
+              </div>
+              <div className="table-container">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Teacher Name</th><th>Email</th><th>Courses</th><th>Status</th><th>Actions</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {teachersLoading ? (
+                      <tr>
+                        <td colSpan={5} style={{ textAlign: "center", padding: "48px" }}>
+                          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
+                            <span className="spinner" style={{ width: 28, height: 28, border: "3px solid var(--text-muted)", borderTopColor: "var(--brand)", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
+                            <span style={{ color: "var(--text-muted)", fontSize: "14px", fontWeight: "500" }}>Loading teachers...</span>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : filteredTeachers.length === 0 ? (
+                      <tr><td colSpan={5} style={{ textAlign: "center", color: "var(--text-muted)", padding: "32px" }}>{teacherSearch ? `No teachers match "${teacherSearch}"` : "No teachers registered yet."}</td></tr>
+                    ) : filteredTeachers.map((t) => {
+                      const isNav = navigatingTeacherId === t.id;
+                      return (
+                        <tr key={t.id}>
+                          <td style={{ fontWeight: "600", color: "var(--text-title)" }}>{t.name}</td>
+                          <td style={{ color: "var(--text-muted)", fontSize: "12.5px" }}>{t.email}</td>
+                          <td className="mono">{t.course_count ?? 0}</td>
+                          <td>
+                            <span className={`badge ${t.is_approved ? "badge-success" : "badge-warning"}`}>
+                              {t.is_approved ? "Approved" : "Pending"}
+                            </span>
+                          </td>
+                          <td>
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              disabled={navigatingTeacherId !== null}
+                              onClick={() => { setNavigatingTeacherId(t.id); router.push(`/admin/teachers/${t.id}`); }}
+                              style={{ display: "inline-flex", alignItems: "center", gap: "6px", minWidth: "110px", justifyContent: "center", opacity: navigatingTeacherId !== null && !isNav ? 0.5 : 1 }}
+                            >
+                              {isNav ? (
+                                <>
+                                  <span style={{ width: 12, height: 12, border: "2px solid var(--text-muted)", borderTopColor: "var(--brand)", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
+                                  Loading…
+                                </>
+                              ) : (
+                                <>
+                                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+                                  See Courses
+                                </>
+                              )}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 
           {/* ── Students ── */}
           {activeTab === "students" && (
-            <div className="table-container">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Name</th><th>Email</th><th>Enrollments</th><th>Avg Score</th><th>Joined</th><th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {students.length === 0 ? (
-                    <tr><td colSpan={6} style={{ textAlign: "center", color: "var(--text-muted)", padding: "32px" }}>No students yet.</td></tr>
-                  ) : students.map((s) => (
-                    <tr key={s.id}>
-                      <td style={{ fontWeight: "600", color: "var(--text-title)" }}>{s.name}</td>
-                      <td style={{ color: "var(--text-muted)" }}>{s.email}</td>
-                      <td className="mono">{s.enrollments}</td>
-                      <td className="mono" style={{ fontWeight: "600" }}>{s.average_score}%</td>
-                      <td style={{ color: "var(--text-subtle)", fontSize: "12px" }}>{new Date(s.joined).toLocaleDateString()}</td>
-                      <td><button className="btn btn-secondary btn-sm">View</button></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div>
+              <div style={{ marginBottom: "16px", position: "relative", maxWidth: 360 }}>
+                <svg style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }} width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                <input type="text" placeholder="Search by name or email…" value={studentSearch} onChange={(e) => setStudentSearch(e.target.value)} style={{ width: "100%", padding: "9px 12px 9px 36px", background: "var(--bg-card)", border: "1px solid var(--border-muted)", borderRadius: "var(--radius-sm)", color: "var(--text-title)", fontSize: "13px", outline: "none", boxSizing: "border-box" }} />
+                {studentSearch && <button onClick={() => setStudentSearch("")} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "18px", lineHeight: 1, padding: 0 }}>×</button>}
+              </div>
+              <div className="table-container">
+                <table>
+                  <thead>
+                    <tr><th>Name</th><th>Email</th><th>Enrollments</th><th>Avg Score</th><th>Joined</th><th>Actions</th></tr>
+                  </thead>
+                  <tbody>
+                    {studentsLoading ? (
+                      <tr><td colSpan={6} style={{ textAlign: "center", padding: "48px" }}>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
+                          <span className="spinner" style={{ width: 28, height: 28, border: "3px solid var(--text-muted)", borderTopColor: "var(--brand)", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
+                          <span style={{ color: "var(--text-muted)", fontSize: "14px", fontWeight: "500" }}>Loading students...</span>
+                        </div>
+                      </td></tr>
+                    ) : filteredStudents.length === 0 ? (
+                      <tr><td colSpan={6} style={{ textAlign: "center", color: "var(--text-muted)", padding: "32px" }}>{studentSearch ? `No students match "${studentSearch}"` : "No students yet."}</td></tr>
+                    ) : filteredStudents.map((s) => {
+                      const isNav = navigatingStudentId === s.id;
+                      return (
+                        <tr key={s.id}>
+                          <td style={{ fontWeight: "600", color: "var(--text-title)" }}>{s.name}</td>
+                          <td style={{ color: "var(--text-muted)" }}>{s.email}</td>
+                          <td className="mono">{s.enrollments}</td>
+                          <td className="mono" style={{ fontWeight: "600" }}>{s.average_score}%</td>
+                          <td style={{ color: "var(--text-subtle)", fontSize: "12px" }}>{new Date(s.joined).toLocaleDateString()}</td>
+                          <td>
+                            <button className="btn btn-secondary btn-sm" disabled={navigatingStudentId !== null} onClick={() => { setNavigatingStudentId(s.id); router.push(`/admin/students/${s.id}`); }} style={{ display: "inline-flex", alignItems: "center", gap: "5px", minWidth: "76px", justifyContent: "center", opacity: navigatingStudentId !== null && !isNav ? 0.5 : 1 }}>
+                              {isNav ? (<><span style={{ width: 12, height: 12, border: "2px solid var(--text-muted)", borderTopColor: "var(--brand)", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />…</>) : (<><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>View</>)}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 
-          {/* ── Teachers ── */}
-          {activeTab === "teachers" && (
-            <div className="table-container">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Name</th><th>Email</th><th>Joined</th><th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {teachers.length === 0 ? (
-                    <tr><td colSpan={4} style={{ textAlign: "center", color: "var(--text-muted)", padding: "32px" }}>No teachers registered yet.</td></tr>
-                  ) : teachers.map((t) => (
-                    <tr key={t.id}>
-                      <td style={{ fontWeight: "600", color: "var(--text-title)" }}>{t.name}</td>
-                      <td style={{ color: "var(--text-muted)" }}>{t.email}</td>
-                      <td style={{ color: "var(--text-subtle)", fontSize: "12px" }}>{new Date(t.joined).toLocaleDateString()}</td>
-                      <td>
-                        <button className="btn btn-secondary btn-sm">Edit Role</button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          {/* ── Approve Teachers ── */}
+          {activeTab === "approve" && (
+            <div>
+              {courseActionMsg && (
+                <div style={{ marginBottom: "16px", padding: "12px 16px", borderRadius: "var(--radius-sm)", background: courseActionMsg.includes("...") ? "var(--bg-warning)" : "var(--bg-success)", color: courseActionMsg.includes("...") ? "var(--color-warning)" : "var(--color-success)", fontSize: "13px", fontWeight: "600", border: courseActionMsg.includes("...") ? "1px solid rgba(245,158,11,0.2)" : "1px solid rgba(16,185,129,0.2)", display: "flex", alignItems: "center", gap: "8px" }}>
+                  {courseActionMsg.includes("...") && (<span className="spinner" style={{ width: 14, height: 14, border: "2px solid var(--color-warning)", borderTopColor: "transparent", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />)}
+                  <span>{courseActionMsg}</span>
+                </div>
+              )}
+              <div style={{ marginBottom: "16px", position: "relative", maxWidth: 360 }}>
+                <svg style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }} width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                <input type="text" placeholder="Search by name or email…" value={approveSearch} onChange={(e) => setApproveSearch(e.target.value)} style={{ width: "100%", padding: "9px 12px 9px 36px", background: "var(--bg-card)", border: "1px solid var(--border-muted)", borderRadius: "var(--radius-sm)", color: "var(--text-title)", fontSize: "13px", outline: "none", boxSizing: "border-box" }} />
+                {approveSearch && <button onClick={() => setApproveSearch("")} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "18px", lineHeight: 1, padding: 0 }}>×</button>}
+              </div>
+              <div className="table-container">
+                <table>
+                  <thead>
+                    <tr><th>Name</th><th>Email</th><th>Courses</th><th>Status</th><th>Joined</th><th>Actions</th></tr>
+                  </thead>
+                  <tbody>
+                    {teachersLoading ? (
+                      <tr><td colSpan={6} style={{ textAlign: "center", padding: "48px" }}>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
+                          <span className="spinner" style={{ width: 28, height: 28, border: "3px solid var(--text-muted)", borderTopColor: "var(--brand)", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
+                          <span style={{ color: "var(--text-muted)", fontSize: "14px", fontWeight: "500" }}>Loading teachers...</span>
+                        </div>
+                      </td></tr>
+                    ) : filteredApprove.length === 0 ? (
+                      <tr><td colSpan={6} style={{ textAlign: "center", color: "var(--text-muted)", padding: "32px" }}>{approveSearch ? `No teachers match "${approveSearch}"` : "No teachers registered yet."}</td></tr>
+                    ) : filteredApprove.map((t) => (
+                      <tr key={t.id}>
+                        <td style={{ fontWeight: "600", color: "var(--text-title)" }}>{t.name}</td>
+                        <td style={{ color: "var(--text-muted)" }}>{t.email}</td>
+                        <td className="mono">{t.course_count ?? 0}</td>
+                        <td>
+                          <span className={`badge ${t.is_approved ? "badge-success" : "badge-warning"}`}>
+                            {t.is_approved ? "Approved" : "Pending"}
+                          </span>
+                        </td>
+                        <td style={{ color: "var(--text-subtle)", fontSize: "12px" }}>{new Date(t.joined).toLocaleDateString()}</td>
+                        <td style={{ display: "flex", gap: "6px" }}>
+                          {!t.is_approved && (
+                            <button
+                              className="btn btn-primary btn-sm"
+                              disabled={processingTeacherId !== null}
+                              onClick={() => handleApproveTeacher(t.id, true)}
+                              style={{ display: "inline-flex", alignItems: "center", gap: "6px", minWidth: "82px", justifyContent: "center" }}
+                            >
+                              {processingTeacherId === t.id ? (
+                                <>
+                                  <span className="spinner" style={{ width: 12, height: 12, border: "2px solid #ffffff", borderTopColor: "transparent", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
+                                  <span>...</span>
+                                </>
+                              ) : (
+                                "Approve"
+                              )}
+                            </button>
+                          )}
+                          {t.is_approved && (
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              disabled={processingTeacherId !== null}
+                              onClick={() => handleApproveTeacher(t.id, false)}
+                              style={{ display: "inline-flex", alignItems: "center", gap: "6px", minWidth: "82px", justifyContent: "center" }}
+                            >
+                              {processingTeacherId === t.id ? (
+                                <>
+                                  <span className="spinner" style={{ width: 12, height: 12, border: "2px solid var(--text-muted)", borderTopColor: "transparent", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
+                                  <span>...</span>
+                                </>
+                              ) : (
+                                "Revoke"
+                              )}
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 

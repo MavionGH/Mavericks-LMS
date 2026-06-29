@@ -22,6 +22,7 @@ class UserResponse(BaseModel):
     name: str
     email: str
     role: str
+    is_approved: bool = True
     avatar: Optional[str] = None
     created_at: datetime
 
@@ -52,7 +53,34 @@ class ChapterResponse(BaseModel):
     youtube_url: str
     video_transcript: Optional[str] = None
     course_id: str
-    video_transcript: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ChapterDetailResponse(BaseModel):
+    # Student-facing single-chapter view. Deliberately omits `video_transcript`
+    # (which can be a very large block of text) because the learn UI only renders
+    # the article + video URL. The transcript stays in the DB for quiz/interview
+    # generation; it is just never shipped to the browser here.
+    id: str
+    title: str
+    order_index: int
+    article_content: str
+    youtube_url: str
+    course_id: str
+
+    class Config:
+        from_attributes = True
+
+
+class ChapterMinResponse(BaseModel):
+    id: str
+    title: str
+    order_index: int
+    youtube_url: str
+    course_id: str
+    has_transcript: bool = False
 
     class Config:
         from_attributes = True
@@ -71,9 +99,13 @@ class CourseResponse(BaseModel):
     description: str
     thumbnail: Optional[str] = None
     pass_threshold: int
+    teacher_id: Optional[str] = None
     is_published: bool
+    is_approved: bool = False
     created_at: datetime
-    chapters: List[ChapterResponse] = []
+    chapters: List[ChapterMinResponse] = []
+    student_count: Optional[int] = 0
+    pass_rate: Optional[float] = 0.0
 
     class Config:
         from_attributes = True
@@ -158,6 +190,9 @@ class QuizResultResponse(BaseModel):
     threshold: int
     attempt_id: str
     results: List[QuizResultItem]
+    # Progression: set when passing the quiz advances the student in the course.
+    next_chapter_unlocked: bool = False
+    course_completed: bool = False
 
 
 class QuizStatusResponse(BaseModel):
@@ -166,9 +201,20 @@ class QuizStatusResponse(BaseModel):
     score: Optional[int] = None
 
 
+class QuizWarningLog(BaseModel):
+    type: str       # "fullscreen" | "tab" | "clipboard"
+    code: str       # "fullscreen-exit" | "tab-switch" | "clipboard-action"
+    message: str
+    timestamp: str  # ISO-8601 string sent from the client
+
+
 # ─── INTERVIEW ───
 class InterviewStartRequest(BaseModel):
     chapter_id: str
+
+
+class CourseInterviewStartRequest(BaseModel):
+    course_id: str
 
 
 class InterviewAnswerRequest(BaseModel):
@@ -194,6 +240,9 @@ class InterviewTurnResponse(BaseModel):
     waiting_for_student: bool = True
     question_number: int = 1
     total_questions: int = 5
+    is_chitchat: bool = False        # True when response is conversational, not a new question
+    greeting: Optional[str] = None  # One-time greeting text, returned only on session start
+    greeting_completed: bool = False
 
 
 class InterviewResultResponse(BaseModel):
@@ -261,3 +310,33 @@ class AnalyticsResponse(BaseModel):
     certificates_issued: int
     average_score: float
     pass_rate: float
+
+
+# ─── STUDENT DASHBOARD ───
+class DashboardCourse(BaseModel):
+    id: str
+    title: str
+    progress: int
+    currentChapter: str
+    status: str
+    icon: str
+
+
+class DashboardEvaluation(BaseModel):
+    chapter: str
+    course: str
+    score: int
+    passed: bool
+    date: str
+    technical: int
+    communication: int
+    confidence: int
+
+
+class DashboardStats(BaseModel):
+    active_tracks: int
+    modules_completed: int
+    oral_assessments: int
+    earned_credentials: int
+    enrolled_courses: List[DashboardCourse]
+    recent_evaluations: List[DashboardEvaluation]

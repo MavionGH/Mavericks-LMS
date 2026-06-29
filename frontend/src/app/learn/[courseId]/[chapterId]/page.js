@@ -14,8 +14,8 @@ function LearnPage() {
 
   const [course, setCourse] = useState(null);
   const [enrollment, setEnrollment] = useState(null);
+  const [chapterDetail, setChapterDetail] = useState(null);
   const [quizStatus, setQuizStatus] = useState({ attempted: false, passed: false, score: null });
-  const [interviewStatus, setInterviewStatus] = useState({ attempted: false, passed: false, score: null });
   const [activeTab, setActiveTab] = useState("video");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -33,19 +33,39 @@ function LearnPage() {
     async function load() {
       setLoading(true);
       try {
-        const courseRes = await authFetch(`/api/courses/${params.courseId}`);
+        // The course, the student's enrollment, the chapter detail and the quiz
+        // status are independent reads — the chapter id is already in the URL —
+        // so fire them together instead of in a serial waterfall. (Enrollment
+        // may need a follow-up POST to auto-enroll; that is the only dependency.)
+        const [courseRes, enrollGetRes, chRes, qRes] = await Promise.all([
+          authFetch(`/api/courses/${params.courseId}`),
+          authFetch(`/api/enrollment/course/${params.courseId}`),
+          params.chapterId
+            ? authFetch(`/api/courses/chapters/${params.chapterId}`)
+            : Promise.resolve(null),
+          params.chapterId
+            ? authFetch(`/api/quiz/${params.chapterId}/my-status`)
+            : Promise.resolve(null),
+        ]);
+
         if (!courseRes.ok) throw new Error("Course not found");
         const courseData = await courseRes.json();
         setCourse(courseData);
 
-        let enrollRes = await authFetch(`/api/enrollment/course/${params.courseId}`);
+        let enrollRes = enrollGetRes;
         if (enrollRes.status === 404) {
           enrollRes = await authFetch("/api/enrollment/enroll", {
             method: "POST",
             body: JSON.stringify({ course_id: params.courseId }),
           });
         }
-        if (!enrollRes.ok) throw new Error("Could not enroll");
+        if (!enrollRes.ok) {
+          const detail = await enrollRes
+            .json()
+            .then((d) => d?.detail)
+            .catch(() => null);
+          throw new Error(detail || "Could not enroll in this course");
+        }
         const enrollData = await enrollRes.json();
         setEnrollment(enrollData);
 
@@ -56,16 +76,11 @@ function LearnPage() {
           return;
         }
 
-        const qRes = await authFetch(`/api/quiz/${params.chapterId}/my-status`);
-        if (qRes.ok) {
-          const qData = await qRes.json();
-          setQuizStatus(qData);
+        if (chRes && chRes.ok) {
+          setChapterDetail(await chRes.json());
         }
-
-        const intRes = await authFetch(`/api/interview/${params.chapterId}/my-status`);
-        if (intRes.ok) {
-          const intData = await intRes.json();
-          setInterviewStatus(intData);
+        if (qRes && qRes.ok) {
+          setQuizStatus(await qRes.json());
         }
       } catch (err) {
         setError(err.message);
@@ -112,6 +127,7 @@ function LearnPage() {
   }
 
   const embedUrl = getYouTubeEmbedUrl(viewingChapter.youtube_url);
+  const isDirectVideo = viewingChapter.youtube_url?.match(/\.(mp4|mov|webm|mkv)/i);
   const unlockedCount = currentIndex + 1;
   const progressPct = chapters.length ? Math.round((unlockedCount / chapters.length) * 100) : 0;
 
@@ -119,10 +135,9 @@ function LearnPage() {
     video: "Video Lecture",
     article: "Documentation",
     quiz: "Concept Check",
-    interview: "AI Oral Assessment",
   };
 
-  const interviewUnlocked = videoWatched && articleRead && quizStatus.passed;
+  const allModulesComplete = chapters.length > 0 && enrollment?.status === "completed";
 
   return (
     <>
@@ -133,7 +148,7 @@ function LearnPage() {
             <div className="sidebar-title">{course?.title || "Course"}</div>
             {chapters.map((ch, i) => {
               const unlocked = i <= currentIndex;
-              const completed = i < currentIndex || (i === chapters.length - 1 && enrollment && (enrollment.status === "capstone_ready" || enrollment.status === "completed"));
+              const completed = i < currentIndex;
               const active = ch.id === viewingChapter.id;
               return (
                 <Link
@@ -158,6 +173,18 @@ function LearnPage() {
                 {unlockedCount} / {chapters.length} UNLOCKED
               </div>
             </div>
+
+            {/* Course-wide final interview — optional, available any time, draws on
+                the knowledge of every module in the course. */}
+            <div style={{ padding: "16px", borderTop: "1px solid var(--border-muted)" }}>
+              <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "8px", fontFamily: "JetBrains Mono", fontWeight: "600" }}>FINAL AI INTERVIEW</div>
+              <p style={{ fontSize: "12px", color: "var(--text-muted)", lineHeight: "1.5", marginBottom: "12px" }}>
+                Optional. Mav, your AI interviewer, asks questions spanning all modules of this course. Take it whenever you&apos;re ready.
+              </p>
+              <Link href={`/interview/${params.courseId}`} className="btn btn-primary btn-sm" style={{ width: "100%", justifyContent: "center" }}>
+                {allModulesComplete ? "Start Final Interview" : "Start AI Interview"}
+              </Link>
+            </div>
           </aside>
 
           <main className="content-area" style={{ padding: "40px 48px", maxWidth: "900px" }}>
@@ -177,13 +204,10 @@ function LearnPage() {
             )}
 
             <div className="tabs">
-              {["video", "article", "quiz", "interview"].map((tab) => (
+              {["video", "article", "quiz"].map((tab) => (
                 <div key={tab} className={`tab ${activeTab === tab ? "active" : ""}`} onClick={() => setActiveTab(tab)}>
                   {TAB_LABELS[tab]}
                   {tab === "quiz" && quizStatus.passed && (
-                    <span style={{ marginLeft: "6px", color: "var(--color-success)", fontSize: "11px" }}>✓</span>
-                  )}
-                  {tab === "interview" && interviewStatus.passed && (
                     <span style={{ marginLeft: "6px", color: "var(--color-success)", fontSize: "11px" }}>✓</span>
                   )}
                 </div>
@@ -193,18 +217,24 @@ function LearnPage() {
             {/* VIDEO TAB */}
             {activeTab === "video" && (
               <div>
-                <div className="video-container">
-                  {embedUrl ? (
+                <div className="video-container" style={{ position: "relative", width: "100%", aspectRatio: "16/9", backgroundColor: "#000", borderRadius: "var(--radius-md)", overflow: "hidden" }}>
+                  {isDirectVideo ? (
+                    <video
+                      src={viewingChapter.youtube_url}
+                      controls
+                      style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                    />
+                  ) : embedUrl ? (
                     <iframe
                       src={embedUrl}
                       title={viewingChapter.title}
                       allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                       allowFullScreen
-                      style={{ width: "100%", height: "100%", border: "none", borderRadius: "var(--radius-md)" }}
+                      style={{ width: "100%", height: "100%", border: "none" }}
                     />
                   ) : (
-                    <div className="video-placeholder">
-                      <span>No YouTube URL configured for this module</span>
+                    <div className="video-placeholder" style={{ display: "grid", placeItems: "center", height: "100%", color: "var(--text-muted)" }}>
+                      <span>No video file or YouTube URL configured for this module</span>
                     </div>
                   )}
                 </div>
@@ -223,7 +253,7 @@ function LearnPage() {
             {/* ARTICLE TAB */}
             {activeTab === "article" && (
               <div>
-                <div className="article-content" dangerouslySetInnerHTML={{ __html: renderArticleHtml(viewingChapter.article_content) }} />
+                <div className="article-content" dangerouslySetInnerHTML={{ __html: renderArticleHtml(chapterDetail?.article_content || "*Loading documentation...*") }} />
                 {isCurrentChapter && (
                   <div style={{ marginTop: "24px" }}>
                     {!articleRead ? (
@@ -242,25 +272,31 @@ function LearnPage() {
                 <div className="card" style={{ padding: "32px", backgroundColor: "#ffffff" }}>
                   <h3 style={{ fontSize: "16px", fontWeight: "700", marginBottom: "8px" }}>Concept Check</h3>
                   <p style={{ color: "var(--text-muted)", marginBottom: "24px", fontSize: "13.5px" }}>
-                    Complete the 5-question quiz to verify your understanding before the AI oral assessment.
-                    You must pass to unlock the voice interview for this module.
+                    Complete the quiz to verify your understanding of this module.
+                    {isCurrentChapter && " Passing it unlocks the next module."}
                   </p>
                   {quizStatus.passed ? (
                     <div>
                       <div className="badge badge-success" style={{ marginBottom: "16px" }}>
-                        ✓ Passed ({quizStatus.score}%) — Oral assessment unlocked
+                        ✓ Passed ({quizStatus.score}%){isCurrentChapter ? " — Module complete" : ""}
                       </div>
                       <br />
                       {isCurrentChapter && (
-                        <Link href={`/quiz/${params.courseId}/${viewingChapter.id}`}>
-                          <button className="btn btn-secondary" style={{ marginTop: "12px" }}>Retake Quiz</button>
-                        </Link>
+                        allModulesComplete ? (
+                          <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+                            You&apos;ve completed every module in this course. 🎉
+                          </span>
+                        ) : (
+                          <Link href={`/learn/${params.courseId}`}>
+                            <button className="btn btn-primary" style={{ marginTop: "12px" }}>Continue to next module</button>
+                          </Link>
+                        )
                       )}
                     </div>
                   ) : quizStatus.attempted ? (
                     <div>
                       <div className="badge badge-danger" style={{ marginBottom: "16px" }}>
-                        Score: {quizStatus.score}% — Retake to unlock oral assessment
+                        Score: {quizStatus.score}% — Retake to advance
                       </div>
                       <br />
                       {isCurrentChapter && (
@@ -281,62 +317,6 @@ function LearnPage() {
                     )
                   ) : (
                     <button className="btn btn-secondary" disabled>Not your current module</button>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* INTERVIEW TAB */}
-            {activeTab === "interview" && (
-              <div>
-                <div className="card" style={{ padding: "32px", backgroundColor: "#ffffff" }}>
-                  <h3 style={{ fontSize: "16px", fontWeight: "700", marginBottom: "8px" }}>AI Voice Assessment</h3>
-                  <p style={{ color: "var(--text-muted)", marginBottom: "24px", fontSize: "13.5px" }}>
-                    After watching the video, reading the article, and passing the concept check, join a
-                    Google Meet-style oral interview. The AI has full context of your module content and will
-                    ask follow-up questions, score your technical knowledge, communication, and confidence.
-                    Pass to unlock the next module.
-                  </p>
-                  {interviewStatus.passed ? (
-                    <div>
-                      <div className="badge badge-success" style={{ marginBottom: "16px" }}>
-                        ✓ Passed ({interviewStatus.score}%) — Oral assessment completed
-                      </div>
-                      <br />
-                      {isCurrentChapter && (
-                        <Link href={`/interview/${params.courseId}/${viewingChapter.id}`}>
-                          <button className="btn btn-secondary" style={{ marginTop: "12px" }}>Retake Assessment</button>
-                        </Link>
-                      )}
-                    </div>
-                  ) : interviewStatus.attempted ? (
-                    <div>
-                      <div className="badge badge-danger" style={{ marginBottom: "16px" }}>
-                        Score: {interviewStatus.score}% — Retake to unlock next module
-                      </div>
-                      <br />
-                      {isCurrentChapter && (
-                        <Link href={`/interview/${params.courseId}/${viewingChapter.id}`}>
-                          <button className="btn btn-primary" style={{ marginTop: "12px" }}>Retake Assessment</button>
-                        </Link>
-                      )}
-                    </div>
-                  ) : isCurrentChapter ? (
-                    interviewUnlocked ? (
-                      <Link href={`/interview/${params.courseId}/${viewingChapter.id}`}>
-                        <button className="btn btn-primary">Start AI oral assessment</button>
-                      </Link>
-                    ) : (
-                      <button className="btn btn-primary" disabled>
-                        {!videoWatched
-                          ? "Complete video first"
-                          : !articleRead
-                          ? "Complete article first"
-                          : "Pass concept check first"}
-                      </button>
-                    )
-                  ) : (
-                    <button className="btn btn-secondary" disabled>Assessment already completed for this module</button>
                   )}
                 </div>
               </div>

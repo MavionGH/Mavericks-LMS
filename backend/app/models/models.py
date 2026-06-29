@@ -8,7 +8,8 @@ import uuid
 
 try:
     from pgvector.sqlalchemy import Vector
-    _embedding_type = Vector(384)
+    from app.services.openai_config import EMBED_DIM
+    _embedding_type = Vector(EMBED_DIM)
 except ImportError:
     from sqlalchemy import Text as _TextFallback
     _embedding_type = _TextFallback()
@@ -44,9 +45,11 @@ class User(Base):
     id = Column(String, primary_key=True, default=generate_uuid)
     name = Column(String(100), nullable=False)
     email = Column(String(255), unique=True, nullable=False, index=True)
-    password = Column(String(255), nullable=False)
+    password = Column(String(255), nullable=True)  # Nullable for OAuth users
     role = Column(Enum(UserRole), default=UserRole.STUDENT)
+    is_approved = Column(Boolean, default=True)
     avatar = Column(String(500), nullable=True)
+    google_id = Column(String(255), unique=True, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -65,14 +68,32 @@ class Course(Base):
     description = Column(Text, nullable=False)
     thumbnail = Column(String(500), nullable=True)
     pass_threshold = Column(Integer, default=70)
+    # teacher_id: owner of the course (nullable for backward-compat with existing rows)
+    teacher_id = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    # is_published: teacher has submitted the course for review (their intent flag)
     is_published = Column(Boolean, default=False)
+    # is_approved: admin has approved — course only appears to students when both are True
+    is_approved = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    teacher = relationship("User", foreign_keys=[teacher_id])
     chapters = relationship("Chapter", back_populates="course", order_by="Chapter.order_index")
     enrollments = relationship("Enrollment", back_populates="course")
     certificates = relationship("Certificate", back_populates="course")
     chunk_embeddings = relationship("ChunkEmbedding", back_populates="course", cascade="all, delete-orphan")
+
+    @property
+    def student_count(self) -> int:
+        return len(self.enrollments)
+
+    @property
+    def pass_rate(self) -> float:
+        total = len(self.enrollments)
+        if total == 0:
+            return 0.0
+        completed = sum(1 for e in self.enrollments if e.status == EnrollmentStatus.COMPLETED)
+        return round((completed / total) * 100, 1)
 
 
 # ─── CHAPTER ───
@@ -92,6 +113,11 @@ class Chapter(Base):
     quiz_attempts = relationship("QuizAttempt", back_populates="chapter")
     quiz_question = relationship("QuizQuestion", back_populates="chapter", uselist=False)
     chunk_embeddings = relationship("ChunkEmbedding", back_populates="chapter", cascade="all, delete-orphan")
+
+    @property
+    def has_transcript(self) -> bool:
+        return self.video_transcript is not None and len(self.video_transcript.strip()) > 0
+
 
 
 # ─── ENROLLMENT ───
@@ -146,16 +172,23 @@ class InterviewSession(Base):
 
     id = Column(String, primary_key=True, default=generate_uuid)
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
-    chapter_id = Column(String, ForeignKey("chapters.id"), nullable=False)
+    # chapter_id is set for a per-module interview; course_id is set for the
+    # course-wide final interview (which spans every module). Exactly one is used.
+    chapter_id = Column(String, ForeignKey("chapters.id"), nullable=True)
+    course_id = Column(String, ForeignKey("courses.id"), nullable=True)
     status = Column(String, default="active")  # active | completed
     transcript = Column(JSON, default=list)
     pause_metrics = Column(JSON, default=list)
     question_count = Column(Integer, default=0)
     graph_state = Column(JSON, nullable=True)
+    # Public R2 URL of the full screen+audio recording of the interview, uploaded
+    # by the browser when the session ends. Null until the upload completes.
+    recording_url = Column(String(500), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User")
     chapter = relationship("Chapter")
+    course = relationship("Course")
 
 
 # ─── EVALUATION (AI Interview) ───
@@ -165,6 +198,7 @@ class Evaluation(Base):
     id = Column(String, primary_key=True, default=generate_uuid)
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
     chapter_id = Column(String, ForeignKey("chapters.id"), nullable=True)
+    course_id = Column(String, ForeignKey("courses.id"), nullable=True)
     type = Column(Enum(EvaluationType), nullable=False)
     transcript = Column(JSON, nullable=True)
     technical_score = Column(Float, default=0)
@@ -180,6 +214,7 @@ class Evaluation(Base):
 
     user = relationship("User", back_populates="evaluations")
     chapter = relationship("Chapter", back_populates="evaluations")
+    course = relationship("Course")
 
 
 # ─── CERTIFICATE ───

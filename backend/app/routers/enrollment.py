@@ -19,6 +19,12 @@ def enroll_in_course(
     course = db.query(Course).filter(Course.id == data.course_id).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
+    # A course is enrollable once a teacher has published it — this matches the
+    # public catalog visibility (list_courses filters on is_published). The
+    # separate is_approved flag has no admin approval workflow yet, so gating
+    # enrollment on it would make every published course impossible to join.
+    if not course.is_published:
+        raise HTTPException(status_code=403, detail="Course is not available for enrollment")
 
     existing = db.query(Enrollment).filter(
         Enrollment.user_id == current_user.id,

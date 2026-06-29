@@ -1,17 +1,21 @@
+import logging
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.models import Chapter, QuizAttempt, QuizQuestion, User
+from app.models.models import (
+    Chapter, Enrollment, EnrollmentStatus, QuizAttempt, QuizQuestion, User,
+)
 from app.schemas.schemas import (
     QuizQuestionsResponse, QuizQuestionItem,
     QuizSubmitRequest, QuizResultResponse, QuizResultItem,
-    QuizStatusResponse,
+    QuizStatusResponse, QuizWarningLog,
 )
 from app.auth.dependencies import get_current_user
-from app.services.chapter_context import build_chapter_context
 from app.services.llm import llm_generate_quiz
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/quiz", tags=["Quiz"])
 
 
@@ -38,41 +42,26 @@ def get_quiz(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Return 5 MCQ questions for the chapter (correct answers NOT included)."""
+    """Return 10 freshly-generated MCQ questions for the chapter (correct answers NOT included)."""
     chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
 
-    # Auto-fetch transcript from YouTube if missing
-    if not chapter.video_transcript and chapter.youtube_url:
-        try:
-            from app.services.transcript import fetch_youtube_transcript
-            transcript = fetch_youtube_transcript(chapter.youtube_url)
-            if transcript:
-                chapter.video_transcript = transcript
-                db.commit()
-                db.refresh(chapter)
-                # Embed in a separate DB session so failures don't corrupt our transaction
-                try:
-                    from app.services.embeddings import embed_and_store_chapter
-                    embed_and_store_chapter(
-                        chapter.id, chapter.course_id,
-                        chapter.article_content, transcript,
-                        db=None,  # uses its own session
-                    )
-                except Exception:
-                    pass
-        except Exception:
-            db.rollback()
+    # Always regenerate — questions are NOT cached, so each request is different.
+    # Built directly from the module's video transcript + article (no vector search).
+    raw_qs = llm_generate_quiz(
+        chapter.title, chapter.video_transcript, chapter.article_content
+    )
 
+    # Persist the current set so /submit can grade this attempt server-side.
     cached = db.query(QuizQuestion).filter(QuizQuestion.chapter_id == chapter_id).first()
-    if not cached:
-        context = build_chapter_context(chapter, db=db)
-        raw_qs = llm_generate_quiz(chapter.title, context)
+    if cached:
+        cached.questions = raw_qs
+    else:
         cached = QuizQuestion(chapter_id=chapter_id, questions=raw_qs)
         db.add(cached)
-        db.commit()
-        db.refresh(cached)
+    db.commit()
+    db.refresh(cached)
 
     items = [
         QuizQuestionItem(id=q["id"], question=q["question"], options=q["options"])
@@ -128,6 +117,41 @@ def submit_quiz(
         passed=passed,
     )
     db.add(attempt)
+
+    # ── Progression ──
+    # Passing a module's quiz is now what advances the student to the next module.
+    # (The voice interview is no longer a per-module gate; it is an optional,
+    # course-wide assessment available at any time.)
+    next_chapter_unlocked = False
+    course_completed = False
+    if passed:
+        enrollment = db.query(Enrollment).filter(
+            Enrollment.user_id == current_user.id,
+            Enrollment.course_id == chapter.course_id,
+        ).first()
+        if enrollment:
+            sorted_chapters = sorted(
+                chapter.course.chapters, key=lambda c: c.order_index
+            )
+            # Only advance when the student is passing the quiz for their CURRENT
+            # active module — retaking an earlier module's quiz must not move them.
+            current = (
+                sorted_chapters[enrollment.current_chapter_index]
+                if 0 <= enrollment.current_chapter_index < len(sorted_chapters)
+                else None
+            )
+            if current and current.id == data.chapter_id:
+                if enrollment.current_chapter_index + 1 < len(sorted_chapters):
+                    enrollment.current_chapter_index += 1
+                    enrollment.video_watched = False
+                    enrollment.article_read = False
+                    next_chapter_unlocked = True
+                else:
+                    # Passed the final module — all learning content is complete.
+                    enrollment.status = EnrollmentStatus.COMPLETED
+                    enrollment.completed_at = datetime.utcnow()
+                    course_completed = True
+
     db.commit()
     db.refresh(attempt)
 
@@ -139,4 +163,27 @@ def submit_quiz(
         threshold=threshold,
         attempt_id=attempt.id,
         results=result_items,
+        next_chapter_unlocked=next_chapter_unlocked,
+        course_completed=course_completed,
     )
+
+
+@router.post("/log-warning", status_code=200)
+async def log_quiz_warning(
+    log: QuizWarningLog,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Receive an anti-cheating violation event from the quiz frontend.
+    Logs the incident server-side for instructor review.
+    In a production system this should be persisted to a QuizViolation table.
+    """
+    logger.warning(
+        "[QUIZ INTEGRITY] user=%s  type=%s  code=%s  ts=%s  msg=%s",
+        current_user.id,
+        log.type,
+        log.code,
+        log.timestamp,
+        log.message,
+    )
+    return {"status": "logged", "user_id": current_user.id}
