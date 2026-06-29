@@ -124,6 +124,19 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("LLM warm-up skipped (will cold-start on first interview): %s", exc)
 
+    # ── TTS (OpenAI) warm-up ─────────────────────────────────────────────────
+    # Warms the OpenAI TTS connection in the background so the first interview
+    # voice line is fast (the cold first request otherwise pays TLS+pool setup).
+    # Runs in a daemon thread so it never blocks startup; fully guarded — a
+    # missing key just leaves the interview on the browser's built-in voice.
+    try:
+        import threading
+        from app.services.tts import warm_up as _tts_warm_up
+        threading.Thread(target=_tts_warm_up, name="tts-warmup", daemon=True).start()
+        logger.info("OpenAI TTS warm-up started in background.")
+    except Exception as exc:
+        logger.warning("TTS warm-up skipped: %s", exc)
+
     yield
 
 

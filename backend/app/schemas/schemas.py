@@ -224,6 +224,12 @@ class InterviewAnswerRequest(BaseModel):
     filler_word_count: int = 0
 
 
+class InterviewTTSRequest(BaseModel):
+    # Text for Mav's TTS voice (OpenAI). Optional voice override.
+    text: str
+    voice: Optional[str] = None
+
+
 class InterviewMessage(BaseModel):
     speaker: str  # ai | student
     text: str

@@ -28,6 +28,13 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_GRADING_MODEL = os.getenv("OPENAI_GRADING_MODEL", "gpt-4o")
 # Speech-to-text (student voice answers + uploaded module videos).
 OPENAI_STT_MODEL = os.getenv("OPENAI_STT_MODEL", "whisper-1")
+# Text-to-speech for the AI interviewer's voice. tts-1 is the low-latency model
+# (snappy responses); "nova" is a warm, natural female voice. mp3 keeps the
+# payload small for a fast transfer. For an even more expressive (but slower)
+# voice set OPENAI_TTS_MODEL=gpt-4o-mini-tts. All overridable via .env.
+OPENAI_TTS_MODEL = os.getenv("OPENAI_TTS_MODEL", "tts-1")
+OPENAI_TTS_VOICE = os.getenv("OPENAI_TTS_VOICE", "nova")
+OPENAI_TTS_FORMAT = os.getenv("OPENAI_TTS_FORMAT", "mp3")
 # Embeddings for RAG vector search.
 OPENAI_EMBED_MODEL = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
 # Embedding dimension. Kept at 384 so it stays compatible with the existing

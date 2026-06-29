@@ -123,6 +123,8 @@ export default function InterviewRoom({
   const studentVideoRef = useRef(null);
   const cameraStreamRef = useRef(null);
   const speakWatchdogRef = useRef(null);
+  const ttsAudioRef = useRef(null);          // current neural-TTS <audio> playback
+  const speakWithBrowserRef = useRef(null);  // ref to browser-TTS fallback (breaks dep cycle)
   const questionStartRef = useRef(null);
   const pauseCountRef = useRef(0);
   const longPauseMsRef = useRef(0);
@@ -171,17 +173,33 @@ export default function InterviewRoom({
     status === "AI SPEAKING" ||
     (!waitingForStudent && !micActive && !isFinished);
 
-  // Speak `text` via TTS. Audio is the single source of truth for timing:
-  // `aiVoiceActive` flips on only when the voice ACTUALLY starts (utterance
-  // `onstart`, or the watchdog detecting real playback) — never before audio
-  // begins — and off the instant it ends. `onEnd` is guaranteed to fire exactly
-  // once, even when the browser's `onstart`/`onend` are flaky, so the mic always
-  // reopens after Mav finishes.
+  // Stop any in-flight neural-TTS playback and release its blob URL.
+  const stopTtsAudio = useCallback(() => {
+    const a = ttsAudioRef.current;
+    if (a) {
+      try { a.onended = null; a.onerror = null; a.onplay = null; a.pause(); } catch { /* noop */ }
+      if (a.src) { try { URL.revokeObjectURL(a.src); } catch { /* noop */ } }
+      ttsAudioRef.current = null;
+    }
+  }, []);
+
+  // Speak `text`. Mav's voice is the open-source neural TTS (Kokoro) synthesized
+  // server-side and played through an <audio> element; if that is unavailable for
+  // any reason (model not loaded, fetch/playback blocked) we fall back to the
+  // browser's built-in speechSynthesis so the interview never goes silent.
+  //
+  // Audio is the single source of truth for timing: `aiVoiceActive` flips on only
+  // when the voice ACTUALLY starts playing — never before — and off the instant it
+  // ends. `onEnd` is guaranteed to fire exactly once, so the mic always reopens
+  // after Mav finishes.
   const speakText = useCallback((text, onEnd) => {
+    stopTtsAudio();
     if (speakWatchdogRef.current) {
       clearInterval(speakWatchdogRef.current);
       speakWatchdogRef.current = null;
     }
+    if (typeof window !== "undefined") window.speechSynthesis?.cancel();
+
     let finished = false;
     const finish = () => {
       if (finished) return;
@@ -195,6 +213,56 @@ export default function InterviewRoom({
       if (onEnd) onEnd();
     };
 
+    const speakWithBrowser = () => speakWithBrowserRef.current?.(text, finish);
+
+    if (!text || !text.trim()) {
+      finish();
+      return;
+    }
+
+    // ── Preferred path: neural TTS (Kokoro) served by the backend ──
+    (async () => {
+      try {
+        const res = await authFetch("/api/interview/tts", {
+          method: "POST",
+          body: JSON.stringify({ text }),
+        });
+        if (!res.ok) throw new Error("tts http " + res.status);
+        const blob = await res.blob();
+        if (finished) return; // cancelled while synthesizing
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        ttsAudioRef.current = audio;
+        audio.onplay = () => { tlog("neural TTS playing (avatar lip-syncs)"); setAiVoiceActive(true); };
+        audio.onended = () => {
+          if (ttsAudioRef.current === audio) ttsAudioRef.current = null;
+          try { URL.revokeObjectURL(url); } catch { /* noop */ }
+          finish();
+        };
+        audio.onerror = () => {
+          if (ttsAudioRef.current === audio) ttsAudioRef.current = null;
+          try { URL.revokeObjectURL(url); } catch { /* noop */ }
+          if (!finished) speakWithBrowser();
+        };
+        try {
+          await audio.play();
+        } catch (e) {
+          tlog("neural TTS play() blocked — falling back to browser voice: " + (e?.message || e));
+          if (ttsAudioRef.current === audio) ttsAudioRef.current = null;
+          try { URL.revokeObjectURL(url); } catch { /* noop */ }
+          if (!finished) speakWithBrowser();
+        }
+      } catch (e) {
+        tlog("neural TTS unavailable — using browser voice: " + (e?.message || e));
+        if (!finished) speakWithBrowser();
+      }
+    })();
+  }, [authFetch, stopTtsAudio]);
+
+  // Browser speechSynthesis fallback (the original robotic-but-reliable voice),
+  // used only when the neural TTS can't be reached. `finish` is the shared
+  // completion callback from speakText.
+  const speakWithBrowserTTS = useCallback((text, finish) => {
     if (typeof window === "undefined" || !window.speechSynthesis) {
       finish();
       return;
@@ -253,6 +321,55 @@ export default function InterviewRoom({
     }, 250);
   }, []);
 
+  // Keep the browser-TTS fallback reachable from speakText without making it a
+  // dependency (avoids a use-before-define cycle), mirroring startListeningRef.
+  useEffect(() => {
+    speakWithBrowserRef.current = speakWithBrowserTTS;
+  }, [speakWithBrowserTTS]);
+
+  // Apply one AI turn returned by the backend (shared by the typed and voice
+  // paths): either deliver Mav's next question/chitchat and reopen the mic when
+  // she finishes, or — on the final turn — speak the goodbye and then show results.
+  const applyTurnResponse = useCallback((data) => {
+    if (data.passed !== undefined) {
+      // Interview is over, but say the goodbye DURING the interview (avatar still
+      // lip-syncing) and only switch to the results page once Mav's voice ends.
+      const goodbye = data.passed
+        ? "Congratulations! You passed the assessment. Thank you for completing the interview. Take care and goodbye!"
+        : "Thank you for participating. You can review the material and try the assessment again anytime. Take care and goodbye!";
+      setResults(data);
+      setWaitingForStudent(false);
+      setMicActive(false);
+      setStatus("AI SPEAKING");
+      setCurrentAIText(goodbye);
+      setTranscript((prev) => [...prev, { speaker: "ai", text: goodbye }]);
+      speakText(goodbye, () => {
+        setIsFinished(true);
+        setStatus("COMPLETE");
+      });
+    } else {
+      setCurrentAIText(data.text);
+      // Only advance the question counter on a real interview answer, not chitchat.
+      if (!data.is_chitchat) {
+        setQuestionNum(data.question_number);
+      }
+      setTranscript((prev) => [...prev, { speaker: "ai", text: data.text }]);
+      setStatus("AI SPEAKING");
+      setWaitingForStudent(false);
+      speakText(data.text, () => {
+        setTimeout(() => {
+          setWaitingForStudent(true);
+          setStatus("WAITING FOR YOU");
+          questionStartRef.current = Date.now();
+          tlog("handoff: opening mic for student answer");
+          if (startListeningRef.current) startListeningRef.current();
+        }, MIC_HANDOFF_MS);
+      });
+    }
+  }, [speakText]);
+
+  // Typed-answer path (the fallback text box). Voice answers go through the
+  // merged submitAudioAnswer below; this still uses /api/interview/answer.
   const submitAnswer = useCallback(async (answerText) => {
     if (submittingRef.current || !sessionId) return;
     const trimmed = answerText.trim();
@@ -266,11 +383,10 @@ export default function InterviewRoom({
     const responseTime = questionStartRef.current ? Date.now() - questionStartRef.current : 0;
     const pauseCount = pauseCountRef.current;
     const longPauseMs = longPauseMsRef.current;
-    const fillerWordCount = fillerCountRef.current;
+    const fillerWordCount = countFillers(trimmed);
 
     // Show the raw (filler-included) answer in the UI transcript. Keep it visible
-    // as the caption (don't clear liveTranscript) until Mav starts speaking, so the
-    // student sees what was transcribed.
+    // as the caption (don't clear liveTranscript) until Mav starts speaking.
     setTranscript((prev) => [...prev, { speaker: "student", text: trimmed }]);
     setLiveTranscript(trimmed);
     setFillerCount(0);
@@ -323,45 +439,7 @@ export default function InterviewRoom({
       longPauseMsRef.current = 0;
       fillerCountRef.current = 0;
 
-      if (data.passed !== undefined) {
-        // Interview is over, but DON'T jump to the results page yet. Mav must say
-        // her goodbye *during* the interview (avatar still on screen, lip-syncing),
-        // and only once her voice actually finishes do we switch to the results
-        // page. This avoids the jarring "goodbye plays over the results screen".
-        const goodbye = data.passed
-          ? "Congratulations! You passed the assessment. Thank you for completing the interview. Take care and goodbye!"
-          : "Thank you for participating. You can review the material and try the assessment again anytime. Take care and goodbye!";
-        setResults(data);
-        setWaitingForStudent(false);
-        setMicActive(false);
-        setStatus("AI SPEAKING");
-        setCurrentAIText(goodbye);
-        setTranscript((prev) => [...prev, { speaker: "ai", text: goodbye }]);
-        speakText(goodbye, () => {
-          // Mav has finished speaking → now end the interview and show results.
-          setIsFinished(true);
-          setStatus("COMPLETE");
-        });
-      } else {
-        setCurrentAIText(data.text);
-        // Only advance question counter if it was a real interview answer, not chitchat
-        if (!data.is_chitchat) {
-          setQuestionNum(data.question_number);
-        }
-        setTranscript((prev) => [...prev, { speaker: "ai", text: data.text }]);
-        setStatus("AI SPEAKING");
-        setWaitingForStudent(false);
-        // Auto-open mic after Mav finishes speaking
-        speakText(data.text, () => {
-          setTimeout(() => {
-            setWaitingForStudent(true);
-            setStatus("WAITING FOR YOU");
-            questionStartRef.current = Date.now();
-            tlog("handoff: opening mic for student answer");
-            if (startListeningRef.current) startListeningRef.current();
-          }, MIC_HANDOFF_MS);
-        });
-      }
+      applyTurnResponse(data);
     } catch (err) {
       // Friendly, recoverable: keep the student in the flow so they can simply
       // tap the mic and answer again (or type) — no dead "ERROR" state.
@@ -371,7 +449,88 @@ export default function InterviewRoom({
     } finally {
       submittingRef.current = false;
     }
-  }, [authFetch, sessionId, speakText]);
+  }, [authFetch, sessionId, applyTurnResponse]);
+
+  // Voice-answer path (MERGED round-trip). The recorded answer is uploaded ONCE
+  // to /api/interview/respond, which transcribes AND processes it server-side and
+  // returns BOTH the student's transcript and Mav's reply together — removing the
+  // old second hop (separate /transcribe then /answer). The student immediately
+  // sees what they said and what Mav answered; Mav's voice is then fetched from /tts.
+  const submitAudioAnswer = useCallback(async (blob) => {
+    if (submittingRef.current || !sessionId) return;
+
+    submittingRef.current = true;
+    setStatus("AI PROCESSING");
+    setWaitingForStudent(false);
+    setMicActive(false);
+
+    const responseTime = questionStartRef.current ? Date.now() - questionStartRef.current : 0;
+    const pauseCount = pauseCountRef.current;
+    const longPauseMs = longPauseMsRef.current;
+
+    const postRespond = async () => {
+      let lastErr = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 60000);
+        try {
+          const form = new FormData();
+          form.append("audio", blob, "answer.webm");
+          form.append("session_id", sessionId);
+          form.append("response_time_ms", String(responseTime));
+          form.append("pause_count", String(pauseCount));
+          form.append("long_pause_ms", String(longPauseMs));
+          const r = await authFetch("/api/interview/respond", {
+            method: "POST",
+            body: form,
+            signal: controller.signal,
+          });
+          clearTimeout(timer);
+          return r;
+        } catch (e) {
+          clearTimeout(timer);
+          lastErr = e;
+          if (attempt < 2) await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+        }
+      }
+      throw lastErr || new Error("Network error");
+    };
+
+    try {
+      const res = await postRespond();
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Failed to submit answer");
+      }
+      const data = await res.json();
+
+      // Nothing intelligible was captured — keep the student in the flow.
+      if (data.no_speech || !data.student_text) {
+        setLiveTranscript("");
+        setError("I couldn't hear that clearly — tap the mic to try again, or type your answer below.");
+        setStatus("WAITING FOR YOU");
+        setWaitingForStudent(true);
+        return;
+      }
+
+      // Show what the student said (from the server transcript) before Mav replies.
+      setTranscript((prev) => [...prev, { speaker: "student", text: data.student_text }]);
+      setLiveTranscript(data.student_text);
+      setFillerCount(0);
+
+      pauseCountRef.current = 0;
+      longPauseMsRef.current = 0;
+      fillerCountRef.current = 0;
+
+      applyTurnResponse(data);
+    } catch (err) {
+      setError(friendlyNetworkError(err));
+      setWaitingForStudent(true);
+      setStatus("WAITING FOR YOU");
+    } finally {
+      submittingRef.current = false;
+    }
+  }, [authFetch, sessionId, applyTurnResponse]);
 
   // Begin recording the whole interview: screen + system/tab audio (which carries
   // Mav's TTS voice) from getDisplayMedia, mixed with the student's mic. Returns
@@ -640,10 +799,11 @@ export default function InterviewRoom({
         micStreamRef.current.getTracks().forEach((t) => t.stop());
         micStreamRef.current = null;
       }
+      stopTtsAudio();
       if (typeof window !== "undefined") window.speechSynthesis?.cancel();
       if (speakWatchdogRef.current) clearInterval(speakWatchdogRef.current);
     };
-  }, [hasStarted, startSession]);
+  }, [hasStarted, startSession, stopTtsAudio]);
 
   // Animate the avatar's mouth ONLY while Mav's voice is actually playing
   // (asking/answering aloud) by swapping closed/opened frames. When the voice is
@@ -782,7 +942,8 @@ export default function InterviewRoom({
       return;
     }
 
-    // Stop TTS so Mav's voice isn't recorded into the answer.
+    // Stop TTS (neural + browser) so Mav's voice isn't recorded into the answer.
+    stopTtsAudio();
     window.speechSynthesis?.cancel();
 
     // Acquire (or reuse) a held mic stream.
@@ -847,32 +1008,15 @@ export default function InterviewRoom({
       }
 
       const blob = new Blob(chunks, { type: chunks[0].type || "audio/webm" });
-      tlog(`transcribing ${(blob.size / 1024).toFixed(0)}KB audio`);
+      tlog(`submitting ${(blob.size / 1024).toFixed(0)}KB answer audio (merged transcribe+process)`);
       transcribingRef.current = true;
       setStatus("TRANSCRIBING");
       setLiveTranscript("");
       try {
-        const form = new FormData();
-        form.append("audio", blob, "answer.webm");
-        const res = await authFetch("/api/interview/transcribe", { method: "POST", body: form });
-        if (!res.ok) throw new Error("Transcription failed");
-        const data = await res.json();
-        const text = (data.text || "").trim();
+        // ONE round-trip: upload the audio, get back the transcript AND Mav's reply.
+        await submitAudioAnswer(blob);
+      } finally {
         transcribingRef.current = false;
-        tlog("transcript: " + JSON.stringify(text));
-        if (!text) {
-          setLiveTranscript("");
-          setError("I couldn't hear that clearly — tap the mic to try again, or type your answer below.");
-          setStatus("WAITING FOR YOU");
-          return;
-        }
-        fillerCountRef.current = countFillers(text);
-        submitAnswer(text);
-      } catch (err) {
-        transcribingRef.current = false;
-        setLiveTranscript("");
-        setError(friendlyNetworkError(err));
-        setStatus("WAITING FOR YOU");
       }
     };
 
@@ -933,7 +1077,7 @@ export default function InterviewRoom({
       // VAD is best-effort; without it the student can still submit via the mic button.
       tlog("VAD init failed (non-fatal): " + (e?.message || e));
     }
-  }, [submitAnswer, authFetch, stopRecording]);
+  }, [submitAudioAnswer, stopRecording, stopTtsAudio]);
 
   // Always keep the ref current so speakText onEnd callbacks don't go stale
   useEffect(() => {
@@ -980,6 +1124,7 @@ export default function InterviewRoom({
       setResults(data);
       setIsFinished(true);
       setStatus("COMPLETE");
+      stopTtsAudio();
       if (typeof window !== "undefined") window.speechSynthesis?.cancel();
     } catch (err) {
       setError(err.message);

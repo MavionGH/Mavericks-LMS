@@ -1,8 +1,10 @@
 import logging
+import re
 import time
 from typing import Union
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import Response
 from sqlalchemy.orm import Session, joinedload, load_only
 
 from app.database import get_db
@@ -13,12 +15,34 @@ from app.models.models import (
 from app.schemas.schemas import (
     InterviewStartRequest, CourseInterviewStartRequest, InterviewAnswerRequest,
     InterviewTurnResponse, InterviewResultResponse, InterviewEligibilityResponse,
+    InterviewTTSRequest,
 )
 from app.auth.dependencies import require_student
 from app.services.chapter_context import build_chapter_context, build_course_context
 from app.services.interview_graph import start_interview, process_answer, MAX_QUESTIONS
 from app.services.stt import transcribe_audio
+from app.services.tts import synthesize_speech, MEDIA_TYPE
 from app.services.storage import upload_recording_to_r2
+
+# Filler words detected/penalised in scoring. Mirrors the client-side regex that
+# used to run in the browser — now that transcription happens server-side (in the
+# merged /respond endpoint) the count is derived here from the transcript so the
+# scoring metrics are unchanged.
+_FILLER_RE = re.compile(
+    r"\b(um+|uh+|m+hm+|h+m+|err+|erm+|like|you know|basically|literally|"
+    r"right\?|i mean|kind of|sort of)\b",
+    re.IGNORECASE,
+)
+
+
+def _count_fillers(text: str) -> int:
+    return len(_FILLER_RE.findall(text or ""))
+
+
+def _clean_answer(text: str) -> str:
+    """Strip filler words before the answer reaches the LLM (kept counted, not
+    sent verbatim) — same transformation the frontend used to do."""
+    return re.sub(r"\s{2,}", " ", _FILLER_RE.sub("", text or "")).strip()
 
 # Hard cap on the uploaded interview recording (screen + audio for the whole
 # session). Generous because a multi-minute screen capture is far larger than a
@@ -301,34 +325,32 @@ def start_course_interview(
     )
 
 
-@router.post("/answer", response_model=Union[InterviewTurnResponse, InterviewResultResponse])
-def submit_answer(
-    data: InterviewAnswerRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_student),
-):
-    session = db.query(InterviewSession).filter(
-        InterviewSession.id == data.session_id,
-        InterviewSession.user_id == current_user.id,
-        InterviewSession.status == "active",
-    ).first()
-    if not session:
-        raise HTTPException(status_code=404, detail="Active interview session not found")
+def _advance_interview(
+    db: Session,
+    session: InterviewSession,
+    current_user: User,
+    answer_text: str,
+    response_time_ms: int,
+    pause_count: int,
+    long_pause_ms: int,
+    filler_word_count: int,
+) -> Union[InterviewTurnResponse, InterviewResultResponse]:
+    """Run one interview turn for an already-loaded active session.
 
-    if not data.answer_text.strip():
-        raise HTTPException(status_code=400, detail="Answer cannot be empty")
-
+    Shared by /answer (typed answers) and /respond (the merged voice path) so the
+    LangGraph orchestration, persistence, and completion handling are identical.
+    """
     _t0 = time.perf_counter()
     graph_state = process_answer(
         session.graph_state,
-        data.answer_text.strip(),
-        data.response_time_ms,
-        data.pause_count,
-        data.long_pause_ms,
-        data.filler_word_count,
+        answer_text,
+        response_time_ms,
+        pause_count,
+        long_pause_ms,
+        filler_word_count,
     )
     logger.info(
-        "interview/answer process_answer=%.0fms (complete=%s chitchat=%s)",
+        "interview turn process_answer=%.0fms (complete=%s chitchat=%s)",
         (time.perf_counter() - _t0) * 1000,
         graph_state.get("is_complete"), graph_state.get("is_chitchat"),
     )
@@ -354,6 +376,129 @@ def submit_answer(
         question_number=graph_state.get("question_count", 1),
         total_questions=MAX_QUESTIONS,
         is_chitchat=is_chitchat,
+    )
+
+
+@router.post("/answer", response_model=Union[InterviewTurnResponse, InterviewResultResponse])
+def submit_answer(
+    data: InterviewAnswerRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_student),
+):
+    session = db.query(InterviewSession).filter(
+        InterviewSession.id == data.session_id,
+        InterviewSession.user_id == current_user.id,
+        InterviewSession.status == "active",
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Active interview session not found")
+
+    if not data.answer_text.strip():
+        raise HTTPException(status_code=400, detail="Answer cannot be empty")
+
+    return _advance_interview(
+        db, session, current_user,
+        data.answer_text.strip(),
+        data.response_time_ms,
+        data.pause_count,
+        data.long_pause_ms,
+        data.filler_word_count,
+    )
+
+
+@router.post("/respond")
+async def respond_to_answer(
+    audio: UploadFile = File(...),
+    session_id: str = Form(...),
+    response_time_ms: int = Form(0),
+    pause_count: int = Form(0),
+    long_pause_ms: int = Form(0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_student),
+):
+    """Merged voice turn: transcribe + process the spoken answer in ONE round-trip.
+
+    The browser uploads the recorded answer here; we transcribe it (Whisper),
+    derive the filler-word metric from the transcript, run the interview turn, and
+    return BOTH the student's transcript and Mav's reply together. This removes the
+    second network hop the old flow needed (separate /transcribe then /answer) and
+    lets the UI immediately show "what you said / what Mav answered". Mav's voice
+    is fetched separately from /tts so audio can start streaming as soon as the
+    text is known.
+    """
+    session = db.query(InterviewSession).filter(
+        InterviewSession.id == session_id,
+        InterviewSession.user_id == current_user.id,
+        InterviewSession.status == "active",
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Active interview session not found")
+
+    audio_bytes = await audio.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Empty audio upload")
+    if len(audio_bytes) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Audio too large")
+
+    _t0 = time.perf_counter()
+    student_text = await run_in_threadpool(
+        transcribe_audio, audio_bytes, audio.filename or "answer.webm"
+    )
+    student_text = (student_text or "").strip()
+    logger.info("interview/respond transcribe=%.0fms (chars=%d)",
+                (time.perf_counter() - _t0) * 1000, len(student_text))
+
+    # Nothing intelligible captured — tell the client to prompt a retry instead of
+    # submitting an empty answer (mirrors the old transcribe endpoint's behaviour).
+    if not student_text:
+        return {"student_text": "", "no_speech": True}
+
+    filler_word_count = _count_fillers(student_text)
+    cleaned = _clean_answer(student_text) or student_text
+
+    # The LangGraph turn is blocking (LLM calls) — run it off the event loop.
+    result = await run_in_threadpool(
+        _advance_interview,
+        db, session, current_user,
+        cleaned,
+        response_time_ms,
+        pause_count,
+        long_pause_ms,
+        filler_word_count,
+    )
+
+    # Return the turn/result payload PLUS the student's transcript so the UI can
+    # show what they said alongside Mav's answer in a single response.
+    payload = result.model_dump()
+    payload["student_text"] = student_text
+    return payload
+
+
+@router.post("/tts")
+async def interview_tts(
+    data: InterviewTTSRequest,
+    current_user: User = Depends(require_student),
+):
+    """Synthesize Mav's line with OpenAI TTS (natural, human-like voice) and return
+    the audio for the browser to play via an <audio> element.
+
+    Falls back transparently: if TTS is unavailable we return 503, and the
+    frontend then uses the browser's built-in speech synthesis instead.
+    """
+    text = (data.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="No text to speak")
+    if len(text) > 4000:
+        text = text[:4000]
+
+    # OpenAI TTS is a blocking HTTP call — run it off the event loop.
+    audio = await run_in_threadpool(synthesize_speech, text, data.voice)
+    if not audio:
+        raise HTTPException(status_code=503, detail="TTS unavailable")
+    return Response(
+        content=audio,
+        media_type=MEDIA_TYPE,
+        headers={"Cache-Control": "no-store"},
     )
 
 
