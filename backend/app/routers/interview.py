@@ -397,6 +397,7 @@ def _finalize_session(db: Session, session: InterviewSession, user: User) -> Int
         ev = Evaluation(
             user_id=user.id,
             chapter_id=None,
+            course_id=session.course_id,
             type=EvaluationType.CAPSTONE,
             transcript=graph_state.get("transcript", []),
             technical_score=evaluation.get("technical_score", 0),
@@ -441,6 +442,7 @@ def _finalize_session(db: Session, session: InterviewSession, user: User) -> Int
     ev = Evaluation(
         user_id=user.id,
         chapter_id=session.chapter_id,
+        course_id=chapter.course_id if chapter else None,
         type=EvaluationType.CHAPTER,
         transcript=graph_state.get("transcript", []),
         technical_score=evaluation.get("technical_score", 0),

@@ -308,3 +308,33 @@ class AnalyticsResponse(BaseModel):
     certificates_issued: int
     average_score: float
     pass_rate: float
+
+
+# ─── STUDENT DASHBOARD ───
+class DashboardCourse(BaseModel):
+    id: str
+    title: str
+    progress: int
+    currentChapter: str
+    status: str
+    icon: str
+
+
+class DashboardEvaluation(BaseModel):
+    chapter: str
+    course: str
+    score: int
+    passed: bool
+    date: str
+    technical: int
+    communication: int
+    confidence: int
+
+
+class DashboardStats(BaseModel):
+    active_tracks: int
+    modules_completed: int
+    oral_assessments: int
+    earned_credentials: int
+    enrolled_courses: List[DashboardCourse]
+    recent_evaluations: List[DashboardEvaluation]
