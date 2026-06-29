@@ -168,6 +168,9 @@ class InterviewSession(Base):
     pause_metrics = Column(JSON, default=list)
     question_count = Column(Integer, default=0)
     graph_state = Column(JSON, nullable=True)
+    # Public R2 URL of the full screen+audio recording of the interview, uploaded
+    # by the browser when the session ends. Null until the upload completes.
+    recording_url = Column(String(500), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User")

@@ -2,7 +2,7 @@
 import Navbar from "@/components/Navbar";
 import Link from "next/link";
 import Script from "next/script";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 
@@ -29,6 +29,30 @@ export default function LoginPage() {
     }
   }, [user, authLoading, router]);
 
+  const handleGoogleCallback = useCallback(async (response) => {
+    setError("");
+    setLoading(true);
+    try {
+      const res = await loginWithGoogle(response.credential);
+      if (res && res.status === "needs_role") {
+        setGoogleCredential(response.credential);
+        setShowRoleModal(true);
+      } else if (res) {
+        const panelMap = { student: "/dashboard", teacher: "/teacher", admin: "/admin" };
+        router.push(panelMap[res.role] || "/dashboard");
+      }
+    } catch (err) {
+      setError(err.message || "Google authentication failed");
+    } finally {
+      setLoading(false);
+    }
+  }, [loginWithGoogle, router]);
+
+  // Always invoke the latest callback from the GSI init below without forcing the
+  // init effect to re-run (which would re-render the button) when it changes.
+  const googleCallbackRef = useRef(handleGoogleCallback);
+  useEffect(() => { googleCallbackRef.current = handleGoogleCallback; }, [handleGoogleCallback]);
+
   // Initialize Google Sign-In button once GSI script is loaded
   useEffect(() => {
     /* global google */
@@ -37,7 +61,7 @@ export default function LoginPage() {
         try {
           google.accounts.id.initialize({
             client_id: process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || "1234567890-placeholder.apps.googleusercontent.com",
-            callback: handleGoogleCallback,
+            callback: (resp) => googleCallbackRef.current(resp),
           });
           google.accounts.id.renderButton(
             document.getElementById("google-signin-button"),
@@ -69,25 +93,6 @@ export default function LoginPage() {
       return () => clearInterval(checkGoogleInterval);
     }
   }, []);
-
-  const handleGoogleCallback = async (response) => {
-    setError("");
-    setLoading(true);
-    try {
-      const res = await loginWithGoogle(response.credential);
-      if (res && res.status === "needs_role") {
-        setGoogleCredential(response.credential);
-        setShowRoleModal(true);
-      } else if (res) {
-        const panelMap = { student: "/dashboard", teacher: "/teacher", admin: "/admin" };
-        router.push(panelMap[res.role] || "/dashboard");
-      }
-    } catch (err) {
-      setError(err.message || "Google authentication failed");
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleSelectRole = async (role) => {
     if (!role) return;
@@ -215,7 +220,7 @@ export default function LoginPage() {
           </div>
 
           <p style={{ textAlign: "center", marginTop: "28px", fontSize: "13px", color: "var(--text-muted)" }}>
-            Don't have an account?{" "}
+            Don&apos;t have an account?{" "}
             <Link href="/register" style={{ color: "var(--brand)", fontWeight: "600", textDecoration: "none" }}>
               Register here
             </Link>

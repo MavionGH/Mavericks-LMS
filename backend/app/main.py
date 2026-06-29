@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import engine, Base
-from app.routers import auth, courses, enrollment, admin, interview, quiz
+from app.routers import auth, courses, enrollment, admin, interview, quiz, teacher
 
 logger = logging.getLogger(__name__)
 
@@ -28,38 +28,68 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
 
     # Add new columns to existing tables without a full migration.
-    # PostgreSQL `ADD COLUMN IF NOT EXISTS` is idempotent and safe to run every start.
-    _new_cols = [
-        "ALTER TABLE courses ADD COLUMN IF NOT EXISTS teacher_id VARCHAR REFERENCES users(id) ON DELETE SET NULL",
-        "ALTER TABLE courses ADD COLUMN IF NOT EXISTS is_approved BOOLEAN NOT NULL DEFAULT FALSE",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_approved BOOLEAN NOT NULL DEFAULT TRUE",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id VARCHAR(255)",
+    #
+    # Re-running `ADD COLUMN IF NOT EXISTS` on every boot is normally cheap, but on
+    # Supabase's transaction pooler the ALTER still has to take a table lock to
+    # check — and if any other session holds a lock (the frontend querying, or a
+    # second backend instance), it blocks and then waits out the server-side
+    # `statement_timeout`, making startup appear to hang for tens of seconds PER
+    # statement. To make startup fast and safe we:
+    #   (a) introspect information_schema first and only ALTER when a column is
+    #       actually missing, so a fully-migrated DB does zero locking work, and
+    #   (b) cap lock waits (SET LOCAL lock_timeout) so a migration that does run
+    #       can never hang — it fails fast and is logged.
+    add_columns = [
+        ("courses", "teacher_id", "ALTER TABLE courses ADD COLUMN teacher_id VARCHAR REFERENCES users(id) ON DELETE SET NULL"),
+        ("courses", "is_approved", "ALTER TABLE courses ADD COLUMN is_approved BOOLEAN NOT NULL DEFAULT FALSE"),
+        ("users", "is_approved", "ALTER TABLE users ADD COLUMN is_approved BOOLEAN NOT NULL DEFAULT TRUE"),
+        ("users", "google_id", "ALTER TABLE users ADD COLUMN google_id VARCHAR(255)"),
         # Course-wide final interview: sessions may be scoped to a course instead
-        # of a single chapter, so chapter_id becomes optional and course_id is added.
-        "ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS course_id VARCHAR REFERENCES courses(id)",
-        "ALTER TABLE interview_sessions ALTER COLUMN chapter_id DROP NOT NULL",
+        # of a single chapter, so course_id is added (and chapter_id made nullable below).
+        ("interview_sessions", "course_id", "ALTER TABLE interview_sessions ADD COLUMN course_id VARCHAR REFERENCES courses(id)"),
+        # Full screen+audio recording of the interview (Cloudflare R2 public URL).
+        ("interview_sessions", "recording_url", "ALTER TABLE interview_sessions ADD COLUMN recording_url VARCHAR(500)"),
     ]
-    # Run each statement in its OWN transaction. PostgreSQL aborts the whole
-    # transaction on the first failing statement, so sharing one transaction
-    # meant a single hiccup silently skipped every later migration (this is why
-    # interview_sessions.course_id was never added). Isolating them makes each
-    # idempotent ALTER apply independently.
-    for stmt in _new_cols:
+
+    # Snapshot existing columns (+ nullability) up front in one cheap read so the
+    # loop below never touches a table that's already migrated.
+    cols_by_table = {}
+    try:
+        with engine.connect() as conn:
+            for table in {"courses", "users", "interview_sessions"}:
+                rows = conn.execute(text(
+                    "SELECT column_name, is_nullable FROM information_schema.columns "
+                    "WHERE table_name = :t"
+                ), {"t": table}).fetchall()
+                cols_by_table[table] = {r[0]: r[1] for r in rows}
+    except Exception as exc:
+        logger.warning("Could not introspect schema (will still attempt migrations): %s", exc)
+
+    def _run_migration(stmt):
+        """Run one DDL statement in its own transaction with a short lock timeout
+        so a contended table can never stall startup."""
         try:
             with engine.begin() as conn:
+                conn.execute(text("SET LOCAL lock_timeout = '3s'"))
                 conn.execute(text(stmt))
         except Exception as exc:
             logger.warning("Column migration warning for [%s]: %s", stmt, exc)
-    logger.info("Schema columns ensured.")
 
-    # Attempt to make password column nullable (PostgreSQL). Will fail gracefully on SQLite.
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("ALTER TABLE users ALTER COLUMN password DROP NOT NULL"))
-            conn.commit()
-            logger.info("Ensured password column is nullable.")
-    except Exception as exc:
-        logger.debug("Non-critical password nullability migration skipped: %s", exc)
+    for table, column, ddl in add_columns:
+        # If introspection failed we have no snapshot for the table → fall back to
+        # attempting the ALTER (guarded by lock_timeout so it still can't hang).
+        existing = cols_by_table.get(table)
+        if existing is None or column not in existing:
+            _run_migration(ddl)
+
+    # Make these columns nullable only if they are still NOT NULL (skips the lock
+    # entirely once already applied).
+    if cols_by_table.get("interview_sessions", {}).get("chapter_id") == "NO":
+        _run_migration("ALTER TABLE interview_sessions ALTER COLUMN chapter_id DROP NOT NULL")
+    if cols_by_table.get("users", {}).get("password") == "NO":
+        _run_migration("ALTER TABLE users ALTER COLUMN password DROP NOT NULL")
+
+    logger.info("Schema columns ensured.")
 
     yield
 
@@ -78,6 +108,9 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Let the browser cache the CORS preflight so it doesn't send an OPTIONS
+    # request before every POST/PUT (cuts the duplicate-looking OPTIONS traffic).
+    max_age=3600,
 )
 
 # Register routers
@@ -87,6 +120,7 @@ app.include_router(enrollment.router)
 app.include_router(admin.router)
 app.include_router(interview.router)
 app.include_router(quiz.router)
+app.include_router(teacher.router)
 
 
 @app.get("/")
