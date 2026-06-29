@@ -6,13 +6,14 @@ everything. Ownership is resolved through the interview session's course — eit
 directly (course-wide final interview) or via its chapter (per-module interview).
 """
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
 from app.models.models import (
-    Chapter, Course, Evaluation, InterviewSession, User, UserRole,
+    Chapter, Course, Evaluation, InterviewSession, User, UserRole, Enrollment,
 )
 from app.auth.dependencies import require_teacher
 
@@ -31,6 +32,7 @@ def _owned_course_ids(db: Session, current_user: User) -> set:
 
 @router.get("/recordings")
 def list_interview_recordings(
+    student_id: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_teacher),
 ):
@@ -44,7 +46,7 @@ def list_interview_recordings(
     if not owned:
         return []
 
-    sessions = (
+    query = (
         db.query(InterviewSession)
         .options(
             joinedload(InterviewSession.user),
@@ -52,9 +54,12 @@ def list_interview_recordings(
             joinedload(InterviewSession.course),
         )
         .filter(InterviewSession.recording_url.isnot(None))
-        .order_by(InterviewSession.created_at.desc())
-        .all()
     )
+
+    if student_id:
+        query = query.filter(InterviewSession.user_id == student_id)
+
+    sessions = query.order_by(InterviewSession.created_at.desc()).all()
 
     # Pre-load evaluations for these students/chapters in one pass would be ideal,
     # but the volume here is small (one row per finished interview); a per-session
@@ -97,3 +102,49 @@ def list_interview_recordings(
         })
 
     return results
+
+
+@router.get("/students")
+def list_enrolled_students(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_teacher),
+):
+    """List all students enrolled in courses published by the teacher."""
+    # Find all courses published by this teacher (or all published courses for admin)
+    q = db.query(Course.id).filter(Course.is_published == True)
+    if current_user.role != UserRole.ADMIN:
+        q = q.filter(Course.teacher_id == current_user.id)
+    published_course_ids = [row[0] for row in q.all()]
+    if not published_course_ids:
+        return []
+
+    # Find all enrollments in these courses
+    enrollments = (
+        db.query(Enrollment)
+        .options(
+            joinedload(Enrollment.user),
+            joinedload(Enrollment.course)
+        )
+        .filter(Enrollment.course_id.in_(published_course_ids))
+        .all()
+    )
+
+    # Extract unique students and their courses
+    students_dict = {}
+    for e in enrollments:
+        if not e.user:
+            continue
+        student_id = e.user.id
+        if student_id not in students_dict:
+            students_dict[student_id] = {
+                "id": student_id,
+                "name": e.user.name,
+                "email": e.user.email,
+                "courses": []
+            }
+        students_dict[student_id]["courses"].append({
+            "id": e.course.id,
+            "title": e.course.title
+        })
+
+    return list(students_dict.values())

@@ -72,6 +72,12 @@ function TeacherPanel() {
   const [recordingsLoading, setRecordingsLoading] = useState(false);
   const [recordingsError, setRecordingsError] = useState("");
 
+  // Student enrollment/recordings list
+  const [students, setStudents] = useState([]);
+  const [studentsLoading, setStudentsLoading] = useState(false);
+  const [studentsError, setStudentsError] = useState("");
+  const [selectedStudent, setSelectedStudent] = useState(null);
+
   // Transcript generation state
   const [transcribing, setTranscribing] = useState(false);
   const [transcribeStage, setTranscribeStage] = useState(""); // "uploading" | "extracting" | "transcribing" | "done"
@@ -228,11 +234,12 @@ function TeacherPanel() {
     loadCourses();
   }, [loadCourses]);
 
-  const loadRecordings = useCallback(async () => {
+  const loadRecordings = useCallback(async (studentId = null) => {
     setRecordingsLoading(true);
     setRecordingsError("");
     try {
-      const res = await authFetch("/api/teacher/recordings");
+      const url = studentId ? `/api/teacher/recordings?student_id=${studentId}` : "/api/teacher/recordings";
+      const res = await authFetch(url);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "Failed to load recordings");
       setRecordings(await res.json());
     } catch (err) {
@@ -242,11 +249,28 @@ function TeacherPanel() {
     }
   }, [authFetch]);
 
-  // Load recordings the first time the teacher opens that tab.
+  const loadStudents = useCallback(async () => {
+    setStudentsLoading(true);
+    setStudentsError("");
+    try {
+      const res = await authFetch("/api/teacher/students");
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "Failed to load students");
+      setStudents(await res.json());
+    } catch (err) {
+      setStudentsError(err.message);
+    } finally {
+      setStudentsLoading(false);
+    }
+  }, [authFetch]);
+
+  // Load enrolled students the first time the teacher opens that tab.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (activeTab === "recordings") loadRecordings();
-  }, [activeTab, loadRecordings]);
+    if (activeTab === "recordings") {
+      setSelectedStudent(null);
+      loadStudents();
+    }
+  }, [activeTab, loadStudents]);
 
   const selectedCourse = courses.find((c) => c.id === selectedCourseId);
 
@@ -860,63 +884,171 @@ function TeacherPanel() {
           {/* Student Recordings */}
           {activeTab === "recordings" && (
             <div>
-              <div style={{ display: "flex", alignItems: "center", marginBottom: "20px" }}>
-                <div style={{ flex: 1 }}>
-                  <h3 style={{ fontSize: "14px", fontWeight: "700", textTransform: "uppercase", fontFamily: "JetBrains Mono", margin: 0 }}>
-                    AI Interview Recordings
-                  </h3>
-                  <p style={{ color: "var(--text-muted)", fontSize: "13px", marginTop: "4px" }}>
-                    Screen + voice recordings of each student&apos;s oral interview in your courses.
-                  </p>
-                </div>
-                <button className="btn btn-secondary" onClick={loadRecordings} style={{ fontSize: "11px", padding: "4px 10px" }}>
-                  Refresh
-                </button>
-              </div>
-
-              {recordingsLoading && (
-                <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>Loading recordings…</p>
-              )}
-              {recordingsError && (
-                <p style={{ color: "var(--color-danger)", fontSize: "13px" }}>❌ {recordingsError}</p>
-              )}
-              {!recordingsLoading && !recordingsError && recordings.length === 0 && (
-                <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>
-                  No interview recordings yet. They appear here once your students complete recorded interviews.
-                </p>
-              )}
-
-              <div className="grid-2" style={{ alignItems: "start" }}>
-                {recordings.map((r) => (
-                  <div key={r.session_id} className="card" style={{ padding: "16px", backgroundColor: "#ffffff" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px" }}>
-                      <div>
-                        <div style={{ fontWeight: "700", fontSize: "14px", color: "var(--text-title)" }}>{r.student?.name}</div>
-                        <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>{r.student?.email}</div>
-                      </div>
-                      {r.overall_score !== null && r.overall_score !== undefined && (
-                        <span className={`badge ${r.passed ? "badge-success" : "badge-warning"}`} style={{ fontSize: "10px" }}>
-                          {r.passed ? "PASSED" : "NEEDS REVIEW"} · {r.overall_score}%
-                        </span>
-                      )}
+              {!selectedStudent ? (
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", marginBottom: "20px" }}>
+                    <div style={{ flex: 1 }}>
+                      <h3 style={{ fontSize: "14px", fontWeight: "700", textTransform: "uppercase", fontFamily: "JetBrains Mono", margin: 0 }}>
+                        Enrolled Students
+                      </h3>
+                      <p style={{ color: "var(--text-muted)", fontSize: "13px", marginTop: "4px" }}>
+                        Select a student to view their oral interview recordings.
+                      </p>
                     </div>
-                    <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "10px" }}>
-                      <strong style={{ color: "var(--text-main)" }}>{r.course?.title}</strong>
-                      {r.module ? ` · ${r.module}` : " · Course-wide interview"}
-                      {r.created_at ? ` · ${new Date(r.created_at).toLocaleDateString()}` : ""}
-                    </div>
-                    <RecordingPlayer src={r.recording_url} />
-                    <a
-                      href={r.recording_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{ display: "inline-block", marginTop: "8px", fontSize: "12px", color: "var(--brand)" }}
-                    >
-                      Open in new tab ↗
-                    </a>
+                    <button className="btn btn-secondary" onClick={loadStudents} style={{ fontSize: "11px", padding: "4px 10px" }}>
+                      Refresh
+                    </button>
                   </div>
-                ))}
-              </div>
+
+                  {studentsLoading && (
+                    <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>Loading students…</p>
+                  )}
+                  {studentsError && (
+                    <p style={{ color: "var(--color-danger)", fontSize: "13px" }}>❌ {studentsError}</p>
+                  )}
+                  {!studentsLoading && !studentsError && students.length === 0 && (
+                    <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+                      No students enrolled in your published courses yet.
+                    </p>
+                  )}
+
+                  {!studentsLoading && !studentsError && students.length > 0 && (
+                    <div className="table-container">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Student Name</th>
+                            <th>Email Address</th>
+                            <th>Enrolled Courses</th>
+                            <th>Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {students.map((student) => (
+                            <tr
+                              key={student.id}
+                              style={{ cursor: "pointer" }}
+                              onClick={() => {
+                                setSelectedStudent(student);
+                                loadRecordings(student.id);
+                              }}
+                            >
+                              <td>
+                                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                                  <div style={{
+                                    width: 32, height: 32, borderRadius: "50%",
+                                    background: "linear-gradient(135deg, var(--brand) 0%, #8b5cf6 100%)",
+                                    color: "#fff", display: "flex", alignItems: "center", justifyContent: "center",
+                                    fontWeight: "600", fontSize: "13px"
+                                  }}>
+                                    {student.name.charAt(0).toUpperCase()}
+                                  </div>
+                                  <div style={{ fontWeight: "700", color: "var(--text-title)" }}>
+                                    {student.name}
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="mono" style={{ color: "var(--text-muted)" }}>{student.email}</td>
+                              <td>
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                                  {student.courses.map((course) => (
+                                    <span key={course.id} className="badge badge-secondary" style={{ fontSize: "11px" }}>
+                                      {course.title}
+                                    </span>
+                                  ))}
+                                </div>
+                              </td>
+                              <td>
+                                <button
+                                  className="btn btn-secondary btn-sm"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedStudent(student);
+                                    loadRecordings(student.id);
+                                  }}
+                                >
+                                  View Recordings
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "20px" }}>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => setSelectedStudent(null)}
+                      style={{ padding: "6px 12px", fontSize: "13px", display: "flex", alignItems: "center", gap: "6px" }}
+                    >
+                      ← Back to Students
+                    </button>
+                    <div style={{ flex: 1 }}>
+                      <h3 style={{ fontSize: "14px", fontWeight: "700", textTransform: "uppercase", fontFamily: "JetBrains Mono", margin: 0 }}>
+                        Recordings for {selectedStudent.name}
+                      </h3>
+                      <p style={{ color: "var(--text-muted)", fontSize: "13px", marginTop: "4px" }}>
+                        {selectedStudent.email}
+                      </p>
+                    </div>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => loadRecordings(selectedStudent.id)}
+                      style={{ fontSize: "11px", padding: "4px 10px" }}
+                    >
+                      Refresh
+                    </button>
+                  </div>
+
+                  {recordingsLoading && (
+                    <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>Loading recordings…</p>
+                  )}
+                  {recordingsError && (
+                    <p style={{ color: "var(--color-danger)", fontSize: "13px" }}>❌ {recordingsError}</p>
+                  )}
+                  {!recordingsLoading && !recordingsError && recordings.length === 0 && (
+                    <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+                      No interview recordings found for this student.
+                    </p>
+                  )}
+
+                  <div className="grid-2" style={{ alignItems: "start" }}>
+                    {recordings.map((r) => (
+                      <div key={r.session_id} className="card" style={{ padding: "16px", backgroundColor: "#ffffff" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px" }}>
+                          <div>
+                            <div style={{ fontWeight: "700", fontSize: "14px", color: "var(--text-title)" }}>{r.student?.name}</div>
+                            <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>{r.student?.email}</div>
+                          </div>
+                          {r.overall_score !== null && r.overall_score !== undefined && (
+                            <span className={`badge ${r.passed ? "badge-success" : "badge-warning"}`} style={{ fontSize: "10px" }}>
+                              {r.passed ? "PASSED" : "NEEDS REVIEW"} · {r.overall_score}%
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "10px" }}>
+                          <strong style={{ color: "var(--text-main)" }}>{r.course?.title}</strong>
+                          {r.module ? ` · ${r.module}` : " · Course-wide interview"}
+                          {r.created_at ? ` · ${new Date(r.created_at).toLocaleDateString()}` : ""}
+                        </div>
+                        <RecordingPlayer src={r.recording_url} />
+                        <a
+                          href={r.recording_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{ display: "inline-block", marginTop: "8px", fontSize: "12px", color: "var(--brand)" }}
+                        >
+                          Open in new tab ↗
+                        </a>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
