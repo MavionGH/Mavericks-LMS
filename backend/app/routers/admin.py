@@ -230,6 +230,55 @@ def get_teacher_detail(
     }
 
 
+@router.get("/teachers/{teacher_id}/courses/{course_id}/students")
+def get_course_students(
+    teacher_id: str,
+    course_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """List all students enrolled in a specific course, with per-course evaluation stats."""
+    course = db.query(Course).filter(
+        Course.id == course_id, Course.teacher_id == teacher_id
+    ).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    enrollments = (
+        db.query(Enrollment)
+        .options(joinedload(Enrollment.user))
+        .filter(Enrollment.course_id == course_id)
+        .all()
+    )
+
+    result = []
+    for enr in enrollments:
+        student = enr.user
+        if not student:
+            continue
+        # Fetch evaluations for this student in this course's chapters
+        evals = (
+            db.query(Evaluation)
+            .join(Chapter, Evaluation.chapter_id == Chapter.id)
+            .filter(Chapter.course_id == course_id, Evaluation.user_id == student.id)
+            .all()
+        )
+        avg_score = round(sum(e.overall_score for e in evals) / len(evals), 1) if evals else 0.0
+        passed_count = sum(1 for e in evals if e.passed)
+        result.append({
+            "id": student.id,
+            "name": student.name,
+            "email": student.email,
+            "enrolled_at": enr.enrolled_at.isoformat() if enr.enrolled_at else None,
+            "status": enr.status.value,
+            "current_chapter": enr.current_chapter_index,
+            "evaluations_total": len(evals),
+            "evaluations_passed": passed_count,
+            "average_score": avg_score,
+        })
+    return result
+
+
 @router.delete("/teachers/{teacher_id}")
 def delete_teacher(
     teacher_id: str,
