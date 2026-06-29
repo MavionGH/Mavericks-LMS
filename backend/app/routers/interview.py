@@ -71,7 +71,7 @@ async def transcribe_answer(
     """Server-side speech-to-text for the oral assessment.
 
     The browser records the student's spoken answer and uploads it here; we run it
-    through Groq Whisper and return the text. This replaces the browser Web Speech
+    through OpenAI Whisper and return the text. This replaces the browser Web Speech
     API, which fails silently on networks that can't reach Google's STT backend.
     """
     audio_bytes = await audio.read()
@@ -80,7 +80,7 @@ async def transcribe_answer(
     # Guard against runaway uploads (a normal answer is well under this).
     if len(audio_bytes) > 25 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="Audio too large")
-    # transcribe_audio makes a blocking Groq HTTP call. Run it in the threadpool so
+    # transcribe_audio makes a blocking OpenAI HTTP call. Run it in the threadpool so
     # it never freezes the event loop (which would stall every other request while a
     # student's answer is being transcribed).
     text = await run_in_threadpool(transcribe_audio, audio_bytes, audio.filename or "answer.webm")

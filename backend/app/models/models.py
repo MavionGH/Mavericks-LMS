@@ -8,7 +8,8 @@ import uuid
 
 try:
     from pgvector.sqlalchemy import Vector
-    _embedding_type = Vector(384)
+    from app.services.openai_config import EMBED_DIM
+    _embedding_type = Vector(EMBED_DIM)
 except ImportError:
     from sqlalchemy import Text as _TextFallback
     _embedding_type = _TextFallback()

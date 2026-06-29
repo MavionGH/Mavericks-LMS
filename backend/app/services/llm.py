@@ -1,12 +1,16 @@
-"""LLM wrapper — Groq (primary), OpenAI (fallback), then rule-based scoring."""
+"""LLM wrapper — OpenAI (gpt-4o-mini for dialog/quiz, gpt-4o for grading),
+then rule-based scoring as a graceful fallback."""
 import json
 import math
-import os
 import random
 import re
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+from app.services.openai_config import (
+    OPENAI_API_KEY,
+    OPENAI_GRADING_MODEL,
+    OPENAI_MODEL,
+    is_reasoning_model,
+)
 
 # ─── Keywords used in rule-based fallback for classification ───
 _GREETING_PATTERNS = re.compile(
@@ -27,38 +31,27 @@ _OFFTOPIC_PATTERNS = re.compile(
 )
 
 
-# Cache a single chat-model client process-wide. Constructing a ChatGroq /
-# ChatOpenAI client sets up an underlying HTTP client (connection pool); doing it
-# once and reusing it across every interview turn avoids re-creating that pool on
-# each LLM call (start, classify, follow-up, score) and keeps connections warm.
+# Cache a single chat-model client process-wide. Constructing a ChatOpenAI client
+# sets up an underlying HTTP client (connection pool); doing it once and reusing it
+# across every interview turn avoids re-creating that pool on each LLM call (start,
+# classify, follow-up) and keeps connections warm.
 _llm_client = None
 _llm_resolved = False
+_grading_llm = None
+_grading_resolved = False
 
 
 def get_llm():
-    """Return a cached LangChain chat model. Prefers Groq, then OpenAI."""
+    """Return a cached LangChain chat model for dialog (OpenAI gpt-4o-mini)."""
     global _llm_client, _llm_resolved
     if _llm_resolved:
         return _llm_client
-
-    if GROQ_API_KEY:
-        try:
-            from langchain_groq import ChatGroq
-            _llm_client = ChatGroq(
-                model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
-                temperature=0.7,
-                groq_api_key=GROQ_API_KEY,
-            )
-            _llm_resolved = True
-            return _llm_client
-        except Exception:
-            pass
 
     if OPENAI_API_KEY:
         try:
             from langchain_openai import ChatOpenAI
             _llm_client = ChatOpenAI(
-                model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+                model=OPENAI_MODEL,
                 temperature=0.7,
                 api_key=OPENAI_API_KEY,
             )
@@ -70,6 +63,34 @@ def get_llm():
     _llm_resolved = True
     _llm_client = None
     return _llm_client
+
+
+def get_grading_llm():
+    """Return a cached LangChain chat model for final grading.
+
+    Uses the premium grading model (gpt-4o by default; set OPENAI_GRADING_MODEL to
+    o3-mini for a high-reasoning alternative). Reasoning models (o1/o3/o4) don't
+    accept a custom temperature, so it's omitted for them.
+    """
+    global _grading_llm, _grading_resolved
+    if _grading_resolved:
+        return _grading_llm
+
+    if OPENAI_API_KEY:
+        try:
+            from langchain_openai import ChatOpenAI
+            kwargs = {"model": OPENAI_GRADING_MODEL, "api_key": OPENAI_API_KEY}
+            if not is_reasoning_model(OPENAI_GRADING_MODEL):
+                kwargs["temperature"] = 0.3  # low temp for consistent, fair scoring
+            _grading_llm = ChatOpenAI(**kwargs)
+            _grading_resolved = True
+            return _grading_llm
+        except Exception:
+            pass
+
+    _grading_resolved = True
+    _grading_llm = None
+    return _grading_llm
 
 
 def _extract_json(text: str) -> dict:
@@ -326,7 +347,7 @@ def llm_score_interview(
             "suggested_review": [f"Please complete the oral assessment for {chapter_title}."],
         }
 
-    llm = get_llm()
+    llm = get_grading_llm()
     dialogue = "\n".join(
         f"{m['speaker'].upper()}: {m['text']}" for m in transcript
     )
@@ -452,23 +473,11 @@ def _get_quiz_llm():
     A fresh random temperature each call helps every quiz come out different.
     """
     temperature = round(random.uniform(0.8, 1.0), 2)
-    if GROQ_API_KEY:
-        try:
-            from langchain_groq import ChatGroq
-            return ChatGroq(
-                model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
-                temperature=temperature,
-                groq_api_key=GROQ_API_KEY,
-                model_kwargs={"top_p": 0.9},
-            )
-        except Exception:
-            pass
-
     if OPENAI_API_KEY:
         try:
             from langchain_openai import ChatOpenAI
             return ChatOpenAI(
-                model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+                model=OPENAI_MODEL,
                 temperature=temperature,
                 top_p=0.9,
                 api_key=OPENAI_API_KEY,

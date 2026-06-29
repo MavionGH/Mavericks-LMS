@@ -5,7 +5,7 @@ Pipeline (Part 1 of the knowledge-base feature):
     1. Collect video transcript + article text for a module.
     2. Build structured documents {courseId, moduleId, source, content}.
     3. Create semantic, sentence-aware chunks (800-1200 chars, 150-200 overlap).
-    4. Embed every chunk with the project embedding model (all-MiniLM-L6-v2, 384-dim).
+    4. Embed every chunk with OpenAI text-embedding-3-small (truncated to EMBED_DIM).
     5. Upsert into Pinecone under namespace `course_{courseId}` with rich metadata.
 
 Vectors are keyed `courseId_moduleId_chunkIndex` so re-indexing a module only
@@ -20,6 +20,9 @@ import os
 import re
 from typing import List, Optional
 
+from app.services.embeddings import embed_texts, embeddings_available
+from app.services.openai_config import EMBED_DIM
+
 logger = logging.getLogger(__name__)
 
 # The key is stored as `pinecone-api` in .env; also accept the conventional name.
@@ -28,8 +31,7 @@ PINECONE_INDEX = os.getenv("PINECONE_INDEX", "course-content")
 PINECONE_CLOUD = os.getenv("PINECONE_CLOUD", "aws")
 PINECONE_REGION = os.getenv("PINECONE_REGION", "us-east-1")
 
-# Must match the project embedding model dimension (all-MiniLM-L6-v2 → 384).
-EMBED_DIM = 384
+# Must match the OpenAI embedding dimension (text-embedding-3-small → EMBED_DIM).
 
 # Semantic chunking parameters.
 CHUNK_MAX_CHARS = 1200
@@ -163,15 +165,12 @@ def index_module_content(
         return
 
     try:
-        from app.services.embeddings import _get_model
-
-        print("[EMBED] Loading HuggingFace model (all-MiniLM-L6-v2, 384-dim)…", flush=True)
-        model = _get_model()
-        if model is None:
-            print("[EMBED] ✗ Embedding model unavailable — skipped.", flush=True)
-            logger.warning("Embedding model unavailable; skipping Pinecone index for module %s", module_id)
+        if not embeddings_available():
+            print("[EMBED] ✗ Embeddings unavailable (check OPENAI_API_KEY) — skipped.", flush=True)
+            logger.warning("Embeddings unavailable; skipping Pinecone index for module %s", module_id)
             return
 
+        print(f"[EMBED] Embedding with OpenAI ({EMBED_DIM}-dim)…", flush=True)
         namespace = f"course_{course_id}"
         docs = build_documents(course_id, module_id, video_transcript, article_content)
         print(f"[EMBED] Sources to embed: {[d['source'] for d in docs] or 'none'}", flush=True)
@@ -183,11 +182,15 @@ def index_module_content(
             if not chunks:
                 continue
             print(f"[EMBED]   • {doc['source']}: {len(chunks)} chunk(s) → embedding…", flush=True)
-            embeddings = model.encode(chunks, show_progress_bar=False)
+            embeddings = embed_texts(chunks)
+            if embeddings is None:
+                print("[EMBED] ✗ Embedding call failed — skipped.", flush=True)
+                logger.warning("Embedding call failed; skipping Pinecone index for module %s", module_id)
+                return
             for emb, chunk in zip(embeddings, chunks):
                 vectors.append({
                     "id": f"{course_id}_{module_id}_{chunk_index}",
-                    "values": emb.tolist(),
+                    "values": emb,
                     "metadata": {
                         "courseId": course_id,
                         "moduleId": module_id,
@@ -234,13 +237,11 @@ def query_course_content(course_id: str, query: str, top_k: int = 12) -> List[st
     if index is None:
         return []
     try:
-        from app.services.embeddings import _get_model
-
-        model = _get_model()
-        if model is None:
+        query_vecs = embed_texts([query])
+        if not query_vecs:
             return []
 
-        query_vec = model.encode([query])[0].tolist()
+        query_vec = query_vecs[0]
         namespace = f"course_{course_id}"
         res = index.query(
             namespace=namespace,

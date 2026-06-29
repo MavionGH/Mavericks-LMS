@@ -1,7 +1,7 @@
-"""Speech-to-text transcription for uploaded module videos via Groq Whisper.
+"""Speech-to-text transcription for uploaded module videos via OpenAI Whisper.
 
 Flow: the teacher uploads a video -> we extract a small mono 16 kHz audio track
-with the (pip-bundled) ffmpeg binary -> send it to Groq's Whisper API -> return
+with the (pip-bundled) ffmpeg binary -> send it to OpenAI's Whisper API -> return
 the transcript text. Everything degrades gracefully: any failure returns None so
 the caller falls back to manual transcript entry instead of breaking the upload.
 """
@@ -11,12 +11,11 @@ import subprocess
 import tempfile
 from typing import Optional
 
+from app.services.openai_config import OPENAI_STT_MODEL, get_openai_client, has_openai
+
 logger = logging.getLogger(__name__)
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_WHISPER_MODEL = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3")
-
-# Container formats Groq's audio API accepts directly (used only if ffmpeg is
+# Container formats OpenAI's audio API accepts directly (used only if ffmpeg is
 # unavailable — normally we always down-convert to mp3 first).
 _DIRECT_FORMATS = {".mp4", ".webm", ".mp3", ".m4a", ".wav", ".mpeg", ".mpga", ".flac", ".ogg"}
 
@@ -36,7 +35,7 @@ def _extract_audio(src_path: str) -> Optional[str]:
 
     Whisper resamples to 16 kHz internally, so this loses no useful information
     while shrinking a 100 MB video to a few MB of speech audio (keeps us well
-    under Groq's per-file size limit). Returns the audio path or None on failure.
+    under OpenAI's 25 MB per-file size limit). Returns the audio path or None on failure.
     """
     ffmpeg = _ffmpeg_exe()
     if not ffmpeg:
@@ -59,13 +58,13 @@ def _extract_audio(src_path: str) -> Optional[str]:
 
 
 def transcribe_video_bytes(data: bytes, filename: str) -> Optional[str]:
-    """Transcribe an uploaded video's speech to text using Groq Whisper.
+    """Transcribe an uploaded video's speech to text using OpenAI Whisper.
 
     Returns the transcript string, or None if transcription is unavailable or
     fails (the caller should then fall back to manual transcript entry).
     """
-    if not GROQ_API_KEY:
-        logger.warning("GROQ_API_KEY not set — skipping auto-transcription.")
+    if not has_openai():
+        logger.warning("OPENAI_API_KEY not set — skipping auto-transcription.")
         return None
     if not data:
         return None
@@ -82,19 +81,21 @@ def transcribe_video_bytes(data: bytes, filename: str) -> Optional[str]:
         if audio_path:
             send_path = audio_path
         elif ext in _DIRECT_FORMATS:
-            # No ffmpeg, but Groq accepts this container as-is.
+            # No ffmpeg, but OpenAI accepts this container as-is.
             send_path = src_path
         else:
             logger.warning("No ffmpeg and unsupported format '%s' — skipping transcription.", ext)
             return None
 
-        from groq import Groq
-        client = Groq(api_key=GROQ_API_KEY)
+        client = get_openai_client()
+        if client is None:
+            logger.warning("OpenAI client unavailable — skipping auto-transcription.")
+            return None
         with open(send_path, "rb") as audio_f:
             audio_bytes = audio_f.read()
         result = client.audio.transcriptions.create(
             file=(os.path.basename(send_path), audio_bytes),
-            model=GROQ_WHISPER_MODEL,
+            model=OPENAI_STT_MODEL,
             response_format="text",
         )
         text = result if isinstance(result, str) else getattr(result, "text", "")

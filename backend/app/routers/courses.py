@@ -260,7 +260,7 @@ def add_chapter(
     db.commit()
     db.refresh(chapter)
 
-    # Embed transcript + article with HuggingFace and store the vectors in
+    # Embed transcript + article with OpenAI and store the vectors in
     # Pinecone (the single source of truth for vectors). The transcript/article
     # text itself stays in Supabase (the Chapter row above) for quiz generation.
     background_tasks.add_task(
@@ -351,7 +351,7 @@ def upload_video(
 
     url = upload_video_to_r2(file)
 
-    # Auto-generate the transcript from the uploaded video (Groq Whisper).
+    # Auto-generate the transcript from the uploaded video (OpenAI Whisper).
     # Returns "" on any failure so the teacher can still fill it in manually.
     transcript = transcribe_video_bytes(data, file.filename) or ""
     return {"video_url": url, "transcript": transcript}
