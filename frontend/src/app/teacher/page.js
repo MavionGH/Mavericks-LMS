@@ -61,7 +61,7 @@ function TeacherPanel() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadedFileName, setUploadedFileName] = useState("");
   const [uploadError, setUploadError] = useState("");
-  const [transcribing, setTranscribing] = useState(false);
+
 
   // Article document import state (txt / md / pdf / docx → article text)
   const [articleUploading, setArticleUploading] = useState(false);
