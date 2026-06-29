@@ -104,6 +104,8 @@ class CourseResponse(BaseModel):
     is_approved: bool = False
     created_at: datetime
     chapters: List[ChapterMinResponse] = []
+    student_count: Optional[int] = 0
+    pass_rate: Optional[float] = 0.0
 
     class Config:
         from_attributes = True
