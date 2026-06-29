@@ -45,7 +45,10 @@ def list_managed_courses(
     Teachers see only their own courses (all statuses).
     Admins see every course.
     """
-    q = db.query(Course).options(joinedload(Course.chapters))
+    q = db.query(Course).options(
+        joinedload(Course.chapters),
+        joinedload(Course.enrollments)
+    )
     if current_user.role != UserRole.ADMIN:
         q = q.filter(Course.teacher_id == current_user.id)
     courses = q.order_by(Course.created_at.desc()).all()

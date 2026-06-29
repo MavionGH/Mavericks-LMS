@@ -626,8 +626,8 @@ function TeacherPanel() {
                     <tr key={c.id}>
                       <td style={{ fontWeight: "700", color: "var(--text-title)" }}>{c.title}</td>
                       <td className="mono">{c.chapters?.length || 0}</td>
-                      <td className="mono">—</td>
-                      <td className="mono">—</td>
+                      <td className="mono">{c.student_count ?? 0}</td>
+                      <td className="mono">{c.pass_rate !== undefined && c.pass_rate !== null ? `${c.pass_rate}%` : "0%"}</td>
                       <td>
                         <span className={`badge ${c.is_published ? "badge-success" : "badge-warning"}`}>
                           {c.is_published ? "Live" : "Draft"}
