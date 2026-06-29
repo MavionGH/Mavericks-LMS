@@ -172,7 +172,7 @@ def start_interview_session(
     context = build_chapter_context(chapter)
     _t_ctx = time.perf_counter()
 
-    graph_state = start_interview(chapter_title, context, course_pass_threshold)
+    graph_state = start_interview(chapter_title, context, course_pass_threshold, current_user.name)
     _t_graph = time.perf_counter()
     logger.info(
         "interview/start timing — db=%.0fms context=%.0fms graph=%.0fms total=%.0fms",
@@ -272,7 +272,7 @@ def start_course_interview(
         query=f"key concepts and topics across all modules of {course.title} for a comprehensive oral assessment",
         db=db,
     )
-    graph_state = start_interview(course_title, context, course_pass_threshold)
+    graph_state = start_interview(course_title, context, course_pass_threshold, current_user.name)
 
     session = InterviewSession(
         user_id=current_user.id,

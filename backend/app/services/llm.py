@@ -108,15 +108,144 @@ def _extract_json(text: str) -> dict:
         raise
 
 
+def _get_question_llm():
+    """
+    LLM tuned for fresh, varied interview questions.
+
+    A new random temperature (0.85–1.05) plus top_p sampling is drawn on EVERY
+    call. That randomness is what makes questions differ both within one interview
+    and across separate interviews on the same module — without hardcoding or
+    caching any question text. Reasoning models ignore temperature/top_p, so we
+    omit them there.
+    """
+    temperature = round(random.uniform(0.85, 1.05), 2)
+    if OPENAI_API_KEY:
+        try:
+            from langchain_openai import ChatOpenAI
+            kwargs = {"model": OPENAI_MODEL, "api_key": OPENAI_API_KEY}
+            if not is_reasoning_model(OPENAI_MODEL):
+                kwargs["temperature"] = temperature
+                kwargs["top_p"] = 0.95
+            return ChatOpenAI(**kwargs)
+        except Exception:
+            pass
+    return None
+
+
+def llm_generate_greeting(chapter_title: str, student_name: str = "") -> str:
+    """
+    Mav's opening greeting — warm, interactive, and personalised by name. It
+    introduces Mav, names the course/module the interview covers, and invites the
+    student to say hello when ready. It does NOT ask the first question yet; the
+    first question is asked only after the student greets back.
+    """
+    name = (student_name or "").strip()
+    first = name.split()[0] if name else ""
+    llm = get_llm()
+    if llm:
+        from langchain_core.messages import HumanMessage, SystemMessage
+        system = (
+            "You are Mav, a warm, friendly AI interviewer on an online learning platform. "
+            "Write a SHORT spoken greeting (2-3 sentences) to open an oral interview.\n"
+            "RULES:\n"
+            "- Address the student by their first name if one is provided.\n"
+            "- Introduce yourself as Mav, their AI interviewer.\n"
+            "- Clearly mention that this interview is about the given course/module.\n"
+            "- Say it will be a quick, friendly chat of five questions, and they can ask you "
+            "to repeat or clarify anything anytime.\n"
+            "- End by warmly inviting them to say hello or let you know when they're ready to begin.\n"
+            "- Do NOT ask the first interview question yet.\n"
+            "- Sound natural and human, not scripted. Return ONLY the greeting text."
+        )
+        user = (
+            f"Course/module: {chapter_title}\n"
+            f"Student first name: {first or '(unknown)'}\n"
+            "Write Mav's greeting now."
+        )
+        try:
+            resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+            return resp.content.strip()
+        except Exception:
+            pass
+
+    # Rule-based fallback
+    hello = f"Hello {first}! " if first else "Hello! "
+    return (
+        f"{hello}Welcome — I'm Mav, your AI interviewer. Today we'll have a friendly chat "
+        f"with five short questions about {chapter_title}. Feel free to ask me to repeat or "
+        "clarify anything at any time. Whenever you're ready, just say hello and we'll begin!"
+    )
+
+
+def llm_greeting_transition(student_text: str, student_name: str = "") -> str:
+    """
+    Mav's brief, warm acknowledgement of the student's greeting, right before the
+    first interview question is asked. Does NOT contain a question — it's only the
+    human-like lead-in that the first question is appended to.
+    """
+    name = (student_name or "").strip()
+    first = name.split()[0] if name else ""
+    llm = get_llm()
+    if llm:
+        from langchain_core.messages import HumanMessage, SystemMessage
+        system = (
+            "You are Mav, a warm AI interviewer. The student just greeted you back at the "
+            "start of an oral interview. Reply with ONE short, friendly sentence that "
+            "acknowledges them (by first name if provided) and says you'll begin with the "
+            "first question. Do NOT actually ask a question. Return ONLY that sentence."
+        )
+        user = (
+            f"Student first name: {first or '(unknown)'}\n"
+            f"Student said: \"{student_text}\"\n"
+            "Write Mav's one-sentence lead-in now."
+        )
+        try:
+            resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+            return resp.content.strip()
+        except Exception:
+            pass
+
+    return (
+        f"Great to meet you, {first}! Let's get started with the first question."
+        if first else
+        "Great, let's get started with the first question."
+    )
+
+
+# Randomized question angles. Sampling a fresh one per call (especially for the
+# first question, which has no prior conversation to vary against) is what stops
+# separate interviews on the same module from always opening on the same concept.
+_QUESTION_ANGLES = (
+    "a core definition or terminology",
+    "an underlying principle or concept",
+    "a step-by-step process or workflow",
+    "a real-world application or example",
+    "a practical problem-solving scenario",
+    "a comparison, trade-off, or distinction",
+    "a common mistake or misconception",
+    "a hands-on experience the student may have had",
+    "a cause-and-effect relationship",
+    "a best practice and why it matters",
+)
+
+
 def llm_generate_question(
     chapter_title: str,
     context: str,
     transcript: list,
     question_number: int,
+    student_name: str = "",
+    asked_questions: list = None,
 ) -> str:
-    llm = get_llm()
+    llm = _get_question_llm()
     history = "\n".join(
         f"{m['speaker'].upper()}: {m['text']}" for m in transcript[-6:]
+    )
+    name = (student_name or "").strip()
+    first = name.split()[0] if name else ""
+    asked_questions = asked_questions or []
+    asked_block = (
+        "\n".join(f"- {q}" for q in asked_questions) if asked_questions else "None yet"
     )
 
     # Detect if the last student answer was a non-answer / skip
@@ -131,10 +260,18 @@ def llm_generate_question(
     )
     last_was_skip = any(p in last_student.lower() for p in _NO_ANSWER_PHRASES)
     skip_hint = (
-        "\nIMPORTANT: The student just said they don't know or skipped. "
-        "Ask a DIFFERENT topic from the module — do NOT follow up on the topic they skipped."
+        "\nIMPORTANT: The student just said they don't know or skipped this one. "
+        "Start your reply with a brief, warm, human acknowledgement (e.g. \"No worries"
+        f"{', ' + first if first else ''}, that's okay — let's try a different one.\") "
+        "then ask a question on a DIFFERENT topic from the module. Do NOT follow up on the "
+        "topic they skipped."
         if last_was_skip else ""
     )
+    # A fresh random token + a randomly chosen angle nudge sampling so repeated
+    # interviews on the same module don't converge on the same phrasing or always
+    # open on the same concept.
+    nonce = random.randint(1000, 9999)
+    angle = random.choice(_QUESTION_ANGLES)
 
     if llm:
         from langchain_core.messages import HumanMessage, SystemMessage
@@ -144,14 +281,18 @@ def llm_generate_question(
             "RULES:\n"
             "- Keep the question UNDER 25 WORDS whenever possible.\n"
             "- Ask only ONE thing per question. Never ask multi-part questions.\n"
-            "- Be conversational and natural — like a real interviewer speaking.\n"
+            "- Be conversational and natural — like a real interviewer speaking. You may "
+            "occasionally address the student by their first name to feel personal.\n"
             "- Test deep understanding, not memorization.\n"
             "- Use follow-up style when prior genuine answers exist.\n"
             "- Adapt the difficulty to the student's previous answers: go deeper or harder "
             "after strong answers, simpler after weak ones.\n"
             "- Vary the style across the interview — mix conceptual, practical/applied, "
-            "scenario-based, and behavioural questions. Never repeat a question already asked.\n"
-            "- Return ONLY the question text, no preamble, no labels.\n"
+            "scenario-based, and behavioural questions.\n"
+            "- NEVER repeat or paraphrase any question already asked (listed below). "
+            "Each question in the interview must be unique and cover a different angle.\n"
+            "- Return ONLY the spoken text (a short lead-in is allowed only when "
+            "acknowledging a skip), no preamble, no labels.\n"
             "GOOD examples: 'Tell me about a data pipeline you built.' | "
             "'What is the difference between ETL and ELT?' | "
             "'How do you handle schema evolution in production?' | "
@@ -160,11 +301,17 @@ def llm_generate_question(
             "data processing architecture involving multiple ingestion patterns...'"
         )
         user = (
-            f"Module: {chapter_title}\n\n"
+            f"Module: {chapter_title}\n"
+            f"Student first name: {first or '(unknown)'}\n\n"
             f"Content:\n{context[:6000]}\n\n"
+            f"Questions already asked (do NOT repeat these):\n{asked_block}\n\n"
             f"Conversation so far:\n{history or 'None yet'}\n\n"
             f"This is question #{question_number} of up to 5. "
-            f"Ask the next interview question (under 25 words).{skip_hint}"
+            f"Frame this question around {angle} drawn from the module — pick a part of "
+            f"the content not yet covered by earlier questions. "
+            f"Ask the next, unique interview question (under 25 words). "
+            f"(Variation token {nonce}: use it only to vary your wording; never mention it.)"
+            f"{skip_hint}"
         )
         resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
         return resp.content.strip()
@@ -251,11 +398,14 @@ def llm_handle_chitchat(
     student_text: str,
     current_question: str,
     category: str,
+    student_name: str = "",
 ) -> str:
     """
     Generate Mav's natural conversational reply to a non-answer input.
     Always ends by re-asking the active interview question.
     """
+    name = (student_name or "").strip()
+    first = name.split()[0] if name else ""
     llm = get_llm()
     if llm:
         from langchain_core.messages import HumanMessage, SystemMessage
@@ -266,6 +416,7 @@ def llm_handle_chitchat(
             "(answer their question, greet them back, clarify the interview question, etc.). "
             "Do NOT say 'I'll answer that at the end' or defer. Answer RIGHT NOW.\n"
             "  PART 2 — After your response, transition back and re-ask the current interview question.\n"
+            "You may address the student by their first name to feel personal. "
             "Keep the whole reply concise (2-4 sentences). "
             "Return ONLY the response text, no preamble or labels."
         )
@@ -291,6 +442,7 @@ def llm_handle_chitchat(
         hint = category_hints.get(category, "Respond naturally, then re-ask the interview question.")
         user = (
             f"{hint}\n"
+            f"Student first name: {first or '(unknown)'}\n"
             f"Student said: \"{student_text}\"\n"
             f"Current interview question: \"{current_question}\"\n"
             "Now write Mav's response (answer their message first, then re-ask the question)."
@@ -333,8 +485,11 @@ def llm_score_interview(
     pause_metrics: list,
     pass_threshold: int,
 ) -> dict:
-    student_msgs = [m for m in transcript if m["speaker"] == "student"]
-    num_answers = len(student_msgs)
+    # Count GENUINE interview answers only. Each real answer records exactly one
+    # pause-metric entry, whereas the greeting exchange and any chitchat turns add
+    # student lines to the transcript WITHOUT a pause metric — so pause_metrics is
+    # the authoritative count of questions actually answered (never inflated).
+    num_answers = len(pause_metrics) if pause_metrics else 0
     if num_answers == 0:
         return {
             "technical_score": 0.0,
@@ -700,8 +855,10 @@ def _fallback_questions(title: str, context: str) -> list:
 
 
 def _fallback_score(transcript: list, pause_metrics: list, threshold: int, title: str) -> dict:
-    student_msgs = [m["text"] for m in transcript if m["speaker"] == "student"]
-    num_answers = len(student_msgs)
+    # Genuine answers = number of recorded pause-metric entries (one per real
+    # answer). The greeting reply and any chitchat add student transcript lines but
+    # no pause metric, so they never inflate this count.
+    num_answers = len(pause_metrics) if pause_metrics else 0
     if num_answers == 0:
         return {
             "technical_score": 0.0,
@@ -714,6 +871,9 @@ def _fallback_score(transcript: list, pause_metrics: list, threshold: int, title
             "suggested_review": [f"Please complete the oral assessment for {title}."],
         }
 
+    # Use the last `num_answers` student lines as the genuine answers for length
+    # metrics (excludes the earlier greeting reply if present).
+    student_msgs = [m["text"] for m in transcript if m["speaker"] == "student"][-num_answers:]
     total_words = sum(len(m.split()) for m in student_msgs)
     avg_len = total_words / max(num_answers, 1)
 

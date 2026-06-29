@@ -1,0 +1,2 @@
+voice of the ai girl is not good like its robotics type is their any other option free source but clear humaize good women voice in oral interview solve this issue dont break anything test everything in codebase 
+you have all my permissions so dont ask about them 
