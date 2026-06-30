@@ -1367,7 +1367,7 @@ function TeacherPanel() {
                   <table>
                     <thead>
                       <tr>
-                        <th>Course Title</th><th>Chapters</th><th>Students</th><th>Pass Rate</th><th>Status</th><th>Actions</th>
+                        <th>Course Title</th><th>Students</th><th>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1383,18 +1383,16 @@ function TeacherPanel() {
                           <td style={{ fontWeight: "700", color: "#000000" }}>
                             {c.title}
                           </td>
-                          <td className="mono">{c.chapters?.length || 0}</td>
                           <td className="mono">{c.student_count ?? 0}</td>
-                          <td className="mono">{c.pass_rate !== undefined && c.pass_rate !== null ? `${c.pass_rate}%` : "0%"}</td>
-                          <td>
-                            <span className={`badge ${c.is_published ? "badge-success" : "badge-warning"}`}>
-                              {c.is_published ? "Live" : "Draft"}
-                            </span>
-                          </td>
                           <td style={{ display: "flex", gap: "8px" }} onClick={(e) => e.stopPropagation()}>
-                            <button className="btn btn-secondary btn-sm" onClick={() => { setSelectedCourseId(c.id); setActiveTab("modules"); }}>Add Modules</button>
-                            <button className="btn btn-secondary btn-sm" onClick={() => handlePublish(c.id, c.is_published)}>
-                              {c.is_published ? "Unpublish" : "Publish"}
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              onClick={() => {
+                                setSelectedUngradedCourse(c);
+                                loadUngradedStudents(c.id);
+                              }}
+                            >
+                              Select Student
                             </button>
                           </td>
                         </tr>

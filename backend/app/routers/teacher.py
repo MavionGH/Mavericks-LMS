@@ -142,20 +142,20 @@ def list_ungraded_courses(
         .all()
     )
     
-    courses_with_ungraded = []
+    validated_courses = []
     for c in courses:
-        has_ungraded = False
+        ungraded_student_ids = set()
         for s in ungraded_sessions:
             if s.course_id == c.id:
-                has_ungraded = True
-                break
+                ungraded_student_ids.add(s.user_id)
             elif s.chapter and s.chapter.course_id == c.id:
-                has_ungraded = True
-                break
-        if has_ungraded:
-            courses_with_ungraded.append(c)
+                ungraded_student_ids.add(s.user_id)
+        if ungraded_student_ids:
+            res_val = CourseResponse.model_validate(c)
+            res_val.student_count = len(ungraded_student_ids)
+            validated_courses.append(res_val)
             
-    return [CourseResponse.model_validate(c) for c in courses_with_ungraded]
+    return validated_courses
 
 
 @router.get("/ungraded-students")
