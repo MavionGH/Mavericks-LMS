@@ -108,28 +108,40 @@ def _extract_json(text: str) -> dict:
         raise
 
 
-def _get_question_llm():
-    """
-    LLM tuned for fresh, varied interview questions.
+# ── Cached question-generation LLM ──────────────────────────────────────────
+# PERF FIX: The old _get_question_llm() called ChatOpenAI(...) on EVERY
+# question, rebuilding the underlying httpx connection pool each time and
+# adding 2–5 s of cold-connection overhead per turn.
+# Now the client is cached process-wide (same pattern as get_llm/get_grading_llm)
+# and per-call temperature randomness is applied via .bind() so question variety
+# is fully preserved without the pool-rebuild penalty.
+_question_llm_client = None
+_question_llm_resolved = False
 
-    A new random temperature (0.85–1.05) plus top_p sampling is drawn on EVERY
-    call. That randomness is what makes questions differ both within one interview
-    and across separate interviews on the same module — without hardcoding or
-    caching any question text. Reasoning models ignore temperature/top_p, so we
-    omit them there.
+
+def _get_question_llm():
+    """Return the cached question-generation LLM (gpt-4o-mini, warm HTTP pool).
+
+    Call .bind(temperature=T) on the returned object to vary temperature
+    per-question without rebuilding the client.
     """
-    temperature = round(random.uniform(0.85, 1.05), 2)
+    global _question_llm_client, _question_llm_resolved
+    if _question_llm_resolved:
+        return _question_llm_client
+
     if OPENAI_API_KEY:
         try:
             from langchain_openai import ChatOpenAI
             kwargs = {"model": OPENAI_MODEL, "api_key": OPENAI_API_KEY}
             if not is_reasoning_model(OPENAI_MODEL):
-                kwargs["temperature"] = temperature
+                kwargs["temperature"] = 0.9   # default; overridden per-call
                 kwargs["top_p"] = 0.95
-            return ChatOpenAI(**kwargs)
+            _question_llm_client = ChatOpenAI(**kwargs)
         except Exception:
-            pass
-    return None
+            _question_llm_client = None
+
+    _question_llm_resolved = True
+    return _question_llm_client
 
 
 def llm_generate_greeting(chapter_title: str, student_name: str = "") -> str:
@@ -237,7 +249,14 @@ def llm_generate_question(
     student_name: str = "",
     asked_questions: list = None,
 ) -> str:
-    llm = _get_question_llm()
+    # Draw a fresh random temperature for this question and bind it to the
+    # cached client — preserves variety without rebuilding the HTTP pool.
+    temperature = round(random.uniform(0.85, 1.05), 2)
+    base_llm = _get_question_llm()
+    if base_llm is not None and not is_reasoning_model(OPENAI_MODEL):
+        llm = base_llm.bind(temperature=temperature)
+    else:
+        llm = base_llm
     history = "\n".join(
         f"{m['speaker'].upper()}: {m['text']}" for m in transcript[-6:]
     )
@@ -326,6 +345,38 @@ def llm_generate_question(
     return fallback_questions[idx]
 
 
+# Pre-compiled fast-path patterns for classify — checked BEFORE the LLM call
+# to skip the classify round-trip on the most common (genuine answer) case.
+_CLASSIFY_CHITCHAT_RE = re.compile(
+    r"\b(how are you|how do you do|you doing|what('?s| is) up|how'?s it going|"
+    r"what do you mean|can you (explain|clarify|elaborate|rephrase|repeat)|"
+    r"i don'?t understand|who (are|is) you|your name|tell me a joke|joke|"
+    r"weather|the time|what time|today'?s date)\b",
+    re.IGNORECASE,
+)
+_CLASSIFY_GREETING_RE = re.compile(
+    r"^\s*(hi+|hello+|hey+|good (morning|afternoon|evening|day)|howdy|sup|yo|greetings)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_obvious_answer(text: str) -> bool:
+    """Return True when we can classify locally as 'answer' without an LLM call.
+
+    Saves ~1-2 s per turn on the common case (student gives a substantive reply).
+    Conservative: only short-circuits when the text is long, doesn't look like
+    chitchat/greeting/clarification, and isn't phrased as a question.
+    """
+    t = text.strip()
+    if len(t.split()) < 10:
+        return False          # short → ambiguous, let LLM decide
+    if t.endswith("?"):
+        return False          # phrased as a question
+    if _CLASSIFY_GREETING_RE.match(t) or _CLASSIFY_CHITCHAT_RE.search(t):
+        return False          # obvious chitchat cue
+    return True
+
+
 def llm_classify_response(
     student_text: str,
     current_question: str,
@@ -342,7 +393,7 @@ def llm_classify_response(
     """
     text = student_text.strip()
 
-    # ── Fast path: explicit skip / I-don't-know → treat as an answer to advance ──
+    # ── Fast path 1: explicit skip / I-don't-know → treat as answer ──
     _SKIP_PHRASES_SET = (
         "i don't know", "i dont know", "i do not know",
         "not sure", "no idea", "no experience",
@@ -354,7 +405,12 @@ def llm_classify_response(
     if any(phrase in text_lower for phrase in _SKIP_PHRASES_SET):
         return "answer"
 
-    # ── LLM path ──
+    # ── Fast path 2: long, substantive, non-chitchat → skip LLM classify call ──
+    # Saves ~1-2 s per turn on the common case (student gives a real answer).
+    if _is_obvious_answer(text):
+        return "answer"
+
+    # ── LLM path (short / ambiguous inputs only) ──
     llm = get_llm()
     if llm:
         from langchain_core.messages import HumanMessage, SystemMessage

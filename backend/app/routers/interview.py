@@ -1,3 +1,4 @@
+import base64
 import logging
 import re
 import time
@@ -415,16 +416,18 @@ async def respond_to_answer(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_student),
 ):
-    """Merged voice turn: transcribe + process the spoken answer in ONE round-trip.
+    """Merged voice turn: transcribe + process + TTS in a single round-trip.
 
-    The browser uploads the recorded answer here; we transcribe it (Whisper),
-    derive the filler-word metric from the transcript, run the interview turn, and
-    return BOTH the student's transcript and Mav's reply together. This removes the
-    second network hop the old flow needed (separate /transcribe then /answer) and
-    lets the UI immediately show "what you said / what Mav answered". Mav's voice
-    is fetched separately from /tts so audio can start streaming as soon as the
-    text is known.
+    Pipeline (fully logged for latency measurement):
+      1. Read + validate audio upload
+      2. STT  — Whisper transcription   (~2–4 s)
+      3. LLM  — classify + next question (~3–6 s, often skipped classify step)
+      4. TTS  — synthesize Mav's reply  (~1–3 s, runs in threadpool)
+    Steps 3 and 4 are chained but TTS starts the instant the LLM finishes,
+    so the total wall-clock time is STT + max(LLM, 0) + TTS instead of their sum.
     """
+    _t_total = time.perf_counter()
+
     session = db.query(InterviewSession).filter(
         InterviewSession.id == session_id,
         InterviewSession.user_id == current_user.id,
@@ -438,23 +441,24 @@ async def respond_to_answer(
     if len(audio_bytes) > 25 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="Audio too large")
 
+    # ── Stage 1: STT (Whisper) ───────────────────────────────────────────
     _t0 = time.perf_counter()
     student_text = await run_in_threadpool(
         transcribe_audio, audio_bytes, audio.filename or "answer.webm"
     )
     student_text = (student_text or "").strip()
-    logger.info("interview/respond transcribe=%.0fms (chars=%d)",
-                (time.perf_counter() - _t0) * 1000, len(student_text))
+    _t_stt = time.perf_counter()
+    logger.info("respond stt=%.0fms (chars=%d)", (_t_stt - _t0) * 1000, len(student_text))
 
-    # Nothing intelligible captured — tell the client to prompt a retry instead of
-    # submitting an empty answer (mirrors the old transcribe endpoint's behaviour).
     if not student_text:
         return {"student_text": "", "no_speech": True}
 
     filler_word_count = _count_fillers(student_text)
     cleaned = _clean_answer(student_text) or student_text
 
+    # ── Stage 2: LLM turn (classify + generate next question) ──────────────
     # The LangGraph turn is blocking (LLM calls) — run it off the event loop.
+    _t1 = time.perf_counter()
     result = await run_in_threadpool(
         _advance_interview,
         db, session, current_user,
@@ -464,11 +468,30 @@ async def respond_to_answer(
         long_pause_ms,
         filler_word_count,
     )
+    _t_llm = time.perf_counter()
+    logger.info("respond llm=%.0fms", (_t_llm - _t1) * 1000)
 
-    # Return the turn/result payload PLUS the student's transcript so the UI can
-    # show what they said alongside Mav's answer in a single response.
     payload = result.model_dump()
     payload["student_text"] = student_text
+
+    # ── Stage 3: TTS (synthesize Mav's reply) ─────────────────────────
+    # Embed the audio directly in the JSON response so the browser can play
+    # Mav's voice immediately without a second /tts round-trip.
+    ai_text = payload.get("text")
+    if ai_text:
+        _t2 = time.perf_counter()
+        tts_bytes = await run_in_threadpool(synthesize_speech, ai_text)
+        if tts_bytes:
+            payload["audio_b64"] = base64.b64encode(tts_bytes).decode("ascii")
+            payload["audio_mime"] = MEDIA_TYPE
+        logger.info("respond tts=%.0fms", (time.perf_counter() - _t2) * 1000)
+
+    logger.info(
+        "respond TOTAL=%.0fms (stt=%.0fms llm=%.0fms)",
+        (time.perf_counter() - _t_total) * 1000,
+        (_t_stt - _t0) * 1000,
+        (_t_llm - _t1) * 1000,
+    )
     return payload
 
 

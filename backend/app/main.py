@@ -116,12 +116,13 @@ async def lifespan(app: FastAPI):
     # 30–120 s. Likewise, pre-compiling the LangGraph state machines avoids
     # graph-compilation overhead on the first request.
     try:
-        from app.services.llm import get_llm, get_grading_llm
+        from app.services.llm import get_llm, get_grading_llm, _get_question_llm
         from app.services.interview_graph import _get_start_graph, _get_answer_graph
-        get_llm()           # initialises ChatOpenAI + connection pool
-        get_grading_llm()   # initialises grading model client
-        _get_start_graph()  # compiles GreetingNode → FirstQuestion graph
-        _get_answer_graph() # compiles record_answer → follow_up/score graph
+        get_llm()             # dialog / chitchat client
+        get_grading_llm()     # final scoring client
+        _get_question_llm()   # question-generation client (now cached — no more per-Q pool rebuild)
+        _get_start_graph()    # compiles GreetingNode graph
+        _get_answer_graph()   # compiles record_answer → follow_up/score graph
         logger.info("LLM clients and LangGraph graphs warmed up — interview startup will be fast.")
     except Exception as exc:
         logger.warning("LLM warm-up skipped (will cold-start on first interview): %s", exc)

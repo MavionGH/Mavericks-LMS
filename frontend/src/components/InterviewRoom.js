@@ -119,6 +119,8 @@ export default function InterviewRoom({
   const [hasStarted, setHasStarted] = useState(false);   // consent gate passed
   const [preparing, setPreparing] = useState(false);     // acquiring screen share
   const [recordingNotice, setRecordingNotice] = useState(""); // non-fatal warning
+  // True from when interview starts until student first speaks — shows "greeting" label
+  const [isGreeting, setIsGreeting] = useState(false);
 
   const studentVideoRef = useRef(null);
   const cameraStreamRef = useRef(null);
@@ -192,7 +194,11 @@ export default function InterviewRoom({
   // when the voice ACTUALLY starts playing — never before — and off the instant it
   // ends. `onEnd` is guaranteed to fire exactly once, so the mic always reopens
   // after Mav finishes.
-  const speakText = useCallback((text, onEnd) => {
+  // onStart        — called ONCE when Mav's audio actually begins playing; use it
+  //                  to flip the status label to "AI SPEAKING" at the right moment.
+  // prefetchedBlobUrl — blob URL already decoded from the /respond audio_b64 field;
+  //                  when present we skip the /tts round-trip entirely.
+  const speakText = useCallback((text, onEnd, onStart, prefetchedBlobUrl) => {
     stopTtsAudio();
     if (speakWatchdogRef.current) {
       clearInterval(speakWatchdogRef.current);
@@ -201,6 +207,7 @@ export default function InterviewRoom({
     if (typeof window !== "undefined") window.speechSynthesis?.cancel();
 
     let finished = false;
+    let speakingStarted = false;
     const finish = () => {
       if (finished) return;
       finished = true;
@@ -212,15 +219,57 @@ export default function InterviewRoom({
       setAiVoiceActive(false);
       if (onEnd) onEnd();
     };
+    // Idempotent: flip avatar on and fire onStart the very first time audio plays.
+    const startSpeaking = () => {
+      if (speakingStarted) return;
+      speakingStarted = true;
+      tlog("TTS audio started — avatar lip-syncs, status → AI SPEAKING");
+      setAiVoiceActive(true);
+      if (onStart) onStart();
+    };
 
-    const speakWithBrowser = () => speakWithBrowserRef.current?.(text, finish);
+    const speakWithBrowser = () => speakWithBrowserRef.current?.(text, finish, startSpeaking);
 
     if (!text || !text.trim()) {
       finish();
       return;
     }
 
-    // ── Preferred path: neural TTS (Kokoro) served by the backend ──
+    // ── Shared helper: attach events and start an <audio> element ──
+    const playAudioUrl = (url) => {
+      const audio = new Audio(url);
+      ttsAudioRef.current = audio;
+      // onplay fires when the browser starts streaming — primary trigger.
+      audio.onplay = startSpeaking;
+      audio.onended = () => {
+        if (ttsAudioRef.current === audio) ttsAudioRef.current = null;
+        try { URL.revokeObjectURL(url); } catch { /* noop */ }
+        finish();
+      };
+      audio.onerror = () => {
+        if (ttsAudioRef.current === audio) ttsAudioRef.current = null;
+        try { URL.revokeObjectURL(url); } catch { /* noop */ }
+        if (!finished) speakWithBrowser();
+      };
+      audio.play().then(() => {
+        // play() resolved = browser accepted playback; fire startSpeaking as a
+        // backup in case onplay was delayed or never fired on this browser.
+        startSpeaking();
+      }).catch((e) => {
+        tlog("neural TTS play() blocked — falling back to browser voice: " + (e?.message || e));
+        if (ttsAudioRef.current === audio) ttsAudioRef.current = null;
+        try { URL.revokeObjectURL(url); } catch { /* noop */ }
+        if (!finished) speakWithBrowser();
+      });
+    };
+
+    // ── Fast path: audio already embedded in the /respond response ──
+    if (prefetchedBlobUrl) {
+      playAudioUrl(prefetchedBlobUrl);
+      return;
+    }
+
+    // ── Preferred path: neural TTS served by the backend ──
     (async () => {
       try {
         const res = await authFetch("/api/interview/tts", {
@@ -230,28 +279,7 @@ export default function InterviewRoom({
         if (!res.ok) throw new Error("tts http " + res.status);
         const blob = await res.blob();
         if (finished) return; // cancelled while synthesizing
-        const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
-        ttsAudioRef.current = audio;
-        audio.onplay = () => { tlog("neural TTS playing (avatar lip-syncs)"); setAiVoiceActive(true); };
-        audio.onended = () => {
-          if (ttsAudioRef.current === audio) ttsAudioRef.current = null;
-          try { URL.revokeObjectURL(url); } catch { /* noop */ }
-          finish();
-        };
-        audio.onerror = () => {
-          if (ttsAudioRef.current === audio) ttsAudioRef.current = null;
-          try { URL.revokeObjectURL(url); } catch { /* noop */ }
-          if (!finished) speakWithBrowser();
-        };
-        try {
-          await audio.play();
-        } catch (e) {
-          tlog("neural TTS play() blocked — falling back to browser voice: " + (e?.message || e));
-          if (ttsAudioRef.current === audio) ttsAudioRef.current = null;
-          try { URL.revokeObjectURL(url); } catch { /* noop */ }
-          if (!finished) speakWithBrowser();
-        }
+        playAudioUrl(URL.createObjectURL(blob));
       } catch (e) {
         tlog("neural TTS unavailable — using browser voice: " + (e?.message || e));
         if (!finished) speakWithBrowser();
@@ -262,7 +290,7 @@ export default function InterviewRoom({
   // Browser speechSynthesis fallback (the original robotic-but-reliable voice),
   // used only when the neural TTS can't be reached. `finish` is the shared
   // completion callback from speakText.
-  const speakWithBrowserTTS = useCallback((text, finish) => {
+  const speakWithBrowserTTS = useCallback((text, finish, startSpeaking) => {
     if (typeof window === "undefined" || !window.speechSynthesis) {
       finish();
       return;
@@ -299,6 +327,7 @@ export default function InterviewRoom({
     const markSpeaking = () => {
       if (!loggedFirstAudio) { loggedFirstAudio = true; tlog("TTS first audio (onstart/onboundary)"); }
       setAiVoiceActive(true);
+      startSpeaking?.(); // fire onStart callback (idempotent guard is in startSpeaking itself)
     };
     utter.onstart = markSpeaking;
     utter.onboundary = markSpeaking;
@@ -330,7 +359,9 @@ export default function InterviewRoom({
   // Apply one AI turn returned by the backend (shared by the typed and voice
   // paths): either deliver Mav's next question/chitchat and reopen the mic when
   // she finishes, or — on the final turn — speak the goodbye and then show results.
-  const applyTurnResponse = useCallback((data) => {
+  // prefetchedAudioUrl: blob URL decoded from the /respond audio_b64 field (voice
+  // path only); null for typed answers and the goodbye / result turn.
+  const applyTurnResponse = useCallback((data, prefetchedAudioUrl = null) => {
     if (data.passed !== undefined) {
       // Interview is over, but say the goodbye DURING the interview (avatar still
       // lip-syncing) and only switch to the results page once Mav's voice ends.
@@ -340,13 +371,13 @@ export default function InterviewRoom({
       setResults(data);
       setWaitingForStudent(false);
       setMicActive(false);
-      setStatus("AI SPEAKING");
       setCurrentAIText(goodbye);
       setTranscript((prev) => [...prev, { speaker: "ai", text: goodbye }]);
+      // Status flips to "AI SPEAKING" only once the goodbye audio actually starts.
       speakText(goodbye, () => {
         setIsFinished(true);
         setStatus("COMPLETE");
-      });
+      }, () => setStatus("AI SPEAKING"));
     } else {
       setCurrentAIText(data.text);
       // Only advance the question counter on a real interview answer, not chitchat.
@@ -354,8 +385,9 @@ export default function InterviewRoom({
         setQuestionNum(data.question_number);
       }
       setTranscript((prev) => [...prev, { speaker: "ai", text: data.text }]);
-      setStatus("AI SPEAKING");
       setWaitingForStudent(false);
+      // Status flips to "AI SPEAKING" only once audio actually starts — no more
+      // silent "speaking" label while the TTS audio is still loading.
       speakText(data.text, () => {
         setTimeout(() => {
           setWaitingForStudent(true);
@@ -364,7 +396,7 @@ export default function InterviewRoom({
           tlog("handoff: opening mic for student answer");
           if (startListeningRef.current) startListeningRef.current();
         }, MIC_HANDOFF_MS);
-      });
+      }, () => setStatus("AI SPEAKING"), prefetchedAudioUrl);
     }
   }, [speakText]);
 
@@ -522,7 +554,18 @@ export default function InterviewRoom({
       longPauseMsRef.current = 0;
       fillerCountRef.current = 0;
 
-      applyTurnResponse(data);
+      // Decode the TTS audio that /respond embedded in the JSON so Mav's voice
+      // can start immediately — no separate /tts round-trip, no silent gap.
+      let prefetchedAudioUrl = null;
+      if (data.audio_b64 && data.audio_mime) {
+        try {
+          const bytes = Uint8Array.from(atob(data.audio_b64), (c) => c.charCodeAt(0));
+          const blob = new Blob([bytes], { type: data.audio_mime });
+          prefetchedAudioUrl = URL.createObjectURL(blob);
+        } catch { /* ignore — speakText falls back to /tts */ }
+      }
+
+      applyTurnResponse(data, prefetchedAudioUrl);
     } catch (err) {
       setError(friendlyNetworkError(err));
       setWaitingForStudent(true);
@@ -710,6 +753,7 @@ export default function InterviewRoom({
   const startSession = useCallback(async () => {
     setLoading(true);
     setError("");
+    setIsGreeting(true); // Mav is about to greet — not processing a student answer
     try {
       const data = await doStart();
       setSessionId(data.session_id);
@@ -720,7 +764,7 @@ export default function InterviewRoom({
       const msg = data.text;
       setTranscript([{ speaker: "ai", text: msg }]);
       setCurrentAIText(msg);
-      setStatus("AI SPEAKING");
+      setStatus("AI SPEAKING"); // Mav is greeting — label it clearly from the start
       setWaitingForStudent(false);
 
       // The interview screen is now ready — START recording here so the (often
@@ -729,6 +773,7 @@ export default function InterviewRoom({
       beginSessionCapture();
 
       speakText(msg, () => {
+        setIsGreeting(false); // greeting done — subsequent AI turns are answer responses
         setTimeout(() => {
           setWaitingForStudent(true);
           setStatus("WAITING FOR YOU");
@@ -736,8 +781,9 @@ export default function InterviewRoom({
           tlog("handoff: opening mic after greeting");
           if (startListeningRef.current) startListeningRef.current();
         }, MIC_HANDOFF_MS);
-      });
+      }, () => setStatus("AI SPEAKING"));
     } catch (err) {
+      setIsGreeting(false);
       setError(friendlyNetworkError(err));
       // The interview never started — release the prepared (never-recorded) screen
       // share so the student isn't left sharing their screen for nothing.
@@ -766,21 +812,38 @@ export default function InterviewRoom({
   const beginInterview = useCallback(async () => {
     setPreparing(true);
     setRecordingNotice("");
+
+    // 1) Camera must be accessible
+    try {
+      const camTest = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      camTest.getTracks().forEach((t) => t.stop());
+    } catch {
+      setPreparing(false);
+      setRecordingNotice("⚠️ Camera access is required. Please allow camera permission in your browser and try again.");
+      return;
+    }
+
+    // 2) Microphone must be accessible
+    try {
+      const micTest = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      micTest.getTracks().forEach((t) => t.stop());
+    } catch {
+      setPreparing(false);
+      setRecordingNotice("⚠️ Microphone access is required. Please allow microphone permission in your browser and try again.");
+      return;
+    }
+
+    // 3) Screen sharing is mandatory — interview cannot proceed without it
     const ok = await startSessionRecording();
     setPreparing(false);
     if (ok) {
       setHasStarted(true);
     } else {
       setRecordingNotice(
-        "Screen sharing wasn't enabled, so this interview can't be recorded. Click “Share screen & begin” to try again, or continue without recording."
+        "⚠️ Screen sharing is required to start the interview. Click the button again and select your screen or this tab — make sure to tick \"Share tab audio\" so Mav's voice is captured."
       );
     }
   }, [startSessionRecording]);
-
-  const continueWithoutRecording = useCallback(() => {
-    setRecordingNotice("");
-    setHasStarted(true);
-  }, []);
 
   useEffect(() => {
     // Kick off the interview turn only AFTER the consent gate is passed.
@@ -1131,44 +1194,54 @@ export default function InterviewRoom({
     }
   };
 
-  // ── Consent gate ──────────────────────────────────────────────────────────
-  // Screen capture can only be requested from a user gesture, and recording the
-  // interview requires the student's explicit consent, so we gate the whole
-  // session behind a single "Share screen & begin" click.
+  // ── Consent gate (screen share + camera + mic are mandatory) ────────────────────
   if (!hasStarted) {
     return (
       <>
         <Navbar />
         <div className="page-container" style={{ display: "grid", placeItems: "center", minHeight: "100vh", backgroundColor: "var(--bg-canvas)" }}>
-          <div className="card" style={{ maxWidth: 520, padding: "40px", textAlign: "center", backgroundColor: "#ffffff" }}>
+          <div className="card" style={{ maxWidth: 540, padding: "40px", textAlign: "center", backgroundColor: "#ffffff" }}>
             <h2 style={{ fontSize: "22px", fontWeight: "700", color: "var(--text-title)", marginBottom: "12px" }}>{heading}</h2>
-            <p style={{ color: "var(--text-muted)", fontSize: "14px", lineHeight: "1.6", marginBottom: "20px" }}>
-              This oral interview is <strong>recorded</strong> (your screen, the
-              interviewer&apos;s voice and your microphone) so your teacher can review it
-              afterwards. When you click below, choose your screen or this tab and
-              <strong> tick “Share tab/system audio”</strong> so the interviewer&apos;s voice is captured.
+
+            {/* Requirements list */}
+            <div style={{ backgroundColor: "#f8f9fa", borderRadius: "10px", padding: "16px 20px", marginBottom: "20px", textAlign: "left" }}>
+              <p style={{ fontSize: "13px", fontWeight: "700", color: "var(--text-title)", marginBottom: "10px" }}>📋 Required before starting:</p>
+              <ul style={{ margin: 0, padding: "0 0 0 18px", fontSize: "13.5px", lineHeight: "2", color: "var(--text-muted)" }}>
+                <li>🖥️ <strong>Screen sharing</strong> — select this tab and tick <em>&ldquo;Share tab audio&rdquo;</em> so Mav&apos;s voice is captured</li>
+                <li>📷 <strong>Camera</strong> — your video must be visible during the interview</li>
+                <li>🎙️ <strong>Microphone</strong> — your voice must be accessible to answer questions</li>
+              </ul>
+            </div>
+
+            <p style={{ color: "var(--text-muted)", fontSize: "13px", lineHeight: "1.6", marginBottom: "20px" }}>
+              This oral interview is <strong>recorded</strong> (your screen, the AI interviewer&apos;s voice and your microphone) so your teacher can review it afterwards.
+              The interview <strong>cannot begin</strong> without all three permissions granted.
             </p>
+
             {recordingNotice && (
-              <p style={{ color: "var(--color-warning)", fontSize: "13px", marginBottom: "16px" }}>{recordingNotice}</p>
+              <div style={{
+                backgroundColor: "#fff3cd",
+                border: "1px solid #ffc107",
+                borderRadius: "8px",
+                padding: "12px 16px",
+                marginBottom: "16px",
+                fontSize: "13px",
+                color: "#856404",
+                textAlign: "left",
+              }}>
+                {recordingNotice}
+              </div>
             )}
+
             <button
               className="btn btn-primary"
               style={{ width: "100%" }}
               onClick={beginInterview}
               disabled={preparing}
             >
-              {preparing ? "Waiting for screen permission…" : "Share screen & begin"}
+              {preparing ? "Checking permissions\u2026" : "\uD83D\uDCF8 Share Screen, Camera & Mic \u2014 Begin Interview"}
             </button>
-            {recordingNotice && (
-              <button
-                className="btn btn-secondary"
-                style={{ width: "100%", marginTop: "12px" }}
-                onClick={continueWithoutRecording}
-                disabled={preparing}
-              >
-                Continue without recording
-              </button>
-            )}
+
             <Link href={backHref} style={{ display: "inline-block", marginTop: "16px", fontSize: "13px", color: "var(--text-muted)" }}>
               Cancel
             </Link>
@@ -1490,12 +1563,16 @@ export default function InterviewRoom({
                 <span style={{ color: "#81c995", fontWeight: "600" }}>
                   🎙 Listening… speak your answer. Click 🎤 to submit, or just pause when done
                 </span>
+              ) : status === "AI SPEAKING" && isGreeting ? (
+                <span style={{ color: "#8ab4f8" }}>👋 Mav is greeting you… mic opens automatically when done</span>
               ) : status === "AI SPEAKING" ? (
                 <span style={{ color: "#8ab4f8" }}>🔊 Mav is speaking… mic opens automatically when done</span>
               ) : waitingForStudent ? (
                 <span style={{ color: "#81c995", fontWeight: "600" }}>🎤 Mic is open — speak your answer or click 🎤 to submit manually</span>
+              ) : status === "AI PROCESSING" ? (
+                <span style={{ color: "#9aa0a6" }}>⏳ Processing your response…</span>
               ) : (
-                <span style={{ color: "#9aa0a6" }}>I am processing your response…</span>
+                <span style={{ color: "#9aa0a6" }}>⏳ Preparing interview…</span>
               )}
             </div>
 
