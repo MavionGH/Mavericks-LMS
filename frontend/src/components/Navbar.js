@@ -88,6 +88,57 @@ export default function Navbar() {
               {user.name}
             </span>
 
+            {/* Clickable profile avatar */}
+            <Link href="/profile" style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: "36px",
+              height: "36px",
+              borderRadius: "50%",
+              overflow: "hidden",
+              border: "2px solid #e2e8f0",
+              cursor: "pointer",
+              transition: "all 0.2s ease-in-out",
+            }}
+            title="View Profile"
+            onMouseEnter={(e) => {
+              e.currentTarget.style.borderColor = "var(--brand)";
+              e.currentTarget.style.transform = "scale(1.05)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.borderColor = "#e2e8f0";
+              e.currentTarget.style.transform = "scale(1)";
+            }}
+            >
+              {user.avatar ? (
+                <img 
+                  src={user.avatar} 
+                  alt={user.name} 
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    objectFit: "cover",
+                  }}
+                />
+              ) : (
+                <div style={{
+                  width: "100%",
+                  height: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: "#4f46e522",
+                  color: "#4f46e5",
+                  fontWeight: "700",
+                  fontSize: "15px",
+                  textTransform: "uppercase"
+                }}>
+                  {user.name ? user.name.charAt(0) : "U"}
+                </div>
+              )}
+            </Link>
+
             {/* Logout */}
             <button
               id="logout-btn"

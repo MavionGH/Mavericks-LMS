@@ -5,7 +5,7 @@ from typing import List
 
 from app.database import get_db
 from app.models.models import Enrollment, Evaluation, Course, Chapter, User, Certificate, EnrollmentStatus
-from app.schemas.schemas import DashboardStats, DashboardCourse, DashboardEvaluation
+from app.schemas.schemas import DashboardStats, DashboardCourse, DashboardEvaluation, CertificateResponse
 from app.auth.dependencies import require_student
 
 router = APIRouter(prefix="/api/student", tags=["Student"])
@@ -188,3 +188,17 @@ def get_course_evaluations(
             ))
             
     return course_evaluations
+
+
+@router.get("/certificates", response_model=List[CertificateResponse])
+def get_student_certificates(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_student)
+):
+    certs = db.query(Certificate).filter(Certificate.user_id == current_user.id).all()
+    results = []
+    for c in certs:
+        res = CertificateResponse.model_validate(c)
+        res.course_title = c.course.title if c.course else "Unknown Course"
+        results.append(res)
+    return results

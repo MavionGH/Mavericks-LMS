@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, joinedload, load_only
 from app.database import get_db
 from app.models.models import (
     Chapter, Course, Enrollment, Evaluation, EvaluationType,
-    InterviewSession, User,
+    InterviewSession, User, Certificate,
 )
 from app.schemas.schemas import (
     InterviewStartRequest, CourseInterviewStartRequest, InterviewAnswerRequest,
@@ -576,6 +576,30 @@ def _finalize_session(db: Session, session: InterviewSession, user: User) -> Int
             attempt_number=prev_attempts + 1,
         )
         db.add(ev)
+
+        # Update enrollment and issue certificate if passed
+        if evaluation.get("passed", False):
+            from app.models.models import EnrollmentStatus
+            enrollment = db.query(Enrollment).filter(
+                Enrollment.user_id == user.id,
+                Enrollment.course_id == session.course_id
+            ).first()
+            if enrollment:
+                enrollment.status = EnrollmentStatus.COMPLETED
+
+            # Check if certificate already exists
+            existing_cert = db.query(Certificate).filter(
+                Certificate.user_id == user.id,
+                Certificate.course_id == session.course_id
+            ).first()
+            if not existing_cert:
+                import secrets
+                cert = Certificate(
+                    user_id=user.id,
+                    course_id=session.course_id,
+                    verify_code=f"MVK-{secrets.token_hex(4).upper()}"
+                )
+                db.add(cert)
 
         session.status = "completed"
         session.transcript = graph_state.get("transcript", [])

@@ -89,3 +89,32 @@ def upload_recording_to_r2(file: UploadFile, prefix: str = "interviews") -> str:
             status_code=500,
             detail=f"Failed to upload interview recording to Cloudflare R2: {str(exc)}"
         )
+
+
+def upload_avatar(file: UploadFile) -> str:
+    """Uploads a user avatar. Tries R2 first; falls back to local uploads/ directory."""
+    try:
+        s3_client, bucket_name, base_url = _r2_client_and_targets()
+        file_ext = os.path.splitext(file.filename or "")[1] or ".png"
+        unique_filename = f"avatars/{uuid.uuid4()}{file_ext}"
+        content_type = file.content_type or "image/png"
+        file.file.seek(0)
+        s3_client.put_object(
+            Bucket=bucket_name,
+            Key=unique_filename,
+            Body=file.file,
+            ContentType=content_type
+        )
+        return f"{base_url}/{unique_filename}"
+    except Exception:
+        # Fallback to local storage
+        uploads_dir = os.path.join(os.getcwd(), "uploads")
+        os.makedirs(uploads_dir, exist_ok=True)
+        file_ext = os.path.splitext(file.filename or "")[1] or ".png"
+        unique_filename = f"{uuid.uuid4()}{file_ext}"
+        filepath = os.path.join(uploads_dir, unique_filename)
+        file.file.seek(0)
+        with open(filepath, "wb") as f:
+            f.write(file.file.read())
+        return f"http://localhost:8000/uploads/{unique_filename}"
+

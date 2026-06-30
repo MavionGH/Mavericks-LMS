@@ -44,6 +44,7 @@ async def lifespan(app: FastAPI):
         ("courses", "is_approved", "ALTER TABLE courses ADD COLUMN is_approved BOOLEAN NOT NULL DEFAULT FALSE"),
         ("users", "is_approved", "ALTER TABLE users ADD COLUMN is_approved BOOLEAN NOT NULL DEFAULT TRUE"),
         ("users", "google_id", "ALTER TABLE users ADD COLUMN google_id VARCHAR(255)"),
+        ("users", "certificate_name", "ALTER TABLE users ADD COLUMN certificate_name VARCHAR(100)"),
         # Course-wide final interview: sessions may be scoped to a course instead
         # of a single chapter, so course_id is added (and chapter_id made nullable below).
         ("interview_sessions", "course_id", "ALTER TABLE interview_sessions ADD COLUMN course_id VARCHAR REFERENCES courses(id)"),
@@ -171,6 +172,11 @@ app.include_router(interview.router)
 app.include_router(quiz.router)
 app.include_router(teacher.router)
 app.include_router(student.router)
+
+from fastapi.staticfiles import StaticFiles
+import os
+os.makedirs("uploads", exist_ok=True)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
 @app.get("/")
