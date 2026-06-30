@@ -102,7 +102,8 @@ def get_student_dashboard(
                 session = db.query(InterviewSession).filter(
                     InterviewSession.user_id == ev.user_id,
                     InterviewSession.chapter_id.is_(None),
-                    InterviewSession.course_id.isnot(None)
+                    InterviewSession.course_id.isnot(None),
+                    InterviewSession.created_at <= ev.created_at
                 ).order_by(InterviewSession.created_at.desc()).first()
                 if session:
                     course = db.query(Course).filter(Course.id == session.course_id).first()
@@ -129,3 +130,61 @@ def get_student_dashboard(
         enrolled_courses=enrolled_courses,
         recent_evaluations=recent_evaluations
     )
+
+
+@router.get("/courses/{course_id}/evaluations", response_model=List[DashboardEvaluation])
+def get_course_evaluations(
+    course_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_student)
+):
+    evals = db.query(Evaluation).filter(
+        Evaluation.user_id == current_user.id
+    ).order_by(Evaluation.created_at.desc()).all()
+    
+    course_evaluations: List[DashboardEvaluation] = []
+    
+    for ev in evals:
+        # Resolve course_id for this evaluation
+        ev_course_id = getattr(ev, "course_id", None)
+        if not ev_course_id and ev.chapter_id:
+            chapter = db.query(Chapter).filter(Chapter.id == ev.chapter_id).first()
+            if chapter:
+                ev_course_id = chapter.course_id
+        if not ev_course_id and not ev.chapter_id:
+            # Try to guess from interview sessions for old capstones
+            from app.models.models import InterviewSession
+            session = db.query(InterviewSession).filter(
+                InterviewSession.user_id == ev.user_id,
+                InterviewSession.chapter_id.is_(None),
+                InterviewSession.course_id.isnot(None),
+                InterviewSession.created_at <= ev.created_at
+            ).order_by(InterviewSession.created_at.desc()).first()
+            if session:
+                ev_course_id = session.course_id
+                
+        if ev_course_id == course_id:
+            chapter_title = "Course Capstone"
+            course_title = ""
+            course = db.query(Course).filter(Course.id == course_id).first()
+            if course:
+                course_title = course.title
+                
+            if ev.chapter_id:
+                chapter = db.query(Chapter).filter(Chapter.id == ev.chapter_id).first()
+                if chapter:
+                    chapter_title = chapter.title
+                    
+            course_evaluations.append(DashboardEvaluation(
+                chapter=chapter_title,
+                course=course_title,
+                score=int(ev.overall_score),
+                passed=ev.passed,
+                date=ev.created_at.strftime("%Y-%m-%d"),
+                technical=int(ev.technical_score),
+                communication=int(ev.communication_score),
+                confidence=int(ev.confidence_score),
+                teacher_score=int(ev.teacher_score) if getattr(ev, "teacher_score", None) is not None else None
+            ))
+            
+    return course_evaluations
