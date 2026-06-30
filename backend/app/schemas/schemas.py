@@ -346,3 +346,9 @@ class DashboardStats(BaseModel):
     earned_credentials: int
     enrolled_courses: List[DashboardCourse]
     recent_evaluations: List[DashboardEvaluation]
+
+
+# ─── TEACHER EVALUATION ───
+class TeacherScoreRequest(BaseModel):
+    score: int
+
