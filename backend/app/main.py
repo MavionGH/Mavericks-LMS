@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import engine, Base
-from app.routers import auth, courses, enrollment, admin, interview, quiz, teacher
+from app.routers import auth, courses, enrollment, admin, interview, quiz, teacher, student
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,7 @@ async def lifespan(app: FastAPI):
         ("interview_sessions", "course_id", "ALTER TABLE interview_sessions ADD COLUMN course_id VARCHAR REFERENCES courses(id)"),
         # Full screen+audio recording of the interview (Cloudflare R2 public URL).
         ("interview_sessions", "recording_url", "ALTER TABLE interview_sessions ADD COLUMN recording_url VARCHAR(500)"),
+        ("evaluations", "course_id", "ALTER TABLE evaluations ADD COLUMN course_id VARCHAR REFERENCES courses(id) ON DELETE CASCADE"),
     ]
 
     # Snapshot existing columns (+ nullability) up front in one cheap read so the
@@ -56,7 +57,7 @@ async def lifespan(app: FastAPI):
     cols_by_table = {}
     try:
         with engine.connect() as conn:
-            for table in {"courses", "users", "interview_sessions"}:
+            for table in {"courses", "users", "interview_sessions", "evaluations"}:
                 rows = conn.execute(text(
                     "SELECT column_name, is_nullable FROM information_schema.columns "
                     "WHERE table_name = :t"
@@ -167,6 +168,7 @@ app.include_router(admin.router)
 app.include_router(interview.router)
 app.include_router(quiz.router)
 app.include_router(teacher.router)
+app.include_router(student.router)
 
 
 @app.get("/")

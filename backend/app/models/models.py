@@ -83,6 +83,18 @@ class Course(Base):
     certificates = relationship("Certificate", back_populates="course")
     chunk_embeddings = relationship("ChunkEmbedding", back_populates="course", cascade="all, delete-orphan")
 
+    @property
+    def student_count(self) -> int:
+        return len(self.enrollments)
+
+    @property
+    def pass_rate(self) -> float:
+        total = len(self.enrollments)
+        if total == 0:
+            return 0.0
+        completed = sum(1 for e in self.enrollments if e.status == EnrollmentStatus.COMPLETED)
+        return round((completed / total) * 100, 1)
+
 
 # ─── CHAPTER ───
 class Chapter(Base):
@@ -186,6 +198,7 @@ class Evaluation(Base):
     id = Column(String, primary_key=True, default=generate_uuid)
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
     chapter_id = Column(String, ForeignKey("chapters.id"), nullable=True)
+    course_id = Column(String, ForeignKey("courses.id"), nullable=True)
     type = Column(Enum(EvaluationType), nullable=False)
     transcript = Column(JSON, nullable=True)
     technical_score = Column(Float, default=0)
@@ -201,6 +214,7 @@ class Evaluation(Base):
 
     user = relationship("User", back_populates="evaluations")
     chapter = relationship("Chapter", back_populates="evaluations")
+    course = relationship("Course")
 
 
 # ─── CERTIFICATE ───
