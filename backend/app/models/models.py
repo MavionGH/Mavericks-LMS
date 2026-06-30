@@ -212,11 +212,13 @@ class Evaluation(Base):
     weak_areas = Column(JSON, default=list)
     suggested_review = Column(JSON, default=list)
     attempt_number = Column(Integer, default=1)
+    interview_session_id = Column(String, ForeignKey("interview_sessions.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="evaluations")
     chapter = relationship("Chapter", back_populates="evaluations")
     course = relationship("Course")
+    interview_session = relationship("InterviewSession")
 
 
 # ─── CERTIFICATE ───

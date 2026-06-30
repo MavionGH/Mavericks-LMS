@@ -941,11 +941,9 @@ function TeacherPanel() {
                         <div style={{ fontWeight: "700", fontSize: "14px", color: "var(--text-title)" }}>{r.student?.name}</div>
                         <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>{r.student?.email}</div>
                       </div>
-                      {r.overall_score !== null && r.overall_score !== undefined && (
-                        <span className={`badge ${r.passed ? "badge-success" : "badge-warning"}`} style={{ fontSize: "10px" }}>
-                          {r.passed ? "PASSED" : "NEEDS REVIEW"} · {r.overall_score}%
-                        </span>
-                      )}
+                      <span className={`badge ${r.overall_score !== null && r.overall_score !== undefined && r.passed ? "badge-success" : "badge-warning"}`} style={{ fontSize: "10px" }}>
+                        {r.overall_score !== null && r.overall_score !== undefined ? `${r.passed ? "PASSED" : "NEEDS REVIEW"} · ${r.overall_score}%` : "AI Score: N/A"}
+                      </span>
                     </div>
                     <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "10px" }}>
                       <strong style={{ color: "var(--text-main)" }}>{r.course?.title}</strong>
@@ -1544,11 +1542,9 @@ function TeacherPanel() {
                         <div style={{ fontWeight: "700", fontSize: "14px", color: "var(--text-title)" }}>{r.student?.name}</div>
                         <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>{r.student?.email}</div>
                       </div>
-                      {r.overall_score !== null && r.overall_score !== undefined && (
-                        <span className={`badge ${r.passed ? "badge-success" : "badge-warning"}`} style={{ fontSize: "10px" }}>
-                          {r.passed ? "PASSED" : "NEEDS REVIEW"} · {r.overall_score}%
-                        </span>
-                      )}
+                      <span className={`badge ${r.overall_score !== null && r.overall_score !== undefined && r.passed ? "badge-success" : "badge-warning"}`} style={{ fontSize: "10px" }}>
+                        {r.overall_score !== null && r.overall_score !== undefined ? `${r.passed ? "PASSED" : "NEEDS REVIEW"} · ${r.overall_score}%` : "AI Score: N/A"}
+                      </span>
                     </div>
                     <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "10px" }}>
                       <strong style={{ color: "var(--text-main)" }}>{r.course?.title}</strong>

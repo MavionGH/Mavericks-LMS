@@ -99,19 +99,23 @@ def get_student_dashboard(
             
         # Get matching interview session to fetch teacher_score
         from app.models.models import InterviewSession
-        session_query = db.query(InterviewSession).filter(
-            InterviewSession.user_id == ev.user_id
-        )
-        if ev.chapter_id:
-            session_query = session_query.filter(InterviewSession.chapter_id == ev.chapter_id)
-        else:
-            session_query = session_query.filter(InterviewSession.chapter_id.is_(None))
-            if getattr(ev, "course_id", None):
-                session_query = session_query.filter(InterviewSession.course_id == ev.course_id)
-                
-        matching_session = session_query.filter(
-            InterviewSession.created_at <= ev.created_at
-        ).order_by(InterviewSession.created_at.desc()).first()
+        matching_session = None
+        if getattr(ev, "interview_session_id", None):
+            matching_session = db.query(InterviewSession).filter(InterviewSession.id == ev.interview_session_id).first()
+        if not matching_session:
+            session_query = db.query(InterviewSession).filter(
+                InterviewSession.user_id == ev.user_id
+            )
+            if ev.chapter_id:
+                session_query = session_query.filter(InterviewSession.chapter_id == ev.chapter_id)
+            else:
+                session_query = session_query.filter(InterviewSession.chapter_id.is_(None))
+                if getattr(ev, "course_id", None):
+                    session_query = session_query.filter(InterviewSession.course_id == ev.course_id)
+                    
+            matching_session = session_query.filter(
+                InterviewSession.created_at <= ev.created_at
+            ).order_by(InterviewSession.created_at.desc()).first()
         
         t_score = matching_session.teacher_score if matching_session else None
         
@@ -182,19 +186,23 @@ def get_course_evaluations(
                 
             # Get matching interview session to fetch teacher_score
             from app.models.models import InterviewSession
-            session_query = db.query(InterviewSession).filter(
-                InterviewSession.user_id == ev.user_id
-            )
-            if ev.chapter_id:
-                session_query = session_query.filter(InterviewSession.chapter_id == ev.chapter_id)
-            else:
-                session_query = session_query.filter(InterviewSession.chapter_id.is_(None))
-                if getattr(ev, "course_id", None):
-                    session_query = session_query.filter(InterviewSession.course_id == ev.course_id)
-                    
-            matching_session = session_query.filter(
-                InterviewSession.created_at <= ev.created_at
-            ).order_by(InterviewSession.created_at.desc()).first()
+            matching_session = None
+            if getattr(ev, "interview_session_id", None):
+                matching_session = db.query(InterviewSession).filter(InterviewSession.id == ev.interview_session_id).first()
+            if not matching_session:
+                session_query = db.query(InterviewSession).filter(
+                    InterviewSession.user_id == ev.user_id
+                )
+                if ev.chapter_id:
+                    session_query = session_query.filter(InterviewSession.chapter_id == ev.chapter_id)
+                else:
+                    session_query = session_query.filter(InterviewSession.chapter_id.is_(None))
+                    if getattr(ev, "course_id", None):
+                        session_query = session_query.filter(InterviewSession.course_id == ev.course_id)
+                        
+                matching_session = session_query.filter(
+                    InterviewSession.created_at <= ev.created_at
+                ).order_by(InterviewSession.created_at.desc()).first()
             
             t_score = matching_session.teacher_score if matching_session else None
 

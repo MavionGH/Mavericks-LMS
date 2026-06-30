@@ -289,6 +289,7 @@ class EvaluationResponse(BaseModel):
     weak_areas: list
     suggested_review: list
     attempt_number: int
+    interview_session_id: Optional[str] = None
     created_at: datetime
 
     class Config:

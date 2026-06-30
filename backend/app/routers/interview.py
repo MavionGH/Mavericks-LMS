@@ -574,6 +574,7 @@ def _finalize_session(db: Session, session: InterviewSession, user: User) -> Int
             weak_areas=evaluation.get("weak_areas", []),
             suggested_review=evaluation.get("suggested_review", []),
             attempt_number=prev_attempts + 1,
+            interview_session_id=session.id,
         )
         db.add(ev)
 
@@ -679,6 +680,7 @@ def _finalize_session(db: Session, session: InterviewSession, user: User) -> Int
         weak_areas=evaluation.get("weak_areas", []),
         suggested_review=evaluation.get("suggested_review", []),
         attempt_number=prev_attempts + 1,
+        interview_session_id=session.id,
     )
     db.add(ev)
 
