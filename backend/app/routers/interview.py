@@ -388,9 +388,8 @@ def submit_answer(
     session = db.query(InterviewSession).filter(
         InterviewSession.id == data.session_id,
         InterviewSession.user_id == current_user.id,
-        InterviewSession.status == "active",
-    ).first()
-    if not session:
+    ).with_for_update().first()
+    if not session or session.status != "active":
         raise HTTPException(status_code=404, detail="Active interview session not found")
 
     if not data.answer_text.strip():
@@ -429,9 +428,8 @@ async def respond_to_answer(
     session = db.query(InterviewSession).filter(
         InterviewSession.id == session_id,
         InterviewSession.user_id == current_user.id,
-        InterviewSession.status == "active",
-    ).first()
-    if not session:
+    ).with_for_update().first()
+    if not session or session.status != "active":
         raise HTTPException(status_code=404, detail="Active interview session not found")
 
     audio_bytes = await audio.read()
@@ -511,10 +509,9 @@ def end_interview_early(
     session = db.query(InterviewSession).filter(
         InterviewSession.id == session_id,
         InterviewSession.user_id == current_user.id,
-        InterviewSession.status == "active",
-    ).first()
-    if not session:
-        raise HTTPException(status_code=404, detail="Active interview session not found")
+    ).with_for_update().first()
+    if not session or session.status != "active":
+        raise HTTPException(status_code=400, detail="Interview session is already finalized")
 
     from app.services.interview_graph import _score_interview
     graph_state = dict(session.graph_state or {})
