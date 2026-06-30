@@ -24,6 +24,7 @@ class UserResponse(BaseModel):
     role: str
     is_approved: bool = True
     avatar: Optional[str] = None
+    certificate_name: Optional[str] = None
     created_at: datetime
 
     class Config:
@@ -300,6 +301,7 @@ class CertificateResponse(BaseModel):
     course_id: str
     issue_date: datetime
     verify_code: str
+    course_title: Optional[str] = None
 
     class Config:
         from_attributes = True

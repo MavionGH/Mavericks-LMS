@@ -49,6 +49,7 @@ class User(Base):
     role = Column(Enum(UserRole), default=UserRole.STUDENT)
     is_approved = Column(Boolean, default=True)
     avatar = Column(String(500), nullable=True)
+    certificate_name = Column(String(100), nullable=True)
     google_id = Column(String(255), unique=True, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
