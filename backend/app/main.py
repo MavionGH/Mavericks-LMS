@@ -49,6 +49,7 @@ async def lifespan(app: FastAPI):
         ("interview_sessions", "course_id", "ALTER TABLE interview_sessions ADD COLUMN course_id VARCHAR REFERENCES courses(id)"),
         # Full screen+audio recording of the interview (Cloudflare R2 public URL).
         ("interview_sessions", "recording_url", "ALTER TABLE interview_sessions ADD COLUMN recording_url VARCHAR(500)"),
+        ("interview_sessions", "teacher_score", "ALTER TABLE interview_sessions ADD COLUMN teacher_score INTEGER"),
         ("evaluations", "course_id", "ALTER TABLE evaluations ADD COLUMN course_id VARCHAR REFERENCES courses(id) ON DELETE CASCADE"),
     ]
 

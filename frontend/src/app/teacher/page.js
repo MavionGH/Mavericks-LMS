@@ -133,6 +133,44 @@ function TeacherPanel() {
     }
   }, [authFetch]);
 
+  // Teacher evaluation scoring state & handler
+  const [scoresInput, setScoresInput] = useState({});
+  const [submittingScores, setSubmittingScores] = useState({});
+
+  const handleSaveScore = async (sessionId, scoreVal) => {
+    const parsedScore = parseInt(scoreVal, 10);
+    if (isNaN(parsedScore) || parsedScore < 0 || parsedScore > 100) {
+      alert("Please enter a valid score between 0 and 100.");
+      return;
+    }
+
+    setSubmittingScores((prev) => ({ ...prev, [sessionId]: true }));
+    try {
+      const res = await authFetch(`/api/teacher/recordings/${sessionId}/score`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ score: parsedScore }),
+      });
+      if (!res.ok) {
+        throw new Error((await res.json().catch(() => ({}))).detail || "Failed to save score");
+      }
+      
+      // Update local state arrays to reflect the change
+      setRecordings((prev) =>
+        prev.map((r) => (r.session_id === sessionId ? { ...r, teacher_score: parsedScore } : r))
+      );
+      setCourseRecordings((prev) =>
+        prev.map((r) => (r.session_id === sessionId ? { ...r, teacher_score: parsedScore } : r))
+      );
+      
+      alert("Score saved successfully!");
+    } catch (err) {
+      alert(`Error saving score: ${err.message}`);
+    } finally {
+      setSubmittingScores((prev) => ({ ...prev, [sessionId]: false }));
+    }
+  };
+
   // Transcript generation state
   const [transcribing, setTranscribing] = useState(false);
   const [transcribeStage, setTranscribeStage] = useState(""); // "uploading" | "extracting" | "transcribing" | "done"
@@ -850,14 +888,46 @@ function TeacherPanel() {
                       {r.created_at ? ` · ${new Date(r.created_at).toLocaleDateString()}` : ""}
                     </div>
                     <RecordingPlayer src={r.recording_url} />
-                    <a
-                      href={r.recording_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{ display: "inline-block", marginTop: "8px", fontSize: "12px", color: "var(--brand)" }}
-                    >
-                      Open in new tab ↗
-                    </a>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "8px" }}>
+                      <a
+                        href={r.recording_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ fontSize: "12px", color: "var(--brand)" }}
+                      >
+                        Open in new tab ↗
+                      </a>
+                    </div>
+                    <div style={{ marginTop: "12px", borderTop: "1px solid var(--border-muted, #e5e7eb)", paddingTop: "12px" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                        <span style={{ fontSize: "12px", fontWeight: "600", color: "var(--text-title)" }}>Teacher Score:</span>
+                        {r.teacher_score !== null && r.teacher_score !== undefined ? (
+                          <span className="badge badge-success" style={{ fontSize: "11px", fontWeight: "bold" }}>{r.teacher_score} / 100</span>
+                        ) : (
+                          <span style={{ fontSize: "11px", color: "var(--text-muted)", fontStyle: "italic" }}>Not Graded</span>
+                        )}
+                      </div>
+                      <div style={{ display: "flex", gap: "8px" }}>
+                        <input
+                          type="number"
+                          min="0"
+                          max="100"
+                          placeholder="Score"
+                          className="form-input"
+                          style={{ padding: "4px 8px", fontSize: "12px", width: "80px", margin: 0 }}
+                          value={scoresInput[r.session_id] !== undefined ? scoresInput[r.session_id] : (r.teacher_score || "")}
+                          onChange={(e) => setScoresInput({ ...scoresInput, [r.session_id]: e.target.value })}
+                        />
+                        <button
+                          className="btn btn-primary"
+                          style={{ padding: "4px 12px", fontSize: "12px" }}
+                          disabled={submittingScores[r.session_id]}
+                          onClick={() => handleSaveScore(r.session_id, scoresInput[r.session_id] !== undefined ? scoresInput[r.session_id] : (r.teacher_score || ""))}
+                        >
+                          {submittingScores[r.session_id] ? "Saving…" : "Save Score"}
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1352,14 +1422,46 @@ function TeacherPanel() {
                           {r.created_at ? ` · ${new Date(r.created_at).toLocaleDateString()}` : ""}
                         </div>
                         <RecordingPlayer src={r.recording_url} />
-                        <a
-                          href={r.recording_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          style={{ display: "inline-block", marginTop: "8px", fontSize: "12px", color: "var(--brand)" }}
-                        >
-                          Open in new tab ↗
-                        </a>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "8px" }}>
+                          <a
+                            href={r.recording_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{ fontSize: "12px", color: "var(--brand)" }}
+                          >
+                            Open in new tab ↗
+                          </a>
+                        </div>
+                        <div style={{ marginTop: "12px", borderTop: "1px solid var(--border-muted, #e5e7eb)", paddingTop: "12px" }}>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                            <span style={{ fontSize: "12px", fontWeight: "600", color: "var(--text-title)" }}>Teacher Score:</span>
+                            {r.teacher_score !== null && r.teacher_score !== undefined ? (
+                              <span className="badge badge-success" style={{ fontSize: "11px", fontWeight: "bold" }}>{r.teacher_score} / 100</span>
+                            ) : (
+                              <span style={{ fontSize: "11px", color: "var(--text-muted)", fontStyle: "italic" }}>Not Graded</span>
+                            )}
+                          </div>
+                          <div style={{ display: "flex", gap: "8px" }}>
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              placeholder="Score"
+                              className="form-input"
+                              style={{ padding: "4px 8px", fontSize: "12px", width: "80px", margin: 0 }}
+                              value={scoresInput[r.session_id] !== undefined ? scoresInput[r.session_id] : (r.teacher_score || "")}
+                              onChange={(e) => setScoresInput({ ...scoresInput, [r.session_id]: e.target.value })}
+                            />
+                            <button
+                              className="btn btn-primary"
+                              style={{ padding: "4px 12px", fontSize: "12px" }}
+                              disabled={submittingScores[r.session_id]}
+                              onClick={() => handleSaveScore(r.session_id, scoresInput[r.session_id] !== undefined ? scoresInput[r.session_id] : (r.teacher_score || ""))}
+                            >
+                              {submittingScores[r.session_id] ? "Saving…" : "Save Score"}
+                            </button>
+                          </div>
+                        </div>
                       </div>
                     ))}
                   </div>

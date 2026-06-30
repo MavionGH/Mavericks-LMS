@@ -8,13 +8,14 @@ directly (course-wide final interview) or via its chapter (per-module interview)
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
 from app.models.models import (
     Chapter, Course, Evaluation, InterviewSession, User, UserRole, Enrollment,
 )
+from app.schemas.schemas import TeacherScoreRequest
 from app.auth.dependencies import require_teacher
 
 logger = logging.getLogger(__name__)
@@ -102,9 +103,51 @@ def list_interview_recordings(
             "scope": "module" if s.chapter_id else "course",
             "overall_score": round(evaluation.overall_score) if evaluation else None,
             "passed": evaluation.passed if evaluation else None,
+            "teacher_score": s.teacher_score,
         })
 
     return results
+
+
+@router.post("/recordings/{session_id}/score")
+def evaluate_interview(
+    session_id: str,
+    data: TeacherScoreRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_teacher),
+):
+    """Save or update the teacher-assigned evaluation score for a student's interview."""
+    session = (
+        db.query(InterviewSession)
+        .options(
+            joinedload(InterviewSession.chapter).joinedload(Chapter.course),
+            joinedload(InterviewSession.course),
+        )
+        .filter(InterviewSession.id == session_id)
+        .first()
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Interview session not found")
+
+    # Resolve course to check ownership
+    if session.chapter and session.chapter.course:
+        course = session.chapter.course
+    else:
+        course = session.course
+
+    if not course:
+        raise HTTPException(status_code=400, detail="Associated course not found")
+
+    owned = _owned_course_ids(db, current_user)
+    if course.id not in owned:
+        raise HTTPException(status_code=403, detail="Not authorized to evaluate this course's interviews")
+
+    if data.score < 0 or data.score > 100:
+        raise HTTPException(status_code=400, detail="Score must be between 0 and 100")
+
+    session.teacher_score = data.score
+    db.commit()
+    return {"message": "Score updated successfully", "teacher_score": session.teacher_score}
 
 
 @router.get("/students")
