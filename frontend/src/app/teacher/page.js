@@ -568,6 +568,40 @@ function TeacherPanel() {
     loadCourses();
   };
 
+  const handleDeleteCourse = async (courseId) => {
+    if (!window.confirm("Are you sure you want to delete this course? This will remove all modules and enrollments.")) return;
+    try {
+      const res = await authFetch(`/api/courses/${courseId}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        loadCourses();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.detail || "Failed to delete course.");
+      }
+    } catch (e) {
+      alert("Error deleting course: " + e.message);
+    }
+  };
+
+  const handleDeleteChapter = async (chapterId) => {
+    if (!window.confirm("Are you sure you want to delete this module?")) return;
+    try {
+      const res = await authFetch(`/api/courses/chapters/${chapterId}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        loadCourses();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.detail || "Failed to delete module.");
+      }
+    } catch (e) {
+      alert("Error deleting module: " + e.message);
+    }
+  };
+
   const TABS = [
     { key: "overview", label: "Overview" },
     { key: "courses", label: "My Courses" },
@@ -786,9 +820,24 @@ function TeacherPanel() {
                         </span>
                       </td>
                       <td style={{ display: "flex", gap: "8px" }} onClick={(e) => e.stopPropagation()}>
+                        <button
+                          className="btn btn-primary btn-sm"
+                          onClick={() => {
+                            setSelectedCourseForStudents(c);
+                            loadCourseStudents(c.id);
+                          }}
+                        >
+                          View Students
+                        </button>
                         <button className="btn btn-secondary btn-sm" onClick={() => { setSelectedCourseId(c.id); setActiveTab("modules"); }}>Add Modules</button>
                         <button className="btn btn-secondary btn-sm" onClick={() => handlePublish(c.id, c.is_published)}>
                           {c.is_published ? "Unpublish" : "Publish"}
+                        </button>
+                        <button
+                          className="btn btn-danger btn-sm"
+                          onClick={() => handleDeleteCourse(c.id)}
+                        >
+                          Delete
                         </button>
                       </td>
                     </tr>
@@ -1231,16 +1280,26 @@ function TeacherPanel() {
                     <div key={ch.id} style={{ padding: "12px 0", borderBottom: "1px solid var(--border-muted)" }}>
                       <div style={{ fontWeight: "700", fontSize: "14px" }}>{String(i + 1).padStart(2, "0")} — {ch.title}</div>
                       <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px", wordBreak: "break-all" }}>{ch.youtube_url}</div>
-                      <div style={{ fontSize: "11px", marginTop: "4px" }}>
-                        {hasTranscript ? (
-                          <span style={{ color: "var(--color-success)" }}>
-                            ✓ Transcript ready ({wordCount.toLocaleString()} words)
-                          </span>
-                        ) : (
-                          <span style={{ color: "#f59e0b" }}>
-                            ⏳ Transcript pending — click Refresh after a moment
-                          </span>
-                        )}
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "4px" }}>
+                        <div style={{ fontSize: "11px" }}>
+                          {hasTranscript ? (
+                            <span style={{ color: "var(--color-success)" }}>
+                              ✓ Transcript ready ({wordCount.toLocaleString()} words)
+                            </span>
+                          ) : (
+                            <span style={{ color: "#f59e0b" }}>
+                              ⏳ Transcript pending — click Refresh after a moment
+                            </span>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          className="btn btn-danger btn-sm"
+                          style={{ padding: "2px 8px", fontSize: "11px" }}
+                          onClick={() => handleDeleteChapter(ch.id)}
+                        >
+                          Delete Module
+                        </button>
                       </div>
                     </div>
                   );

@@ -195,7 +195,7 @@ function LearnPage() {
             <div style={{ padding: "16px", borderTop: "1px solid var(--border-muted)" }}>
               <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "8px", fontFamily: "JetBrains Mono", fontWeight: "600" }}>FINAL AI INTERVIEW</div>
               <p style={{ fontSize: "12px", color: "var(--text-muted)", lineHeight: "1.5", marginBottom: "12px" }}>
-                Optional. Mav, your AI interviewer, asks questions spanning all modules of this course. Take it whenever you&apos;re ready.
+                Mav, your AI interviewer, asks questions spanning all modules of this course. Take it whenever you&apos;re ready.
               </p>
               <Link href={`/interview/${params.courseId}`} className="btn btn-primary btn-sm" style={{ width: "100%", justifyContent: "center" }}>
                 {allModulesComplete ? "Start Final Interview" : "Start AI Interview"}

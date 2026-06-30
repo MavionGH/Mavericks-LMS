@@ -119,6 +119,7 @@ class CourseListResponse(BaseModel):
     thumbnail: Optional[str] = None
     is_published: bool
     chapter_count: int = 0
+    enrollment_status: Optional[str] = None
 
     class Config:
         from_attributes = True
