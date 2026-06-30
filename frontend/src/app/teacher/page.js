@@ -135,6 +135,7 @@ function TeacherPanel() {
   }, [authFetch]);
 
   const loadCourseRecordings = useCallback(async (studentId, courseId) => {
+    setCourseRecordings([]);
     setCourseRecordingsLoading(true);
     setCourseRecordingsError("");
     try {
@@ -177,6 +178,7 @@ function TeacherPanel() {
   }, [authFetch]);
 
   const loadUngradedRecordings = useCallback(async (studentId, courseId) => {
+    setUngradedRecordings([]);
     setUngradedRecordingsLoading(true);
     setUngradedRecordingsError("");
     try {
@@ -467,6 +469,7 @@ function TeacherPanel() {
   }, [loadCourses]);
 
   const loadRecordings = useCallback(async (studentId = null) => {
+    setRecordings([]);
     setRecordingsLoading(true);
     setRecordingsError("");
     try {
