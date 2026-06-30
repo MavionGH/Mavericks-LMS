@@ -228,6 +228,8 @@ class Certificate(Base):
     course_id = Column(String, ForeignKey("courses.id"), nullable=False)
     issue_date = Column(DateTime, default=datetime.utcnow)
     verify_code = Column(String, unique=True, default=generate_uuid)
+    # Optional: Cloudflare R2 public URL for a rendered/stored certificate PDF
+    pdf_url = Column(String(500), nullable=True)
 
     user = relationship("User", back_populates="certificates")
     course = relationship("Course", back_populates="certificates")

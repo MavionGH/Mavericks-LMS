@@ -302,6 +302,7 @@ class CertificateResponse(BaseModel):
     issue_date: datetime
     verify_code: str
     course_title: Optional[str] = None
+    pdf_url: Optional[str] = None  # Cloudflare R2 public URL for the stored certificate PDF
 
     class Config:
         from_attributes = True
@@ -339,6 +340,7 @@ class DashboardEvaluation(BaseModel):
     technical: int
     communication: int
     confidence: int
+    teacher_score: Optional[int] = None
 
 
 class DashboardStats(BaseModel):

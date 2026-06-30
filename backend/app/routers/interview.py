@@ -587,19 +587,55 @@ def _finalize_session(db: Session, session: InterviewSession, user: User) -> Int
             if enrollment:
                 enrollment.status = EnrollmentStatus.COMPLETED
 
-            # Check if certificate already exists
-            existing_cert = db.query(Certificate).filter(
-                Certificate.user_id == user.id,
-                Certificate.course_id == session.course_id
-            ).first()
-            if not existing_cert:
-                import secrets
-                cert = Certificate(
-                    user_id=user.id,
-                    course_id=session.course_id,
-                    verify_code=f"MVK-{secrets.token_hex(4).upper()}"
-                )
-                db.add(cert)
+            # ── Certificate eligibility: student must have passed ALL chapter modules ──
+            # A certificate requires:
+            #   1. Passing the final oral (capstone) interview  ← already checked above
+            #   2. Having passed every chapter/module evaluation in the course
+            all_chapters = (
+                db.query(Chapter)
+                .filter(Chapter.course_id == session.course_id)
+                .all()
+            )
+            all_modules_passed = True
+            if all_chapters:
+                for chapter in all_chapters:
+                    # Check if at least one PASSING chapter evaluation exists
+                    passed_eval = db.query(Evaluation).filter(
+                        Evaluation.user_id == user.id,
+                        Evaluation.chapter_id == chapter.id,
+                        Evaluation.passed == True,
+                    ).first()
+                    if not passed_eval:
+                        all_modules_passed = False
+                        logger.info(
+                            "Certificate NOT issued for user=%s course=%s — "
+                            "chapter '%s' has no passing evaluation",
+                            user.id, session.course_id, chapter.title,
+                        )
+                        break
+            else:
+                # No chapters in course — don't block the cert
+                all_modules_passed = True
+
+            if all_modules_passed:
+                # Check if certificate already exists
+                existing_cert = db.query(Certificate).filter(
+                    Certificate.user_id == user.id,
+                    Certificate.course_id == session.course_id
+                ).first()
+                if not existing_cert:
+                    import secrets
+                    cert = Certificate(
+                        user_id=user.id,
+                        course_id=session.course_id,
+                        verify_code=f"MVK-{secrets.token_hex(4).upper()}"
+                    )
+                    db.add(cert)
+                    logger.info(
+                        "Certificate issued for user=%s course=%s",
+                        user.id, session.course_id,
+                    )
+
 
         session.status = "completed"
         session.transcript = graph_state.get("transcript", [])

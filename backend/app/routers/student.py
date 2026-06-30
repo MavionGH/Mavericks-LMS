@@ -200,5 +200,6 @@ def get_student_certificates(
     for c in certs:
         res = CertificateResponse.model_validate(c)
         res.course_title = c.course.title if c.course else "Unknown Course"
+        res.pdf_url = getattr(c, "pdf_url", None)
         results.append(res)
     return results
