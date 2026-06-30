@@ -96,17 +96,27 @@ def get_student_dashboard(
                     course = db.query(Course).filter(Course.id == chapter.course_id).first()
         else:
             chapter_title = "Course Capstone"
-            if not course:
-                # Fallback for older capstones: get the latest capstone interview session
-                from app.models.models import InterviewSession
-                session = db.query(InterviewSession).filter(
-                    InterviewSession.user_id == ev.user_id,
-                    InterviewSession.chapter_id.is_(None),
-                    InterviewSession.course_id.isnot(None),
-                    InterviewSession.created_at <= ev.created_at
-                ).order_by(InterviewSession.created_at.desc()).first()
-                if session:
-                    course = db.query(Course).filter(Course.id == session.course_id).first()
+            
+        # Get matching interview session to fetch teacher_score
+        from app.models.models import InterviewSession
+        session_query = db.query(InterviewSession).filter(
+            InterviewSession.user_id == ev.user_id
+        )
+        if ev.chapter_id:
+            session_query = session_query.filter(InterviewSession.chapter_id == ev.chapter_id)
+        else:
+            session_query = session_query.filter(InterviewSession.chapter_id.is_(None))
+            if getattr(ev, "course_id", None):
+                session_query = session_query.filter(InterviewSession.course_id == ev.course_id)
+                
+        matching_session = session_query.filter(
+            InterviewSession.created_at <= ev.created_at
+        ).order_by(InterviewSession.created_at.desc()).first()
+        
+        t_score = matching_session.teacher_score if matching_session else None
+        
+        if not course and not ev.chapter_id and matching_session:
+            course = db.query(Course).filter(Course.id == matching_session.course_id).first()
 
         if course:
             course_title = course.title
@@ -119,7 +129,7 @@ def get_student_dashboard(
             technical=int(ev.technical_score),
             communication=int(ev.communication_score),
             confidence=int(ev.confidence_score),
-            teacher_score=int(ev.teacher_score) if getattr(ev, "teacher_score", None) is not None else None
+            teacher_score=int(t_score) if t_score is not None else None
         ))
         
     return DashboardStats(
@@ -170,11 +180,24 @@ def get_course_evaluations(
             if course:
                 course_title = course.title
                 
+            # Get matching interview session to fetch teacher_score
+            from app.models.models import InterviewSession
+            session_query = db.query(InterviewSession).filter(
+                InterviewSession.user_id == ev.user_id
+            )
             if ev.chapter_id:
-                chapter = db.query(Chapter).filter(Chapter.id == ev.chapter_id).first()
-                if chapter:
-                    chapter_title = chapter.title
+                session_query = session_query.filter(InterviewSession.chapter_id == ev.chapter_id)
+            else:
+                session_query = session_query.filter(InterviewSession.chapter_id.is_(None))
+                if getattr(ev, "course_id", None):
+                    session_query = session_query.filter(InterviewSession.course_id == ev.course_id)
                     
+            matching_session = session_query.filter(
+                InterviewSession.created_at <= ev.created_at
+            ).order_by(InterviewSession.created_at.desc()).first()
+            
+            t_score = matching_session.teacher_score if matching_session else None
+
             course_evaluations.append(DashboardEvaluation(
                 chapter=chapter_title,
                 course=course_title,
@@ -184,7 +207,7 @@ def get_course_evaluations(
                 technical=int(ev.technical_score),
                 communication=int(ev.communication_score),
                 confidence=int(ev.confidence_score),
-                teacher_score=int(ev.teacher_score) if getattr(ev, "teacher_score", None) is not None else None
+                teacher_score=int(t_score) if t_score is not None else None
             ))
             
     return course_evaluations
