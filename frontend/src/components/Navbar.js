@@ -14,8 +14,15 @@ const NAV_LINKS_BY_ROLE = {
   student: [
     { href: "/courses",   label: "Courses"   },
   ],
-  teacher: [],
-  admin: [],
+  teacher: [
+    { href: "/courses",  label: "Courses"    },
+    { href: "/teacher",  label: "My Courses" },
+  ],
+  admin: [
+    { href: "/courses", label: "Courses"     },
+    { href: "/admin",   label: "Admin Panel" },
+    { href: "/teacher", label: "Content"     },
+  ],
 };
 
 export default function Navbar() {
