@@ -1,21 +1,22 @@
 """
-LangGraph-powered interview orchestrator.
+Direct interview orchestrator — plain function calls, no graph framework.
 
 Turn-based flow for REST API:
   start_interview()  → greeting + opening question
   process_answer()   → classify → chitchat reply OR follow-up question OR final scoring
+
+Every student turn makes AT MOST ONE LLM round-trip (the merged classify+respond
+call), so each answer gets Mav's next line back in a couple of seconds instead of
+chaining multiple sequential model calls.
 """
 import re
 from typing import TypedDict, Optional, List
-from langgraph.graph import StateGraph, END
 
 from app.services.llm import (
     llm_generate_question,
     llm_score_interview,
-    llm_classify_response,
-    llm_handle_chitchat,
+    llm_classify_and_respond,
     llm_generate_greeting,
-    llm_greeting_transition,
 )
 
 MAX_QUESTIONS = 5
@@ -67,6 +68,7 @@ def _generate_question(state: InterviewState) -> InterviewState:
         q_num,
         student_name=state.get("student_name", ""),
         asked_questions=asked,
+        student_greeting=state.get("_pending_greeting_reply"),
     )
     transcript = list(state.get("transcript", []))
     transcript.append({"speaker": "ai", "text": question})
@@ -205,54 +207,16 @@ def _greet_student(state: InterviewState) -> InterviewState:
     }
 
 
-def _build_start_graph():
-    """Graph for interview start: greet ONLY.
+def _run_answer_turn(state: InterviewState) -> InterviewState:
+    """One answer turn: record → route → follow-up question OR final scoring.
 
-    The greeting is its own interactive turn — Mav introduces herself, names the
-    course, and invites the student to say hello. The student's first reply is a
-    greeting back (handled in process_answer), and only THEN is Question 1 asked.
+    Direct equivalent of the old two-node LangGraph (record_answer →
+    follow_up | score_interview) with no graph framework involved.
     """
-    g = StateGraph(InterviewState)
-    g.add_node("GreetingNode", _greet_student)
-    g.set_entry_point("GreetingNode")
-    g.add_edge("GreetingNode", END)
-    return g.compile()
-
-
-def _build_answer_graph():
-    """Graph for each answer turn: record → route → follow-up OR score."""
-    g = StateGraph(InterviewState)
-    g.add_node("record_answer", _record_answer)
-    g.add_node("follow_up", _generate_question)
-    g.add_node("score_interview", _score_interview)
-
-    g.set_entry_point("record_answer")
-    g.add_conditional_edges(
-        "record_answer",
-        _route_after_answer,
-        {"follow_up": "follow_up", "score": "score_interview"},
-    )
-    g.add_edge("follow_up", END)
-    g.add_edge("score_interview", END)
-    return g.compile()
-
-
-_start_graph = None
-_answer_graph = None
-
-
-def _get_start_graph():
-    global _start_graph
-    if _start_graph is None:
-        _start_graph = _build_start_graph()
-    return _start_graph
-
-
-def _get_answer_graph():
-    global _answer_graph
-    if _answer_graph is None:
-        _answer_graph = _build_answer_graph()
-    return _answer_graph
+    state = _record_answer(state)
+    if _route_after_answer(state) == "score":
+        return _score_interview(state)
+    return _generate_question(state)
 
 
 def start_interview(
@@ -279,11 +243,10 @@ def start_interview(
         "greeting": None,
         "phase": "greeting",
     }
-    # Invoke start graph (runs greet_student only). The interview opens on the
-    # greeting alone; Question 1 is asked once the student greets back, so
-    # `next_question` here is just the greeting and question_count stays 0.
-    result = dict(_get_start_graph().invoke(initial))
-    return result
+    # The interview opens on the greeting alone; Question 1 is asked once the
+    # student greets back, so `next_question` here is just the greeting and
+    # question_count stays 0.
+    return dict(_greet_student(initial))
 
 
 def process_answer(
@@ -303,43 +266,32 @@ def process_answer(
     # the first question. No pause metric is recorded for this turn, so it never
     # counts toward the 5 scored answers. ──
     if state.get("question_count", 0) == 0:
-        student_name = state.get("student_name", "")
-        transition = llm_greeting_transition(answer, student_name)
-
         transcript = list(state.get("transcript", []))
         transcript.append({"speaker": "student", "text": answer})
         state["transcript"] = transcript
+        # Asks Question 1 with a one-sentence acknowledgement folded into the SAME
+        # call (see student_greeting in llm_generate_question) — one round-trip
+        # instead of a separate "transition" call followed by the question call.
+        state["_pending_greeting_reply"] = answer
 
         # Generate Question 1 (advances question_count to 1, appends to transcript
         # and asked_questions).
         result = dict(_generate_question(state))
-
-        # Speak the warm acknowledgement immediately before Question 1.
-        first_question = result.get("current_question", "")
-        if transition and first_question:
-            result["next_question"] = f"{transition}\n\n{first_question}"
+        result.pop("_pending_greeting_reply", None)
         result["is_chitchat"] = False
         result["phase"] = "asking"
         return result
 
     current_q = state.get("current_question") or state.get("next_question", "")
 
-    # ── Classify the student's input ──
-    # Fast path: a long, substantive reply that matches none of the chitchat
-    # patterns is virtually always a genuine answer. Treating it as such locally
-    # skips an entire LLM round-trip (the classify call) on the common case,
-    # roughly halving per-answer latency. Ambiguous/short inputs still go to the
-    # LLM classifier so greeting/personal/clarification/offtopic handling is
-    # unchanged.
+    # ── Classify + respond in ONE call (only when the fast local heuristic can't
+    # already tell it's a genuine answer) ──
     if _is_clearly_an_answer(answer):
-        category = "answer"
+        category, reply = "answer", ""
     else:
-        category = llm_classify_response(answer, current_q)
+        category, reply = llm_classify_and_respond(answer, current_q, state.get("student_name", ""))
 
     if category in ("greeting", "personal", "clarification", "offtopic"):
-        # Generate a conversational reply without advancing the interview
-        reply = llm_handle_chitchat(answer, current_q, category, state.get("student_name", ""))
-
         # Record student message + Mav's chitchat reply in transcript
         transcript = list(state.get("transcript", []))
         transcript.append({"speaker": "student", "text": answer})
@@ -354,12 +306,12 @@ def process_answer(
             "is_complete": False,
         }
 
-    # ── Genuine answer path — proceed through the normal graph ──
+    # ── Genuine answer path — record, route, then follow-up question or scoring ──
     state["last_answer"] = answer
     state["last_response_time_ms"] = response_time_ms
     state["last_pause_count"] = pause_count
     state["last_long_pause_ms"] = long_pause_ms
     state["last_filler_word_count"] = filler_word_count
-    result = dict(_get_answer_graph().invoke(state))
+    result = dict(_run_answer_turn(state))
     result["is_chitchat"] = False
     return result

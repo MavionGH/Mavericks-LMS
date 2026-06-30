@@ -175,7 +175,8 @@ def llm_generate_greeting(chapter_title: str, student_name: str = "") -> str:
             "Write Mav's greeting now."
         )
         try:
-            resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+            fast_llm = llm.bind(max_tokens=120) if hasattr(llm, "bind") else llm
+            resp = fast_llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
             return resp.content.strip()
         except Exception:
             pass
@@ -186,41 +187,6 @@ def llm_generate_greeting(chapter_title: str, student_name: str = "") -> str:
         f"{hello}Welcome — I'm Mav, your AI interviewer. Today we'll have a friendly chat "
         f"with five short questions about {chapter_title}. Feel free to ask me to repeat or "
         "clarify anything at any time. Whenever you're ready, just say hello and we'll begin!"
-    )
-
-
-def llm_greeting_transition(student_text: str, student_name: str = "") -> str:
-    """
-    Mav's brief, warm acknowledgement of the student's greeting, right before the
-    first interview question is asked. Does NOT contain a question — it's only the
-    human-like lead-in that the first question is appended to.
-    """
-    name = (student_name or "").strip()
-    first = name.split()[0] if name else ""
-    llm = get_llm()
-    if llm:
-        from langchain_core.messages import HumanMessage, SystemMessage
-        system = (
-            "You are Mav, a warm AI interviewer. The student just greeted you back at the "
-            "start of an oral interview. Reply with ONE short, friendly sentence that "
-            "acknowledges them (by first name if provided) and says you'll begin with the "
-            "first question. Do NOT actually ask a question. Return ONLY that sentence."
-        )
-        user = (
-            f"Student first name: {first or '(unknown)'}\n"
-            f"Student said: \"{student_text}\"\n"
-            "Write Mav's one-sentence lead-in now."
-        )
-        try:
-            resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
-            return resp.content.strip()
-        except Exception:
-            pass
-
-    return (
-        f"Great to meet you, {first}! Let's get started with the first question."
-        if first else
-        "Great, let's get started with the first question."
     )
 
 
@@ -248,13 +214,17 @@ def llm_generate_question(
     question_number: int,
     student_name: str = "",
     asked_questions: list = None,
+    student_greeting: str = None,
 ) -> str:
     # Draw a fresh random temperature for this question and bind it to the
     # cached client — preserves variety without rebuilding the HTTP pool.
+    # max_tokens is capped tightly: a single interview question is at most a
+    # couple of sentences, so bounding generation length keeps the round-trip
+    # fast and stops the model from ever rambling into a slow, long reply.
     temperature = round(random.uniform(0.85, 1.05), 2)
     base_llm = _get_question_llm()
     if base_llm is not None and not is_reasoning_model(OPENAI_MODEL):
-        llm = base_llm.bind(temperature=temperature)
+        llm = base_llm.bind(temperature=temperature, max_tokens=90)
     else:
         llm = base_llm
     history = "\n".join(
@@ -285,6 +255,15 @@ def llm_generate_question(
         "then ask a question on a DIFFERENT topic from the module. Do NOT follow up on the "
         "topic they skipped."
         if last_was_skip else ""
+    )
+    # Merges what used to be a separate "greeting transition" LLM call into this
+    # one: when this is Q1 right after the student greeted Mav back, ask for a
+    # one-sentence acknowledgement up front instead of a second round-trip.
+    greeting_hint = (
+        f"\nThe student just greeted you back, saying: \"{student_greeting}\". "
+        "Start your reply with ONE short, warm sentence acknowledging them by first "
+        "name (if known) and saying you'll begin — THEN ask the question below on a new line."
+        if student_greeting else ""
     )
     # A fresh random token + a randomly chosen angle nudge sampling so repeated
     # interviews on the same module don't converge on the same phrasing or always
@@ -322,7 +301,7 @@ def llm_generate_question(
         user = (
             f"Module: {chapter_title}\n"
             f"Student first name: {first or '(unknown)'}\n\n"
-            f"Content:\n{context[:6000]}\n\n"
+            f"Content summary:\n{context[:2500]}\n\n"
             f"Questions already asked (do NOT repeat these):\n{asked_block}\n\n"
             f"Conversation so far:\n{history or 'None yet'}\n\n"
             f"This is question #{question_number} of up to 5. "
@@ -330,7 +309,7 @@ def llm_generate_question(
             f"the content not yet covered by earlier questions. "
             f"Ask the next, unique interview question (under 25 words). "
             f"(Variation token {nonce}: use it only to vary your wording; never mention it.)"
-            f"{skip_hint}"
+            f"{skip_hint}{greeting_hint}"
         )
         resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
         return resp.content.strip()
@@ -377,23 +356,27 @@ def _is_obvious_answer(text: str) -> bool:
     return True
 
 
-def llm_classify_response(
+def llm_classify_and_respond(
     student_text: str,
     current_question: str,
-) -> str:
+    student_name: str = "",
+) -> tuple:
     """
-    Classify the student's input relative to the current interview question.
+    ONE merged LLM call that both classifies the student's message AND, if it's
+    not a genuine answer, writes Mav's conversational reply — replacing what used
+    to be two sequential round-trips (classify, then chitchat) with a single call.
 
-    Returns one of:
-      'answer'        — genuine attempt at the interview question
-      'greeting'      — hi/hello/hey etc.
-      'personal'      — 'how are you?' type enquiries
-      'clarification' — asking for explanation of the question
-      'offtopic'      — unrelated general knowledge / smalltalk
+    Returns (category, reply) where category is one of
+    'answer' | 'greeting' | 'personal' | 'clarification' | 'offtopic', and reply
+    is "" when category == 'answer' (the caller generates the next question
+    separately) or Mav's full conversational reply (which re-asks the active
+    question) otherwise.
     """
     text = student_text.strip()
+    name = (student_name or "").strip()
+    first = name.split()[0] if name else ""
 
-    # ── Fast path 1: explicit skip / I-don't-know → treat as answer ──
+    # ── Fast path 1: explicit skip / I-don't-know → treat as answer, no LLM call ──
     _SKIP_PHRASES_SET = (
         "i don't know", "i dont know", "i do not know",
         "not sure", "no idea", "no experience",
@@ -403,133 +386,68 @@ def llm_classify_response(
     )
     text_lower = text.lower()
     if any(phrase in text_lower for phrase in _SKIP_PHRASES_SET):
-        return "answer"
+        return "answer", ""
 
-    # ── Fast path 2: long, substantive, non-chitchat → skip LLM classify call ──
-    # Saves ~1-2 s per turn on the common case (student gives a real answer).
+    # ── Fast path 2: long, substantive, non-chitchat → skip the LLM call entirely ──
     if _is_obvious_answer(text):
-        return "answer"
+        return "answer", ""
 
-    # ── LLM path (short / ambiguous inputs only) ──
+    # ── LLM path (short / ambiguous inputs only) — ONE call does both jobs ──
     llm = get_llm()
     if llm:
         from langchain_core.messages import HumanMessage, SystemMessage
         system = (
-            "You are a classifier for an AI interview assistant. "
-            "Classify the student's message into exactly ONE of these categories:\n"
-            "  answer        — a genuine attempt to answer the active interview question\n"
-            "  greeting      — greetings like hi, hello, hey, good morning\n"
-            "  personal      — personal enquiries like 'how are you?'\n"
-            "  clarification — asking for clarification/explanation of the question\n"
-            "  offtopic      — unrelated question or casual conversation\n"
-            "IMPORTANT: 'I don't know', 'skip', 'pass', 'move on', 'not sure' = answer (attempt).\n"
-            "Reply with ONLY the single category word, nothing else."
+            "You are Mav, a friendly AI interview assistant. In ONE response, do TWO things:\n"
+            "1. Classify the student's message into exactly one category: "
+            "answer (genuine attempt at the active question — includes 'I don't know'/skip), "
+            "greeting (hi/hello/hey), personal ('how are you?'), "
+            "clarification (asking to explain the question), "
+            "offtopic (unrelated chat/question).\n"
+            "2. If the category is NOT 'answer', write Mav's short spoken reply: respond "
+            "directly to what they said (answer their question, greet them back, clarify, "
+            "etc. — right now, never deferred), then re-ask the active interview question "
+            "on a new line. Keep it under 4 sentences. If the category IS 'answer', leave "
+            "reply as an empty string (the caller asks the next question separately).\n"
+            "Return ONLY compact JSON: {\"category\": \"...\", \"reply\": \"...\"}"
         )
         user = (
+            f"Student first name: {first or '(unknown)'}\n"
             f"Active interview question: {current_question}\n"
             f"Student message: {text}"
         )
         try:
-            resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
-            category = resp.content.strip().lower().split()[0]
+            fast_llm = llm.bind(max_tokens=200) if hasattr(llm, "bind") else llm
+            resp = fast_llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+            data = _extract_json(resp.content)
+            category = str(data.get("category", "")).strip().lower()
             if category in ("answer", "greeting", "personal", "clarification", "offtopic"):
-                return category
+                return category, (str(data.get("reply", "")).strip() if category != "answer" else "")
         except Exception:
             pass
 
     # ── Rule-based fallback ──
     if _GREETING_PATTERNS.match(text):
-        return "greeting"
+        return "greeting", f"Hello! Great to have you here today. Now, let's get started — {current_question}"
     if _PERSONAL_PATTERNS.search(text):
-        return "personal"
+        return "personal", f"I'm doing great, thanks for asking! Now let's continue — {current_question}"
     if _CLARIFICATION_PATTERNS.search(text):
-        return "clarification"
-    if _OFFTOPIC_PATTERNS.search(text):
-        return "offtopic"
-    # Default: treat as a genuine answer
-    return "answer"
-
-
-def llm_handle_chitchat(
-    student_text: str,
-    current_question: str,
-    category: str,
-    student_name: str = "",
-) -> str:
-    """
-    Generate Mav's natural conversational reply to a non-answer input.
-    Always ends by re-asking the active interview question.
-    """
-    name = (student_name or "").strip()
-    first = name.split()[0] if name else ""
-    llm = get_llm()
-    if llm:
-        from langchain_core.messages import HumanMessage, SystemMessage
-        system = (
-            "You are Mav, a friendly and professional AI interviewer. "
-            "Your job in this response has TWO parts:\n"
-            "  PART 1 — Respond directly and helpfully to whatever the student said "
-            "(answer their question, greet them back, clarify the interview question, etc.). "
-            "Do NOT say 'I'll answer that at the end' or defer. Answer RIGHT NOW.\n"
-            "  PART 2 — After your response, transition back and re-ask the current interview question.\n"
-            "You may address the student by their first name to feel personal. "
-            "Keep the whole reply concise (2-4 sentences). "
-            "Return ONLY the response text, no preamble or labels."
-        )
-        category_hints = {
-            "greeting": (
-                "The student greeted you. Greet them back warmly and briefly, "
-                "then re-ask the interview question."
-            ),
-            "personal": (
-                "The student asked how you are. Give a brief, warm personal answer "
-                "(e.g. 'I'm doing great, thanks for asking!'), then re-ask the interview question."
-            ),
-            "clarification": (
-                "The student asked for clarification on the interview question. "
-                "Explain what the question is asking in simpler terms, then re-ask it."
-            ),
-            "offtopic": (
-                "The student asked an off-topic question. Give a brief, genuine answer to their "
-                "question right now (DO NOT say you will answer later or at the end). "
-                "Then transition back and re-ask the interview question."
-            ),
-        }
-        hint = category_hints.get(category, "Respond naturally, then re-ask the interview question.")
-        user = (
-            f"{hint}\n"
-            f"Student first name: {first or '(unknown)'}\n"
-            f"Student said: \"{student_text}\"\n"
-            f"Current interview question: \"{current_question}\"\n"
-            "Now write Mav's response (answer their message first, then re-ask the question)."
-        )
-        try:
-            resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
-            return resp.content.strip()
-        except Exception:
-            pass
-
-    # ── Rule-based fallback ──
-    if category == "greeting":
-        return f"Hello! Great to have you here today. Now, let's get started — {current_question}"
-    if category == "personal":
-        return f"I'm doing great, thanks for asking! Now let's continue — {current_question}"
-    if category == "clarification":
-        return (
-            f"Of course! I'm asking you to explain your understanding and experience related to this topic. "
+        return "clarification", (
+            "Of course! I'm asking you to explain your understanding and experience related to this topic. "
             f"Here's the question again: {current_question}"
         )
-    # offtopic — give a brief genuine answer, then redirect
-    lower = student_text.lower()
-    if "weather" in lower:
-        brief = "I don't have access to live weather data, but I hope it's nice where you are!"
-    elif "time" in lower or "date" in lower:
-        brief = "I don't have a clock on me, but let's make the most of our time together!"
-    elif "joke" in lower:
-        brief = "Ha! I'd love to tell a joke, but I'm in interviewer mode right now."
-    else:
-        brief = "That's a great question outside of our interview scope, so I can't go into detail on that."
-    return f"{brief} Now, back to the interview — {current_question}"
+    if _OFFTOPIC_PATTERNS.search(text):
+        lower = text.lower()
+        if "weather" in lower:
+            brief = "I don't have access to live weather data, but I hope it's nice where you are!"
+        elif "time" in lower or "date" in lower:
+            brief = "I don't have a clock on me, but let's make the most of our time together!"
+        elif "joke" in lower:
+            brief = "Ha! I'd love to tell a joke, but I'm in interviewer mode right now."
+        else:
+            brief = "That's a great question outside of our interview scope, so I can't go into detail on that."
+        return "offtopic", f"{brief} Now, back to the interview — {current_question}"
+    # Default: treat as a genuine answer
+    return "answer", ""
 
 
 
