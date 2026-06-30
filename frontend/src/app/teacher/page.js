@@ -106,7 +106,7 @@ function TeacherPanel() {
   const [courseRecordings, setCourseRecordings] = useState([]);
   const [courseRecordingsLoading, setCourseRecordingsLoading] = useState(false);
   const [courseRecordingsError, setCourseRecordingsError] = useState("");
-  
+
   // State variables for Ungraded Interviews flow
   const [selectedUngradedCourse, setSelectedUngradedCourse] = useState(null);
   const [selectedUngradedStudent, setSelectedUngradedStudent] = useState(null);
@@ -213,7 +213,7 @@ function TeacherPanel() {
       if (!res.ok) {
         throw new Error((await res.json().catch(() => ({}))).detail || "Failed to save score");
       }
-      
+
       // Update local state arrays to reflect the change
       setRecordings((prev) =>
         prev.map((r) => (r.session_id === sessionId ? { ...r, teacher_score: parsedScore } : r))
@@ -224,8 +224,7 @@ function TeacherPanel() {
       setUngradedRecordings((prev) =>
         prev.map((r) => (r.session_id === sessionId ? { ...r, teacher_score: parsedScore } : r))
       );
-      
-      alert("Score saved successfully!");
+
     } catch (err) {
       alert(`Error saving score: ${err.message}`);
     } finally {
