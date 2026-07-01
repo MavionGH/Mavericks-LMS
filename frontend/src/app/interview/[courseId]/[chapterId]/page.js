@@ -14,7 +14,7 @@ function ChapterInterviewPage() {
   const doStart = useCallback(async () => {
     // `/start` already enforces eligibility (enrollment) server-side and returns
     // a descriptive error, so we skip the separate eligibility round-trip.
-    const res = await authFetch("/api/interview/start", {
+    const res = await authFetch("/api/interview/realtime/start", {
       method: "POST",
       body: JSON.stringify({ chapter_id: params.chapterId }),
     });

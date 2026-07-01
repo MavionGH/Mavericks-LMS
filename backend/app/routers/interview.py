@@ -16,11 +16,19 @@ from app.models.models import (
 from app.schemas.schemas import (
     InterviewStartRequest, CourseInterviewStartRequest, InterviewAnswerRequest,
     InterviewTurnResponse, InterviewResultResponse, InterviewEligibilityResponse,
-    InterviewTTSRequest,
+    InterviewTTSRequest, RealtimeStartRequest, RealtimeStartResponse,
+    RealtimeFinishRequest,
 )
 from app.auth.dependencies import require_student
-from app.services.chapter_context import build_chapter_context, build_course_context
+from app.services.chapter_context import (
+    build_chapter_context, build_course_context, build_course_context_no_vector,
+)
 from app.services.interview_graph import start_interview, process_answer, MAX_QUESTIONS
+from app.services.realtime import (
+    build_interview_instructions, create_realtime_session, extract_client_secret,
+)
+from app.services.openai_config import OPENAI_REALTIME_MODEL
+from app.services.llm import score_realtime_interview
 from app.services.stt import transcribe_audio
 from app.services.tts import synthesize_speech, MEDIA_TYPE
 from app.services.storage import upload_recording_to_r2
@@ -324,6 +332,158 @@ def start_course_interview(
         greeting=graph_state.get("greeting"),
         greeting_completed=False,
     )
+
+
+# ─── REALTIME (speech-to-speech) interview ───
+# The browser connects DIRECTLY to OpenAI's Realtime API over WebRTC. These two
+# endpoints are all the backend does: /realtime/start authenticates the student,
+# builds the interview context (name + course name + raw module text, NO vector
+# search) and mints a short-lived ephemeral token; /realtime/finish receives the
+# transcript the browser captured, grades it, and saves the evaluation.
+
+@router.post("/realtime/start", response_model=RealtimeStartResponse)
+def start_realtime_interview(
+    data: RealtimeStartRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_student),
+):
+    if bool(data.course_id) == bool(data.chapter_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Provide exactly one of course_id or chapter_id",
+        )
+
+    # ── Resolve scope, check enrollment, and build context (no vector search) ──
+    if data.chapter_id:
+        chapter = (
+            db.query(Chapter)
+            .options(joinedload(Chapter.course))
+            .filter(Chapter.id == data.chapter_id)
+            .first()
+        )
+        if not chapter:
+            raise HTTPException(status_code=404, detail="Chapter not found")
+        course = chapter.course
+        course_id = course.id if course else None
+        enrollment = db.query(Enrollment).filter(
+            Enrollment.user_id == current_user.id,
+            Enrollment.course_id == course_id,
+        ).first()
+        if not enrollment:
+            raise HTTPException(status_code=400, detail="Not enrolled in this course")
+        scope_name = chapter.title
+        pass_threshold = (course.pass_threshold if course else 70) or 70
+        context = build_chapter_context(chapter)
+        session_course_id = None
+        session_chapter_id = chapter.id
+    else:
+        course = db.query(Course).filter(Course.id == data.course_id).first()
+        if not course:
+            raise HTTPException(status_code=404, detail="Course not found")
+        enrollment = db.query(Enrollment).filter(
+            Enrollment.user_id == current_user.id,
+            Enrollment.course_id == course.id,
+        ).first()
+        if not enrollment:
+            raise HTTPException(status_code=400, detail="Not enrolled in this course")
+        if not course.chapters:
+            raise HTTPException(status_code=400, detail="This course has no modules yet")
+        scope_name = course.title
+        pass_threshold = course.pass_threshold or 70
+        context = build_course_context_no_vector(course)
+        session_course_id = course.id
+        session_chapter_id = None
+
+    # Abandon any prior active realtime/legacy session for this scope so a restart
+    # is clean (mirrors the legacy /start behaviour).
+    db.query(InterviewSession).filter(
+        InterviewSession.user_id == current_user.id,
+        InterviewSession.chapter_id == session_chapter_id,
+        InterviewSession.course_id == session_course_id,
+        InterviewSession.status == "active",
+    ).update({"status": "abandoned"})
+    db.commit()
+
+    # ── Build instructions + mint the ephemeral Realtime token ──
+    instructions = build_interview_instructions(
+        student_name=current_user.name,
+        course_name=scope_name,
+        context=context,
+        pass_threshold=pass_threshold,
+    )
+    try:
+        rt_session = create_realtime_session(instructions)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    client_secret = extract_client_secret(rt_session)
+    if not client_secret:
+        logger.error("Realtime session response missing client secret: %s", rt_session)
+        raise HTTPException(status_code=502, detail="OpenAI did not return an ephemeral token")
+
+    # Persist scoring context on the session so /realtime/finish can grade without
+    # recomputing it. transcript stays empty until the browser sends it back.
+    session = InterviewSession(
+        user_id=current_user.id,
+        chapter_id=session_chapter_id,
+        course_id=session_course_id,
+        status="active",
+        transcript=[],
+        pause_metrics=[],
+        question_count=0,
+        graph_state={
+            "mode": "realtime",
+            "course_name": scope_name,
+            "context": context,
+            "pass_threshold": pass_threshold,
+            "student_name": current_user.name,
+        },
+    )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+
+    return RealtimeStartResponse(
+        session_id=session.id,
+        client_secret=client_secret,
+        realtime_session=rt_session,
+        model=OPENAI_REALTIME_MODEL,
+        instructions=instructions,
+        course_name=scope_name,
+        student_name=current_user.name,
+    )
+
+
+@router.post("/realtime/finish", response_model=InterviewResultResponse)
+def finish_realtime_interview(
+    data: RealtimeFinishRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_student),
+):
+    session = db.query(InterviewSession).filter(
+        InterviewSession.id == data.session_id,
+        InterviewSession.user_id == current_user.id,
+    ).with_for_update().first()
+    if not session or session.status != "active":
+        raise HTTPException(status_code=404, detail="Active interview session not found")
+
+    state = dict(session.graph_state or {})
+    transcript = [{"speaker": m.speaker, "text": m.text} for m in data.transcript]
+
+    evaluation = score_realtime_interview(
+        state.get("course_name", ""),
+        state.get("context", ""),
+        transcript,
+        state.get("pass_threshold", 70),
+    )
+
+    # Hand off to the shared finalizer, which persists the Evaluation, advances
+    # progression, and issues a certificate where applicable — identical to the
+    # legacy interview path.
+    state["transcript"] = transcript
+    state["evaluation"] = evaluation
+    session.graph_state = state
+    session.transcript = transcript
+    return _finalize_session(db, session, current_user)
 
 
 def _advance_interview(

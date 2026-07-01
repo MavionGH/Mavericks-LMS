@@ -9,70 +9,61 @@ import { useAuth } from "@/context/AuthContext";
 import avatarClosed from "../../local/closed.png";
 import avatarOpened from "../../local/opened.png";
 
-// Handoff gap between TTS ending and the mic opening. speechSynthesis needs a tick
-// to release the audio session before we start recording. Small and deterministic.
-const MIC_HANDOFF_MS = 150;
-
-// ── Voice capture (MediaRecorder + local VAD) ──────────────────────────────────
-// The browser Web Speech API (Google cloud STT) is unreachable on many networks,
-// so we record the answer locally and transcribe it server-side (Groq Whisper).
-// A lightweight Voice Activity Detector watches the mic level to auto-stop on
-// silence — no cloud dependency, works everywhere the backend can reach Groq.
+// ── OpenAI Realtime API (speech-to-speech) ─────────────────────────────────────
+// The browser opens ONE WebRTC connection straight to OpenAI and streams the mic
+// audio continuously; OpenAI streams Mav's voice back as it speaks. There is no
+// per-turn record→upload→STT→LLM→TTS round-trip through our backend, which is
+// what kept latency at ~10s before. Now the only backend calls are:
+//   • POST /api/interview/realtime/start  → ephemeral token + context (once)
+//   • POST /api/interview/realtime/finish → grade the transcript (once, at end)
 //
-// VAD_THRESHOLD : normalized RMS above which we consider the student to be speaking
-// SILENCE_MS    : trailing silence (after speech) that triggers auto-submit
-// MAX_RECORD_MS : hard cap on a single answer's recording length
-// MIN_SPEECH_MS : minimum voiced time before a silence is allowed to auto-submit
-const VAD_THRESHOLD = 0.02;
-const SILENCE_MS = 2500;
-const MAX_RECORD_MS = 60000;
-const MIN_SPEECH_MS = 300;
+// SDP exchange endpoint. GA `gpt-realtime` uses /v1/realtime/calls; override via
+// NEXT_PUBLIC_OPENAI_REALTIME_URL if your account is on a different path.
+const REALTIME_BASE_URL =
+  process.env.NEXT_PUBLIC_OPENAI_REALTIME_URL || "https://api.openai.com/v1/realtime/calls";
 
-// TEMP instrumentation: timestamped logs across the whole voice pipeline so the
-// exact latency of every stage (TTS end → mic → audiostart → first word →
-// caption) is measurable in the console. Flip to false to silence.
+// RMS above which we treat Mav's incoming audio as "actively speaking" — drives
+// the avatar lip-sync and the "AI SPEAKING" label without depending on any
+// particular server event name.
+const AI_VOICE_RMS_THRESHOLD = 0.01;
+// Hold "speaking" true for this long after the level drops, so the natural
+// sub-second gaps between words don't make the avatar/status/bar flicker.
+const AI_VOICE_HOLD_MS = 600;
+
+// The interview is capped at exactly this many questions. The model is also
+// instructed to stop at this count, but we enforce it client-side (count the
+// student's answers) so a free-flowing realtime session can never run long.
+const MAX_QUESTIONS = 5;
+
+// TEMP instrumentation: timestamped logs across the realtime pipeline. Flip off
+// to silence.
 const VOICE_DEBUG = true;
 function tlog(label) {
   if (!VOICE_DEBUG || typeof console === "undefined") return;
   const now = typeof performance !== "undefined" ? performance.now() : Date.now();
-  console.log(`[voice ${now.toFixed(0)}ms] ${label}`);
-}
-
-// Known FEMALE TTS voice names across Windows / Chrome / macOS / Android. The
-// Web Speech API exposes no gender field, so name-matching is the reliable way to
-// keep Mav's voice female regardless of the device's installed voices.
-const FEMALE_VOICE_HINTS = /(zira|aria|jenny|jessa|michelle|female|samantha|victoria|karen|moira|tessa|fiona|serena|allison|ava|susan|google us english|google uk english female|libby|sonia|natasha|clara|amber|emma|hazel|catherine|linda|heera|hoda|salli|joanna|kimberly|ivy|kendra)/i;
-
-// Filler words to detect and penalise in scoring
-const FILLER_REGEX = /\b(um+|uh+|m+hm+|h+m+|err+|erm+|like|you know|basically|literally|right\?|i mean|kind of|sort of)\b/gi;
-
-function countFillers(text) {
-  const matches = text.match(FILLER_REGEX);
-  return matches ? matches.length : 0;
-}
-
-// Strip filler words from answer text before sending (keeps them counted but not submitted verbatim)
-function cleanAnswer(text) {
-  return text.replace(FILLER_REGEX, "").replace(/\s{2,}/g, " ").trim();
+  console.log(`[realtime ${now.toFixed(0)}ms] ${label}`);
 }
 
 // Turn a raw fetch/network rejection into a calm, actionable message for the UI.
 function friendlyNetworkError(err) {
   if (err?.name === "AbortError") {
-    return "The server took too long to respond — please try answering again.";
+    return "The connection took too long — please try again.";
   }
   if (/failed to fetch|networkerror|load failed|fetch failed/i.test(err?.message || "")) {
-    return "Couldn't reach the server. Check your connection, then tap the mic and answer again.";
+    return "Couldn't reach the interview service. Check your connection and try again.";
   }
   return err?.message || "Something went wrong — please try again.";
 }
 
 /**
  * Shared, voice-driven AI interview room used by both the (legacy) per-module
- * assessment and the course-wide final assessment.
+ * assessment and the course-wide final assessment. Conversation runs over the
+ * OpenAI Realtime API directly from the browser; the backend only mints the
+ * token and grades the result.
  *
  * Props:
- *   doStart       async () => start-turn response { session_id, text, question_number, chapter_title }
+ *   doStart       async () => realtime start payload
+ *                 { session_id, client_secret, model, course_name, ... }
  *                 (throws Error with a message on failure / ineligibility)
  *   heading       header title text
  *   panelLabel    label under the AI panel (e.g. "Course Host")
@@ -96,20 +87,17 @@ export default function InterviewRoom({
   const { user, authFetch } = useAuth();
 
   const [sessionId, setSessionId] = useState(null);
-  const [titleText, setTitleText] = useState("");
-  const [transcript, setTranscript] = useState([]);
   const [currentAIText, setCurrentAIText] = useState("");
-  const [waitingForStudent, setWaitingForStudent] = useState(false);
-  const [micActive, setMicActive] = useState(false);
+  const [micActive, setMicActive] = useState(false);       // student currently speaking (server VAD)
+  const [micMuted, setMicMuted] = useState(false);
   const [showCaptions, setShowCaptions] = useState(true);
   const [isFinished, setIsFinished] = useState(false);
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [liveTranscript, setLiveTranscript] = useState("");
-  const [questionNum, setQuestionNum] = useState(1);
+  const [questionNum, setQuestionNum] = useState(0);       // 0 → greeting, then Q1, Q2…
   const [status, setStatus] = useState("CONNECTING");
-  const [fillerCount, setFillerCount] = useState(0);
   const [typedAnswer, setTypedAnswer] = useState("");
   const [avatarMouthOpen, setAvatarMouthOpen] = useState(false);
   const [aiVoiceActive, setAiVoiceActive] = useState(false);
@@ -119,39 +107,28 @@ export default function InterviewRoom({
   const [hasStarted, setHasStarted] = useState(false);   // consent gate passed
   const [preparing, setPreparing] = useState(false);     // acquiring screen share
   const [recordingNotice, setRecordingNotice] = useState(""); // non-fatal warning
-  // True from when interview starts until student first speaks — shows "greeting" label
+  // True from connect until the student first speaks — shows the "greeting" label.
   const [isGreeting, setIsGreeting] = useState(false);
 
   const studentVideoRef = useRef(null);
   const cameraStreamRef = useRef(null);
-  const speakWatchdogRef = useRef(null);
-  const ttsAudioRef = useRef(null);          // current neural-TTS <audio> playback
-  const speakWithBrowserRef = useRef(null);  // ref to browser-TTS fallback (breaks dep cycle)
-  const avatarVideoRef = useRef(null);
-  const questionStartRef = useRef(null);
-  const pauseCountRef = useRef(0);
-  const longPauseMsRef = useRef(0);
-  const submittingRef = useRef(false);
-  const fillerCountRef = useRef(0);
-  const startListeningRef = useRef(null);  // ref to break circular dep
-  const waitingForStudentRef = useRef(false); // live mirror of waitingForStudent
 
-  // ── Recording / VAD refs ──
-  const micStreamRef = useRef(null);       // held mic capture (reused each turn)
-  const mediaRecorderRef = useRef(null);
-  const audioChunksRef = useRef([]);       // recorded blob chunks for this answer
-  const audioCtxRef = useRef(null);        // AudioContext for VAD analysis
-  const vadIntervalRef = useRef(null);     // VAD polling interval
-  const speechDetectedRef = useRef(false); // any voiced audio captured this turn
-  const speechStartedAtRef = useRef(0);    // when voice first detected this turn
-  const lastVoiceRef = useRef(0);          // last moment voice was above threshold
-  const recordStartRef = useRef(0);        // when recording began
-  const transcribingRef = useRef(false);   // awaiting server transcription
+  // ── Realtime (WebRTC) refs ──
+  const pcRef = useRef(null);                 // RTCPeerConnection to OpenAI
+  const dcRef = useRef(null);                 // data channel for realtime events
+  const remoteAudioRef = useRef(null);        // <audio> playing Mav's voice
+  const pcMicStreamRef = useRef(null);        // mic track sent to OpenAI
+  const voiceCtxRef = useRef(null);           // AudioContext analysing Mav's voice
+  const voiceIntervalRef = useRef(null);      // RMS polling interval for lip-sync
+  const transcriptRef = useRef([]);           // source of truth sent to /finish
+  const aiTextRef = useRef("");               // assistant transcript accumulator
+  const userTextRef = useRef("");             // student transcript accumulator
+  const answersRef = useRef(0);               // count of answers the student has given
+  const autoEndTriggeredRef = useRef(false);  // guard: auto-finish fires once
+  const teardownDoneRef = useRef(false);
+  const [shouldEnd, setShouldEnd] = useState(false); // 5 answers given → wrap up
 
-  // ── Whole-session recorder refs (independent of the per-answer mic capture) ──
-  // We record the ENTIRE interview — the shared screen, Mav's TTS voice (captured
-  // from the tab/system audio of the screen share) and the student's mic — into a
-  // single file, then upload it to Cloudflare R2 when the interview ends.
+  // ── Whole-session recorder refs (independent of the realtime mic) ──
   const sessionIdRef = useRef(null);          // live mirror of sessionId for late callbacks
   const sessionRecorderRef = useRef(null);    // MediaRecorder for the full session
   const sessionChunksRef = useRef([]);        // recorded blob chunks
@@ -161,425 +138,240 @@ export default function InterviewRoom({
   const recordingActiveRef = useRef(false);   // true while the session recorder is running
   const recordingPreparedRef = useRef(false); // devices acquired + recorder built, not yet started
   const recordingUploadedRef = useRef(false); // guard: upload/stop runs exactly once
-  // Stable handle to the latest finalizer so the (once-registered) screen-share
-  // "ended" listener and the unmount cleanup always call the current version.
   const finalizeSessionRecordingRef = useRef(null);
 
   const studentInitials = user?.name
     ? user.name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2)
     : "ST";
 
-  // "Thinking/talking" — used only for the panel activity indicator, NOT for the
-  // avatar mouth (the avatar must move only while Mav's voice is actually playing).
-  const isAISpeaking =
-    status === "AI PROCESSING" ||
-    status === "AI SPEAKING" ||
-    (!waitingForStudent && !micActive && !isFinished);
+  // "Thinking/talking" — used for the panel activity indicator.
+  const isAISpeaking = aiVoiceActive || status === "AI PROCESSING" || status === "AI SPEAKING";
+  const connected = !!sessionId && !isFinished && status !== "CONNECTING";
+  const yourTurn = connected && !aiVoiceActive && !isFinished;
 
-  // Stop any in-flight neural-TTS playback and release its blob URL.
-  const stopTtsAudio = useCallback(() => {
-    const a = ttsAudioRef.current;
-    if (a) {
-      try { a.onended = null; a.onerror = null; a.onplay = null; a.pause(); } catch { /* noop */ }
-      if (a.src) { try { URL.revokeObjectURL(a.src); } catch { /* noop */ } }
-      ttsAudioRef.current = null;
+  // Append a finalized line to the transcript ref sent to /finish.
+  const pushTranscript = useCallback((entry) => {
+    transcriptRef.current = [...transcriptRef.current, entry];
+  }, []);
+
+  // Watch Mav's incoming audio level so the avatar lip-syncs and the status label
+  // flips to "AI SPEAKING" only while sound is actually playing — independent of
+  // any particular server event name.
+  const setupVoiceAnalyser = useCallback((stream) => {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      const ctx = new AudioCtx();
+      voiceCtxRef.current = ctx;
+      if (ctx.state === "suspended") ctx.resume().catch(() => {});
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      source.connect(analyser);
+      const buf = new Uint8Array(analyser.fftSize);
+      // Hysteresis: go active immediately when the level rises, but only fall
+      // back to idle after AI_VOICE_HOLD_MS of continuous silence. Since React
+      // skips a re-render when the state value is unchanged, holding `true`
+      // across the word gaps stops the bottom-bar/avatar flicker.
+      let lastLoudAt = 0;
+      voiceIntervalRef.current = setInterval(() => {
+        analyser.getByteTimeDomainData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
+        const rms = Math.sqrt(sum / buf.length);
+        const now = Date.now();
+        if (rms > AI_VOICE_RMS_THRESHOLD) {
+          lastLoudAt = now;
+          setAiVoiceActive(true);
+        } else if (now - lastLoudAt > AI_VOICE_HOLD_MS) {
+          setAiVoiceActive(false);
+        }
+      }, 100);
+    } catch (e) {
+      tlog("voice analyser init failed (non-fatal): " + (e?.message || e));
     }
   }, []);
 
-  // Speak `text`. Mav's voice is the open-source neural TTS (Kokoro) synthesized
-  // server-side and played through an <audio> element; if that is unavailable for
-  // any reason (model not loaded, fetch/playback blocked) we fall back to the
-  // browser's built-in speechSynthesis so the interview never goes silent.
-  //
-  // Audio is the single source of truth for timing: `aiVoiceActive` flips on only
-  // when the voice ACTUALLY starts playing — never before — and off the instant it
-  // ends. `onEnd` is guaranteed to fire exactly once, so the mic always reopens
-  // after Mav finishes.
-  // onStart        — called ONCE when Mav's audio actually begins playing; use it
-  //                  to flip the status label to "AI SPEAKING" at the right moment.
-  // prefetchedBlobUrl — blob URL already decoded from the /respond audio_b64 field;
-  //                  when present we skip the /tts round-trip entirely.
-  const speakText = useCallback((text, onEnd, onStart, prefetchedBlobUrl) => {
-    stopTtsAudio();
-    if (speakWatchdogRef.current) {
-      clearInterval(speakWatchdogRef.current);
-      speakWatchdogRef.current = null;
-    }
-    if (typeof window !== "undefined") window.speechSynthesis?.cancel();
-
-    let finished = false;
-    let speakingStarted = false;
-    const finish = () => {
-      if (finished) return;
-      finished = true;
-      if (speakWatchdogRef.current) {
-        clearInterval(speakWatchdogRef.current);
-        speakWatchdogRef.current = null;
-      }
-      tlog("TTS finished (audio playback ended, avatar stops)");
-      setAiVoiceActive(false);
-      if (onEnd) onEnd();
-    };
-    // Idempotent: flip avatar on and fire onStart the very first time audio plays.
-    const startSpeaking = () => {
-      if (speakingStarted) return;
-      speakingStarted = true;
-      tlog("TTS audio started — avatar lip-syncs, status → AI SPEAKING");
-      setAiVoiceActive(true);
-      if (onStart) onStart();
-    };
-
-    const speakWithBrowser = () => speakWithBrowserRef.current?.(text, finish, startSpeaking);
-
-    if (!text || !text.trim()) {
-      finish();
-      return;
-    }
-
-    // ── Shared helper: attach events and start an <audio> element ──
-    const playAudioUrl = (url) => {
-      const audio = new Audio(url);
-      ttsAudioRef.current = audio;
-      // onplay fires when the browser starts streaming — primary trigger.
-      audio.onplay = startSpeaking;
-      audio.onended = () => {
-        if (ttsAudioRef.current === audio) ttsAudioRef.current = null;
-        try { URL.revokeObjectURL(url); } catch { /* noop */ }
-        finish();
-      };
-      audio.onerror = () => {
-        if (ttsAudioRef.current === audio) ttsAudioRef.current = null;
-        try { URL.revokeObjectURL(url); } catch { /* noop */ }
-        if (!finished) speakWithBrowser();
-      };
-      audio.play().then(() => {
-        // play() resolved = browser accepted playback; fire startSpeaking as a
-        // backup in case onplay was delayed or never fired on this browser.
-        startSpeaking();
-      }).catch((e) => {
-        tlog("neural TTS play() blocked — falling back to browser voice: " + (e?.message || e));
-        if (ttsAudioRef.current === audio) ttsAudioRef.current = null;
-        try { URL.revokeObjectURL(url); } catch { /* noop */ }
-        if (!finished) speakWithBrowser();
-      });
-    };
-
-    // ── Fast path: audio already embedded in the /respond response ──
-    if (prefetchedBlobUrl) {
-      playAudioUrl(prefetchedBlobUrl);
-      return;
-    }
-
-    // ── Preferred path: neural TTS served by the backend ──
-    (async () => {
-      try {
-        const res = await authFetch("/api/interview/tts", {
-          method: "POST",
-          body: JSON.stringify({ text }),
-        });
-        if (!res.ok) throw new Error("tts http " + res.status);
-        const blob = await res.blob();
-        if (finished) return; // cancelled while synthesizing
-        playAudioUrl(URL.createObjectURL(blob));
-      } catch (e) {
-        tlog("neural TTS unavailable — using browser voice: " + (e?.message || e));
-        if (!finished) speakWithBrowser();
-      }
-    })();
-  }, [authFetch, stopTtsAudio]);
-
-  // Browser speechSynthesis fallback (the original robotic-but-reliable voice),
-  // used only when the neural TTS can't be reached. `finish` is the shared
-  // completion callback from speakText.
-  const speakWithBrowserTTS = useCallback((text, finish, startSpeaking) => {
-    if (typeof window === "undefined" || !window.speechSynthesis) {
-      finish();
-      return;
-    }
-    window.speechSynthesis.cancel();
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.rate = 0.95;
-    utter.pitch = 1.1; // slightly higher → reads as a female voice on generic engines
-    utter.volume = 1;
-    // Mav is female, so prefer a FEMALE en-US voice. There is no standard gender
-    // field, so we match the well-known female voice names across Windows / Chrome
-    // / macOS / Android, preferring a local (low-latency) one. Falls back to any
-    // en voice so the greeting is never skipped.
-    const voices = window.speechSynthesis.getVoices();
-    const en = voices.filter((v) => /^en(-|_|$)/i.test(v.lang));
-    const isFemale = (v) => FEMALE_VOICE_HINTS.test(v.name);
-    const preferred =
-      en.find((v) => isFemale(v) && v.localService && /en-US/i.test(v.lang)) ||
-      en.find((v) => isFemale(v) && /en-US/i.test(v.lang)) ||
-      en.find((v) => isFemale(v)) ||
-      en.find((v) => v.localService && /en-US/i.test(v.lang)) ||
-      en.find((v) => /en-US/i.test(v.lang)) ||
-      en[0] ||
-      voices[0];
-    if (preferred) utter.voice = preferred;
-    tlog(`TTS voice: ${preferred ? `${preferred.name} (${preferred.lang})` : "default"}`);
-
-    // Audio events are the ONLY thing that turns the avatar/captions on, so they
-    // can never appear before sound. `onstart` (and `onboundary`, which fires as
-    // words are actually spoken) signal real playback; the watchdog below is used
-    // solely to detect the END and to bail out if speech never starts — it does
-    // NOT switch the avatar on from the queued `speaking` flag.
-    let loggedFirstAudio = false;
-    const markSpeaking = () => {
-      if (!loggedFirstAudio) { loggedFirstAudio = true; tlog("TTS first audio (onstart/onboundary)"); }
-      setAiVoiceActive(true);
-      startSpeaking?.(); // fire onStart callback (idempotent guard is in startSpeaking itself)
-    };
-    utter.onstart = markSpeaking;
-    utter.onboundary = markSpeaking;
-    utter.onend = finish;
-    utter.onerror = finish;
-
-    tlog("TTS speak() called");
-    window.speechSynthesis.speak(utter);
-
-    // Watchdog: detect real end-of-speech even when `onend` never fires, and bail
-    // out if speech never starts. `everSpoke` is for END detection only.
-    let ticks = 0;
-    let everSpoke = false;
-    speakWatchdogRef.current = setInterval(() => {
-      ticks += 1;
-      if (window.speechSynthesis.speaking) everSpoke = true;
-      const reallyEnded = everSpoke && !window.speechSynthesis.speaking && !window.speechSynthesis.pending;
-      const neverStarted = !everSpoke && ticks > 8; // ~2s with no speech at all
-      if (reallyEnded || neverStarted) finish();
-    }, 250);
-  }, []);
-
-  // Keep the browser-TTS fallback reachable from speakText without making it a
-  // dependency (avoids a use-before-define cycle), mirroring startListeningRef.
-  useEffect(() => {
-    speakWithBrowserRef.current = speakWithBrowserTTS;
-  }, [speakWithBrowserTTS]);
-
-  // Apply one AI turn returned by the backend (shared by the typed and voice
-  // paths): either deliver Mav's next question/chitchat and reopen the mic when
-  // she finishes, or — on the final turn — speak the goodbye and then show results.
-  // prefetchedAudioUrl: blob URL decoded from the /respond audio_b64 field (voice
-  // path only); null for typed answers and the goodbye / result turn.
-  const applyTurnResponse = useCallback((data, prefetchedAudioUrl = null) => {
-    if (data.passed !== undefined) {
-      // Interview is over, but say the goodbye DURING the interview (avatar still
-      // lip-syncing) and only switch to the results page once Mav's voice ends.
-      const goodbye = data.passed
-        ? "Congratulations! You passed the assessment. Thank you for completing the interview. Take care and goodbye!"
-        : "Thank you for participating. You can review the material and try the assessment again anytime. Take care and goodbye!";
-      setResults(data);
-      setWaitingForStudent(false);
+  // Handle one realtime server event arriving on the data channel. Field names are
+  // matched tolerantly (delta/done suffixes) so minor API-version differences in
+  // the transcript event names don't drop captions.
+  const handleRealtimeEvent = useCallback((evt) => {
+    const t = evt.type || "";
+    if (t === "input_audio_buffer.speech_started") {
+      setIsGreeting(false);
+      setMicActive(true);
+      setStatus("LISTENING");
+    } else if (t === "input_audio_buffer.speech_stopped") {
       setMicActive(false);
-      setCurrentAIText(goodbye);
-      setTranscript((prev) => [...prev, { speaker: "ai", text: goodbye }]);
-      // Status flips to "AI SPEAKING" only once the goodbye audio actually starts.
-      speakText(goodbye, () => {
-        setIsFinished(true);
-        setStatus("COMPLETE");
-      }, () => setStatus("AI SPEAKING"));
-    } else {
-      setCurrentAIText(data.text);
-      // Only advance the question counter on a real interview answer, not chitchat.
-      if (!data.is_chitchat) {
-        setQuestionNum(data.question_number);
+      setStatus("AI PROCESSING");
+    } else if (t.endsWith("input_audio_transcription.delta")) {
+      userTextRef.current += evt.delta || "";
+      setLiveTranscript(userTextRef.current);
+    } else if (t.endsWith("input_audio_transcription.completed")) {
+      const text = (evt.transcript || userTextRef.current || "").trim();
+      userTextRef.current = "";
+      if (text) {
+        pushTranscript({ speaker: "student", text });
+        setLiveTranscript(text);
+        answersRef.current += 1;
       }
-      setTranscript((prev) => [...prev, { speaker: "ai", text: data.text }]);
-      setWaitingForStudent(false);
-      // Status flips to "AI SPEAKING" only once audio actually starts — no more
-      // silent "speaking" label while the TTS audio is still loading.
-      speakText(data.text, () => {
-        setTimeout(() => {
-          setWaitingForStudent(true);
-          setStatus("WAITING FOR YOU");
-          questionStartRef.current = Date.now();
-          tlog("handoff: opening mic for student answer");
-          if (startListeningRef.current) startListeningRef.current();
-        }, MIC_HANDOFF_MS);
-      }, () => setStatus("AI SPEAKING"), prefetchedAudioUrl);
-    }
-  }, [speakText]);
-
-  // Typed-answer path (the fallback text box). Voice answers go through the
-  // merged submitAudioAnswer below; this still uses /api/interview/answer.
-  const submitAnswer = useCallback(async (answerText) => {
-    if (submittingRef.current || !sessionId) return;
-    const trimmed = answerText.trim();
-    if (!trimmed) return;
-
-    submittingRef.current = true;
-    setStatus("AI PROCESSING");
-    setWaitingForStudent(false);
-    setMicActive(false);
-
-    const responseTime = questionStartRef.current ? Date.now() - questionStartRef.current : 0;
-    const pauseCount = pauseCountRef.current;
-    const longPauseMs = longPauseMsRef.current;
-    const fillerWordCount = countFillers(trimmed);
-
-    // Show the raw (filler-included) answer in the UI transcript. Keep it visible
-    // as the caption (don't clear liveTranscript) until Mav starts speaking.
-    setTranscript((prev) => [...prev, { speaker: "student", text: trimmed }]);
-    setLiveTranscript(trimmed);
-    setFillerCount(0);
-
-    // Send cleaned answer (fillers removed) to backend for fairer technical scoring
-    const cleaned = cleanAnswer(trimmed);
-
-    // Resilient POST: each attempt has a timeout, and transient network failures
-    // (brief connection drop, slow LLM turn) are retried so a raw "Failed to fetch"
-    // never lands on screen.
-    const postAnswer = async (payload) => {
-      let lastErr = null;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 45000);
-        try {
-          const r = await authFetch("/api/interview/answer", {
-            method: "POST",
-            body: JSON.stringify(payload),
-            signal: controller.signal,
-          });
-          clearTimeout(timer);
-          return r; // got an HTTP response (even if non-2xx) — stop retrying
-        } catch (e) {
-          clearTimeout(timer);
-          lastErr = e;
-          if (attempt < 2) await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
-        }
+    } else if (t === "response.created") {
+      aiTextRef.current = "";
+      setStatus("AI SPEAKING");
+    } else if (t.includes("audio_transcript") && t.endsWith(".delta")) {
+      aiTextRef.current += evt.delta || "";
+      setCurrentAIText(aiTextRef.current);
+    } else if (t.includes("audio_transcript") && t.endsWith(".done")) {
+      const text = (evt.transcript || aiTextRef.current || "").trim();
+      aiTextRef.current = "";
+      if (text) {
+        pushTranscript({ speaker: "ai", text });
+        setCurrentAIText(text);
+        setQuestionNum((n) => Math.min(n + 1, MAX_QUESTIONS));
       }
-      throw lastErr || new Error("Network error");
-    };
-
-    try {
-      const res = await postAnswer({
-        session_id: sessionId,
-        answer_text: cleaned || trimmed,
-        response_time_ms: responseTime,
-        pause_count: pauseCount,
-        long_pause_ms: longPauseMs,
-        filler_word_count: fillerWordCount,
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || "Failed to submit answer");
-      }
-      const data = await res.json();
-
-      // Reset metrics for next answer
-      pauseCountRef.current = 0;
-      longPauseMsRef.current = 0;
-      fillerCountRef.current = 0;
-
-      applyTurnResponse(data);
-    } catch (err) {
-      // Friendly, recoverable: keep the student in the flow so they can simply
-      // tap the mic and answer again (or type) — no dead "ERROR" state.
-      setError(friendlyNetworkError(err));
-      setWaitingForStudent(true);
-      setStatus("WAITING FOR YOU");
-    } finally {
-      submittingRef.current = false;
-    }
-  }, [authFetch, sessionId, applyTurnResponse]);
-
-  // Voice-answer path (MERGED round-trip). The recorded answer is uploaded ONCE
-  // to /api/interview/respond, which transcribes AND processes it server-side and
-  // returns BOTH the student's transcript and Mav's reply together — removing the
-  // old second hop (separate /transcribe then /answer). The student immediately
-  // sees what they said and what Mav answered; Mav's voice is then fetched from /tts.
-  const submitAudioAnswer = useCallback(async (blob) => {
-    if (submittingRef.current || !sessionId) return;
-
-    submittingRef.current = true;
-    setStatus("AI PROCESSING");
-    setWaitingForStudent(false);
-    setMicActive(false);
-
-    const responseTime = questionStartRef.current ? Date.now() - questionStartRef.current : 0;
-    const pauseCount = pauseCountRef.current;
-    const longPauseMs = longPauseMsRef.current;
-
-    const postRespond = async () => {
-      let lastErr = null;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 60000);
-        try {
-          const form = new FormData();
-          form.append("audio", blob, "answer.webm");
-          form.append("session_id", sessionId);
-          form.append("response_time_ms", String(responseTime));
-          form.append("pause_count", String(pauseCount));
-          form.append("long_pause_ms", String(longPauseMs));
-          const r = await authFetch("/api/interview/respond", {
-            method: "POST",
-            body: form,
-            signal: controller.signal,
-          });
-          clearTimeout(timer);
-          return r;
-        } catch (e) {
-          clearTimeout(timer);
-          lastErr = e;
-          if (attempt < 2) await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
-        }
-      }
-      throw lastErr || new Error("Network error");
-    };
-
-    try {
-      const res = await postRespond();
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || "Failed to submit answer");
-      }
-      const data = await res.json();
-
-      // Nothing intelligible was captured — keep the student in the flow.
-      if (data.no_speech || !data.student_text) {
-        setLiveTranscript("");
-        setError("I couldn't hear that clearly — tap the mic to try again, or type your answer below.");
+    } else if (t === "response.done") {
+      // Once the student has answered all questions, flag the interview to end
+      // after Mav finishes speaking her closing remark (handled in an effect).
+      if (answersRef.current >= MAX_QUESTIONS) {
+        setShouldEnd(true);
+      } else {
         setStatus("WAITING FOR YOU");
-        setWaitingForStudent(true);
-        return;
       }
-
-      // Show what the student said (from the server transcript) before Mav replies.
-      setTranscript((prev) => [...prev, { speaker: "student", text: data.student_text }]);
-      setLiveTranscript(data.student_text);
-      setFillerCount(0);
-
-      pauseCountRef.current = 0;
-      longPauseMsRef.current = 0;
-      fillerCountRef.current = 0;
-
-      // Decode the TTS audio that /respond embedded in the JSON so Mav's voice
-      // can start immediately — no separate /tts round-trip, no silent gap.
-      let prefetchedAudioUrl = null;
-      if (data.audio_b64 && data.audio_mime) {
-        try {
-          const bytes = Uint8Array.from(atob(data.audio_b64), (c) => c.charCodeAt(0));
-          const blob = new Blob([bytes], { type: data.audio_mime });
-          prefetchedAudioUrl = URL.createObjectURL(blob);
-        } catch { /* ignore — speakText falls back to /tts */ }
-      }
-
-      applyTurnResponse(data, prefetchedAudioUrl);
-    } catch (err) {
-      setError(friendlyNetworkError(err));
-      setWaitingForStudent(true);
-      setStatus("WAITING FOR YOU");
-    } finally {
-      submittingRef.current = false;
+    } else if (t === "error") {
+      tlog("realtime error event: " + JSON.stringify(evt.error || evt));
     }
-  }, [authFetch, sessionId, applyTurnResponse]);
+  }, [pushTranscript]);
 
+  // Configure the session once the data channel is open, then ask Mav to open the
+  // interview (speak the greeting + first question).
+  const configureSession = useCallback((dc) => {
+    try {
+      // Enable transcription of the student's speech and server-side turn
+      // detection so Mav waits for the student to finish before replying.
+      dc.send(JSON.stringify({
+        type: "session.update",
+        session: {
+          type: "realtime",
+          audio: {
+            input: {
+              // Pin transcription to English so the captions (and the saved
+              // transcript) don't get mis-detected as another language.
+              transcription: { model: "whisper-1", language: "en" },
+              turn_detection: { type: "server_vad", silence_duration_ms: 700 },
+            },
+          },
+        },
+      }));
+      // Kick off the conversation — Mav greets and asks the first question.
+      dc.send(JSON.stringify({ type: "response.create" }));
+    } catch (e) {
+      tlog("configureSession failed: " + (e?.message || e));
+    }
+  }, []);
+
+  // Tear down the WebRTC connection + analyser + mic. Idempotent.
+  const teardownRealtime = useCallback(() => {
+    if (teardownDoneRef.current) return;
+    teardownDoneRef.current = true;
+    if (voiceIntervalRef.current) { clearInterval(voiceIntervalRef.current); voiceIntervalRef.current = null; }
+    if (voiceCtxRef.current) { try { voiceCtxRef.current.close(); } catch { /* noop */ } voiceCtxRef.current = null; }
+    if (dcRef.current) { try { dcRef.current.close(); } catch { /* noop */ } dcRef.current = null; }
+    if (pcMicStreamRef.current) { pcMicStreamRef.current.getTracks().forEach((tr) => tr.stop()); pcMicStreamRef.current = null; }
+    if (pcRef.current) { try { pcRef.current.close(); } catch { /* noop */ } pcRef.current = null; }
+    if (remoteAudioRef.current) { try { remoteAudioRef.current.pause(); } catch { /* noop */ } remoteAudioRef.current.srcObject = null; remoteAudioRef.current = null; }
+    setAiVoiceActive(false);
+    setMicActive(false);
+  }, []);
+
+  // Open the WebRTC connection to OpenAI using the ephemeral client secret.
+  const connectRealtime = useCallback(async (startData) => {
+    const clientSecret = startData.client_secret;
+    const model = startData.model;
+    if (!clientSecret) throw new Error("No realtime token returned — cannot start the interview.");
+    teardownDoneRef.current = false;
+
+    const pc = new RTCPeerConnection();
+    pcRef.current = pc;
+
+    // Play Mav's voice and analyse it for lip-sync.
+    const audioEl = new Audio();
+    audioEl.autoplay = true;
+    remoteAudioRef.current = audioEl;
+    pc.ontrack = (e) => {
+      const [stream] = e.streams;
+      audioEl.srcObject = stream;
+      audioEl.play().catch((err) => tlog("remote audio play() blocked: " + (err?.message || err)));
+      setupVoiceAnalyser(stream);
+    };
+
+    // Stream the student's mic to OpenAI.
+    const mic = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      video: false,
+    });
+    pcMicStreamRef.current = mic;
+    mic.getTracks().forEach((tr) => pc.addTrack(tr, mic));
+
+    // Realtime events flow over a data channel.
+    const dc = pc.createDataChannel("oai-events");
+    dcRef.current = dc;
+    dc.onopen = () => { tlog("data channel open"); configureSession(dc); };
+    dc.onmessage = (e) => {
+      let evt;
+      try { evt = JSON.parse(e.data); } catch { return; }
+      handleRealtimeEvent(evt);
+    };
+
+    // SDP offer/answer handshake with OpenAI (authenticated by the ephemeral key).
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    const resp = await fetch(`${REALTIME_BASE_URL}?model=${encodeURIComponent(model || "")}`, {
+      method: "POST",
+      body: offer.sdp,
+      headers: {
+        Authorization: `Bearer ${clientSecret}`,
+        "Content-Type": "application/sdp",
+      },
+    });
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => "");
+      throw new Error(`Realtime connection failed (${resp.status}). ${detail.slice(0, 200)}`);
+    }
+    const answerSdp = await resp.text();
+    await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+    tlog("WebRTC connected to OpenAI Realtime");
+  }, [configureSession, handleRealtimeEvent, setupVoiceAnalyser]);
+
+  // Send a typed answer over the data channel (the accessibility fallback when
+  // the student would rather type than speak).
+  const sendTypedAnswer = useCallback((text) => {
+    const dc = dcRef.current;
+    const trimmed = (text || "").trim();
+    if (!dc || dc.readyState !== "open" || !trimmed) return;
+    pushTranscript({ speaker: "student", text: trimmed });
+    setLiveTranscript(trimmed);
+    dc.send(JSON.stringify({
+      type: "conversation.item.create",
+      item: { type: "message", role: "user", content: [{ type: "input_text", text: trimmed }] },
+    }));
+    dc.send(JSON.stringify({ type: "response.create" }));
+    setStatus("AI PROCESSING");
+  }, [pushTranscript]);
+
+  // Toggle the local mic on/off (mute). Realtime streams continuously, so muting
+  // simply disables the outgoing track.
+  const toggleMute = useCallback(() => {
+    const stream = pcMicStreamRef.current;
+    if (!stream) return;
+    setMicMuted((prev) => {
+      const nextMuted = !prev;
+      stream.getAudioTracks().forEach((tr) => { tr.enabled = !nextMuted; });
+      return nextMuted;
+    });
+  }, []);
+
+  // ── Whole-session recording (screen + Mav's voice + student mic → R2) ──
   // Begin recording the whole interview: screen + system/tab audio (which carries
-  // Mav's TTS voice) from getDisplayMedia, mixed with the student's mic. Returns
-  // true if recording is running, false if the student declined / it's unsupported
-  // (the interview still proceeds in that case — recording is best-effort).
+  // Mav's voice from the tab) mixed with the student's mic. Returns true if running.
   const startSessionRecording = useCallback(async () => {
     if (recordingActiveRef.current) return true;
     if (
@@ -592,8 +384,6 @@ export default function InterviewRoom({
       return false;
     }
 
-    // 1) Screen + audio. The browser shows its screen-share picker here; the
-    //    student must tick "share tab/system audio" so Mav's voice is captured.
     let display;
     try {
       display = await navigator.mediaDevices.getDisplayMedia({
@@ -601,11 +391,10 @@ export default function InterviewRoom({
         audio: true,
       });
     } catch {
-      return false; // declined / dismissed — caller decides what to do next
+      return false; // declined / dismissed
     }
     displayStreamRef.current = display;
 
-    // 2) Student mic (separate from the per-answer STT mic so the two never fight).
     let mic = null;
     try {
       mic = await navigator.mediaDevices.getUserMedia({
@@ -614,10 +403,9 @@ export default function InterviewRoom({
       });
       recordMicStreamRef.current = mic;
     } catch {
-      // No mic → we still record the screen + Mav's voice (student audio missing).
+      // No mic → still record the screen + Mav's voice.
     }
 
-    // 3) Mix the screen audio and the mic into one track via an AudioContext.
     const videoTrack = display.getVideoTracks()[0];
     const tracks = [];
     if (videoTrack) tracks.push(videoTrack);
@@ -635,14 +423,12 @@ export default function InterviewRoom({
       const mixed = dest.stream.getAudioTracks()[0];
       if (mixed) tracks.push(mixed);
     } catch {
-      // Mixing failed → fall back to the raw screen audio track alone.
       const a = display.getAudioTracks()[0];
       if (a) tracks.push(a);
     }
 
     const combined = new MediaStream(tracks);
 
-    // 4) Record the combined stream for the whole session.
     let recorder;
     try {
       const mime = window.MediaRecorder.isTypeSupported?.("video/webm;codecs=vp9,opus")
@@ -660,32 +446,24 @@ export default function InterviewRoom({
     recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) sessionChunksRef.current.push(e.data); };
     sessionRecorderRef.current = recorder;
 
-    // If the student stops the screen share from the browser's own UI, end the
-    // recording gracefully (the interview itself keeps going).
     if (videoTrack) {
       videoTrack.addEventListener("ended", () => {
         if (recordingActiveRef.current) finalizeSessionRecordingRef.current?.();
       });
     }
 
-    // NOTE: we do NOT call recorder.start() here. The screen-share permission must
-    // be acquired during the user's click (above), but the model can take 1-2 min
-    // to return the first question, and we don't want that loading time in the
-    // recording. beginSessionCapture() actually starts the recorder once the
-    // interview screen is ready.
     recordingPreparedRef.current = true;
     tlog("session recording prepared (waiting for interview screen)");
     return true;
   }, []);
 
-  // Start the prepared recorder. Called the moment the interview screen is ready
-  // (first question received) so the model-loading wait is never recorded.
+  // Start the prepared recorder once the interview screen is ready.
   const beginSessionCapture = useCallback(() => {
     if (!recordingPreparedRef.current || recordingActiveRef.current) return;
     const rec = sessionRecorderRef.current;
     if (!rec) return;
     try {
-      rec.start(1000); // gather data every second so nothing is lost on stop
+      rec.start(1000);
       recordingActiveRef.current = true;
       tlog("session recording started (interview screen visible)");
     } catch (e) {
@@ -693,15 +471,12 @@ export default function InterviewRoom({
     }
   }, []);
 
-  // Stop the full-session recorder, upload the resulting file to R2, and release
-  // the screen/mic devices. Idempotent — safe to call from finish, end-call, and
-  // unmount; only the first call does the work.
+  // Stop the full-session recorder, upload the file to R2, release devices.
+  // Idempotent — safe to call from finish, end-call, and unmount.
   const finalizeSessionRecording = useCallback(async () => {
     if (recordingUploadedRef.current) return;
     const recorder = sessionRecorderRef.current;
     if (!recorder || !recordingActiveRef.current) {
-      // Recorder was never started (e.g. prepared, then the interview aborted
-      // before the screen appeared). Just release the captured devices.
       recordingActiveRef.current = false;
       recordingPreparedRef.current = false;
       if (recordAudioCtxRef.current) { try { recordAudioCtxRef.current.close(); } catch { /* noop */ } recordAudioCtxRef.current = null; }
@@ -712,14 +487,12 @@ export default function InterviewRoom({
     recordingUploadedRef.current = true;
     recordingActiveRef.current = false;
 
-    // Wait for the recorder to flush its final chunk before building the blob.
     const stopped = new Promise((resolve) => {
       recorder.onstop = () => resolve();
       try { recorder.stop(); } catch { resolve(); }
     });
     await stopped;
 
-    // Tear down capture devices now that recording has ended.
     if (recordAudioCtxRef.current) { try { recordAudioCtxRef.current.close(); } catch { /* noop */ } recordAudioCtxRef.current = null; }
     if (displayStreamRef.current) { displayStreamRef.current.getTracks().forEach((t) => t.stop()); displayStreamRef.current = null; }
     if (recordMicStreamRef.current) { recordMicStreamRef.current.getTracks().forEach((t) => t.stop()); recordMicStreamRef.current = null; }
@@ -741,8 +514,6 @@ export default function InterviewRoom({
       if (!res.ok) throw new Error("upload failed");
       tlog("interview recording uploaded");
     } catch (e) {
-      // Non-fatal: the student already has their result; the recording just won't
-      // appear in the teacher panel.
       tlog("interview recording upload failed: " + (e?.message || e));
     }
   }, [authFetch]);
@@ -751,70 +522,40 @@ export default function InterviewRoom({
     finalizeSessionRecordingRef.current = finalizeSessionRecording;
   }, [finalizeSessionRecording]);
 
+  // Start the interview: fetch the ephemeral token + context, start the recorder,
+  // then open the WebRTC connection. Mav greets and the conversation begins.
   const startSession = useCallback(async () => {
     setLoading(true);
     setError("");
-    setIsGreeting(true); // Mav is about to greet — not processing a student answer
+    setIsGreeting(true);
     try {
       const data = await doStart();
       setSessionId(data.session_id);
       sessionIdRef.current = data.session_id;
-      setTitleText(data.chapter_title || "");
-      setQuestionNum(data.question_number);
+      setStatus("CONNECTING");
 
-      const msg = data.text;
-      setTranscript([{ speaker: "ai", text: msg }]);
-      setCurrentAIText(msg);
-      setStatus("AI SPEAKING"); // Mav is greeting — label it clearly from the start
-      setWaitingForStudent(false);
-
-      // The interview screen is now ready — START recording here so the (often
-      // 1-2 min) model-loading wait above is never captured. The greeting and the
-      // whole conversation that follow ARE recorded.
+      // Start recording now so the connection wait isn't captured; the greeting
+      // and the whole conversation that follow ARE recorded.
       beginSessionCapture();
 
-      speakText(msg, () => {
-        setIsGreeting(false); // greeting done — subsequent AI turns are answer responses
-        setTimeout(() => {
-          setWaitingForStudent(true);
-          setStatus("WAITING FOR YOU");
-          questionStartRef.current = Date.now();
-          tlog("handoff: opening mic after greeting");
-          if (startListeningRef.current) startListeningRef.current();
-        }, MIC_HANDOFF_MS);
-      }, () => setStatus("AI SPEAKING"));
+      await connectRealtime(data);
+
+      setStatus("AI SPEAKING");
     } catch (err) {
       setIsGreeting(false);
       setError(friendlyNetworkError(err));
-      // The interview never started — release the prepared (never-recorded) screen
-      // share so the student isn't left sharing their screen for nothing.
       if (!recordingActiveRef.current) finalizeSessionRecordingRef.current?.();
     } finally {
       setLoading(false);
     }
-  }, [doStart, speakText, beginSessionCapture]);
+  }, [doStart, connectRealtime, beginSessionCapture]);
 
-  // Warm the TTS voice list on mount. Browsers load voices asynchronously, so
-  // touching getVoices() (and listening for "voiceschanged") here means the list
-  // is ready by the time the start-interview network call returns — the greeting
-  // then speaks with the preferred voice and is never skipped due to loading.
-  useEffect(() => {
-    if (typeof window === "undefined" || !window.speechSynthesis) return;
-    window.speechSynthesis.getVoices();
-    const onVoices = () => window.speechSynthesis.getVoices();
-    window.speechSynthesis.addEventListener?.("voiceschanged", onVoices);
-    return () => window.speechSynthesis.removeEventListener?.("voiceschanged", onVoices);
-  }, []);
-
-  // Begin the recorded interview once the student has consented to screen sharing.
-  // We acquire the screen+audio capture FIRST (needs the click's user gesture),
-  // then kick off the interview turn. If sharing is declined the student can still
-  // continue without a recording.
+  // Consent gate: camera + mic + screen-share are mandatory (screen-share is what
+  // lets us record Mav's voice + the student for the teacher to review later).
   const beginInterview = useCallback(async () => {
     setPreparing(true);
     setRecordingNotice("");
 
-    // 1) Camera must be accessible
     try {
       const camTest = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
       camTest.getTracks().forEach((t) => t.stop());
@@ -824,7 +565,6 @@ export default function InterviewRoom({
       return;
     }
 
-    // 2) Microphone must be accessible
     try {
       const micTest = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       micTest.getTracks().forEach((t) => t.stop());
@@ -834,7 +574,6 @@ export default function InterviewRoom({
       return;
     }
 
-    // 3) Screen sharing is mandatory — interview cannot proceed without it
     const ok = await startSessionRecording();
     setPreparing(false);
     if (ok) {
@@ -846,39 +585,21 @@ export default function InterviewRoom({
     }
   }, [startSessionRecording]);
 
+  // Kick off the interview only AFTER the consent gate is passed.
   useEffect(() => {
-    // Kick off the interview turn only AFTER the consent gate is passed.
     if (!hasStarted) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     startSession();
     return () => {
-      // Flush/upload the recording if the student leaves mid-interview.
       finalizeSessionRecordingRef.current?.();
-      if (vadIntervalRef.current) clearInterval(vadIntervalRef.current);
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-        try { mediaRecorderRef.current.stop(); } catch { /* noop */ }
-      }
-      if (audioCtxRef.current) { try { audioCtxRef.current.close(); } catch { /* noop */ } audioCtxRef.current = null; }
-      if (micStreamRef.current) {
-        micStreamRef.current.getTracks().forEach((t) => t.stop());
-        micStreamRef.current = null;
-      }
-      stopTtsAudio();
-      if (typeof window !== "undefined") window.speechSynthesis?.cancel();
-      if (speakWatchdogRef.current) clearInterval(speakWatchdogRef.current);
+      teardownRealtime();
     };
-  }, [hasStarted, startSession, stopTtsAudio]);
+  }, [hasStarted, startSession, teardownRealtime]);
 
-  // Animate the avatar's mouth ONLY while Mav's voice is actually playing
-  // (asking/answering aloud) by swapping closed/opened frames. When the voice is
-  // not playing we simply don't run the interval; the render gates the open frame
-  // on `aiVoiceActive`, so the avatar shows the closed frame at every other time
-  // (including while the AI processes the student's answer) — no reset setState.
+  // Animate the avatar's mouth ONLY while Mav's voice is actually playing.
   useEffect(() => {
     if (!aiVoiceActive) return;
-    const interval = setInterval(() => {
-      setAvatarMouthOpen((prev) => !prev);
-    }, 200);
+    const interval = setInterval(() => setAvatarMouthOpen((prev) => !prev), 200);
     return () => clearInterval(interval);
   }, [aiVoiceActive]);
 
@@ -956,7 +677,7 @@ export default function InterviewRoom({
     };
   }, []);
 
-  // Release the camera AND microphone once the assessment is complete.
+  // Release the camera once the assessment is complete.
   useEffect(() => {
     if (!isFinished) return;
     if (cameraStreamRef.current) {
@@ -964,29 +685,17 @@ export default function InterviewRoom({
       cameraStreamRef.current = null;
       setCameraOn(false);
     }
-    if (vadIntervalRef.current) { clearInterval(vadIntervalRef.current); vadIntervalRef.current = null; }
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-      mediaRecorderRef.current.onstop = null;
-      try { mediaRecorderRef.current.stop(); } catch { /* noop */ }
-    }
-    if (audioCtxRef.current) { try { audioCtxRef.current.close(); } catch { /* noop */ } audioCtxRef.current = null; }
-    if (micStreamRef.current) {
-      micStreamRef.current.getTracks().forEach((t) => t.stop());
-      micStreamRef.current = null;
-    }
-  }, [isFinished]);
+    teardownRealtime();
+  }, [isFinished, teardownRealtime]);
 
   // Once the interview is over, stop the full-session recorder and upload it to R2.
-  // Idempotent (covers normal completion, "end early", and the unmount path).
   useEffect(() => {
     if (!isFinished) return;
     finalizeSessionRecording();
   }, [isFinished, finalizeSessionRecording]);
 
-  // Stable callback ref for the student's <video>. Must NOT be an inline arrow:
-  // an inline ref is re-invoked on every render (e.g. the 200ms avatar swap),
-  // which would re-assign srcObject and make the camera flicker/jump. Here we
-  // only (re)attach the stream when the element or stream actually changes.
+  // Stable callback ref for the student's <video> so the camera doesn't flicker
+  // when the component re-renders (e.g. the 200ms avatar swap).
   const attachStudentVideo = useCallback((el) => {
     studentVideoRef.current = el;
     if (el && cameraStreamRef.current && el.srcObject !== cameraStreamRef.current) {
@@ -994,222 +703,38 @@ export default function InterviewRoom({
     }
   }, []);
 
-  // Stop the active recorder + VAD. The recorder's onstop handler then builds the
-  // blob, transcribes it server-side, and submits. Idempotent.
-  const stopRecording = useCallback(() => {
-    if (vadIntervalRef.current) { clearInterval(vadIntervalRef.current); vadIntervalRef.current = null; }
-    if (audioCtxRef.current) { try { audioCtxRef.current.close(); } catch { /* noop */ } audioCtxRef.current = null; }
-    const rec = mediaRecorderRef.current;
-    if (rec && rec.state !== "inactive") {
-      try { rec.stop(); } catch { /* noop */ }
-    }
-  }, []);
-
-  // Open the mic and RECORD the student's answer, then transcribe it server-side
-  // (Groq Whisper). The browser Web Speech API is unreliable/blocked on many
-  // networks, so we never depend on it. A local Voice Activity Detector watches
-  // the mic level and auto-stops after a trailing silence; the student can also
-  // tap the mic to submit immediately.
-  const startListening = useCallback(async () => {
-    if (
-      typeof navigator === "undefined" ||
-      !navigator.mediaDevices?.getUserMedia ||
-      typeof window === "undefined" ||
-      !window.MediaRecorder
-    ) {
-      setError("Voice recording isn't supported in this browser. Please type your answer below.");
-      setMicActive(false);
-      return;
-    }
-
-    // Stop TTS (neural + browser) so Mav's voice isn't recorded into the answer.
-    stopTtsAudio();
-    window.speechSynthesis?.cancel();
-
-    // Acquire (or reuse) a held mic stream.
-    let stream = micStreamRef.current;
-    try {
-      if (!stream || !stream.active) {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-          video: false,
-        });
-        micStreamRef.current = stream;
-      }
-    } catch {
-      setError("Couldn't access your microphone. Allow mic permission, or type your answer below.");
-      setMicActive(false);
-      return;
-    }
-
-    // Reset per-answer state.
-    fillerCountRef.current = 0;
-    pauseCountRef.current = 0;
-    longPauseMsRef.current = 0;
-    speechDetectedRef.current = false;
-    speechStartedAtRef.current = 0;
-    audioChunksRef.current = [];
-    recordStartRef.current = Date.now();
-    lastVoiceRef.current = Date.now();
-    setLiveTranscript("");
-    setFillerCount(0);
-
-    // Build the recorder.
-    let recorder;
-    try {
-      const mime = window.MediaRecorder.isTypeSupported?.("audio/webm;codecs=opus")
-        ? "audio/webm;codecs=opus"
-        : (window.MediaRecorder.isTypeSupported?.("audio/webm") ? "audio/webm" : "");
-      recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
-    } catch {
-      setError("Couldn't start the recorder. Please type your answer below.");
-      setMicActive(false);
-      return;
-    }
-    mediaRecorderRef.current = recorder;
-    recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data); };
-
-    recorder.onstop = async () => {
-      if (vadIntervalRef.current) { clearInterval(vadIntervalRef.current); vadIntervalRef.current = null; }
-      if (audioCtxRef.current) { try { audioCtxRef.current.close(); } catch { /* noop */ } audioCtxRef.current = null; }
-      setMicActive(false);
-
-      const chunks = audioChunksRef.current;
-      audioChunksRef.current = [];
-      // Transcribe whenever we have audio. We intentionally do NOT gate on the VAD
-      // (speechDetected): the recorder captures audio independently, so a manual
-      // mic-off always submits even if VAD/AudioContext misbehaves. Pure silence
-      // simply transcribes to "" and is handled below.
-      if (!chunks.length) {
-        tlog("recording stopped — no audio captured, not submitting");
-        setLiveTranscript("");
-        if (waitingForStudentRef.current && !submittingRef.current) setStatus("WAITING FOR YOU");
-        return;
-      }
-
-      const blob = new Blob(chunks, { type: chunks[0].type || "audio/webm" });
-      tlog(`submitting ${(blob.size / 1024).toFixed(0)}KB answer audio (merged transcribe+process)`);
-      transcribingRef.current = true;
-      setStatus("TRANSCRIBING");
-      setLiveTranscript("");
-      try {
-        // ONE round-trip: upload the audio, get back the transcript AND Mav's reply.
-        await submitAudioAnswer(blob);
-      } finally {
-        transcribingRef.current = false;
-      }
-    };
-
-    try {
-      recorder.start();
-    } catch {
-      setError("Couldn't start recording. Please type your answer below.");
-      setMicActive(false);
-      return;
-    }
-    setMicActive(true);
-    setStatus("LISTENING");
-    tlog("MediaRecorder.start() — recording answer");
-
-    // ── Voice Activity Detection: auto-submit on trailing silence ──
-    try {
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      const ctx = new AudioCtx();
-      audioCtxRef.current = ctx;
-      // The context can start "suspended" under autoplay policy → resume so the
-      // analyser actually receives samples (otherwise VAD reads constant silence).
-      if (ctx.state === "suspended") ctx.resume().catch(() => {});
-      const source = ctx.createMediaStreamSource(stream);
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 512;
-      source.connect(analyser);
-      const buf = new Uint8Array(analyser.fftSize);
-
-      vadIntervalRef.current = setInterval(() => {
-        analyser.getByteTimeDomainData(buf);
-        let sum = 0;
-        for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
-        const rms = Math.sqrt(sum / buf.length);
-        const now = Date.now();
-
-        if (rms > VAD_THRESHOLD) {
-          if (!speechDetectedRef.current) {
-            speechDetectedRef.current = true;
-            speechStartedAtRef.current = now;
-            tlog("VAD: speech detected");
-          }
-          lastVoiceRef.current = now;
-        } else if (speechDetectedRef.current) {
-          const voiced = lastVoiceRef.current - speechStartedAtRef.current;
-          const silence = now - lastVoiceRef.current;
-          if (silence >= SILENCE_MS && voiced >= MIN_SPEECH_MS) {
-            tlog(`VAD: ${SILENCE_MS}ms trailing silence → auto-submitting`);
-            stopRecording();
-            return;
-          }
-        }
-        if (now - recordStartRef.current >= MAX_RECORD_MS) {
-          tlog("VAD: max record length reached → auto-submitting");
-          stopRecording();
-        }
-      }, 100);
-    } catch (e) {
-      // VAD is best-effort; without it the student can still submit via the mic button.
-      tlog("VAD init failed (non-fatal): " + (e?.message || e));
-    }
-  }, [submitAudioAnswer, stopRecording, stopTtsAudio]);
-
-  // Always keep the ref current so speakText onEnd callbacks don't go stale
-  useEffect(() => {
-    startListeningRef.current = startListening;
-  }, [startListening]);
-
-  const stopListeningAndSubmit = useCallback(() => {
-    // Manual stop: finalize the recording. Its onstop handler transcribes + submits
-    // (or returns to WAITING if nothing was actually spoken).
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-      tlog("manual stop → finalizing answer");
-      stopRecording();
-    } else {
-      setMicActive(false);
-      setStatus("WAITING FOR YOU");
-    }
-  }, [stopRecording]);
-
-  const handleToggleMic = () => {
-    if (!waitingForStudent || submittingRef.current || transcribingRef.current) return;
-    if (micActive) {
-      stopListeningAndSubmit();
-    } else {
-      startListening();
-    }
-  };
-
-  const handleEndCall = async () => {
+  // End the interview: close the realtime connection, then grade the transcript.
+  const handleEndCall = useCallback(async () => {
     if (!sessionId) return;
-    if (vadIntervalRef.current) { clearInterval(vadIntervalRef.current); vadIntervalRef.current = null; }
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-      mediaRecorderRef.current.onstop = null; // don't transcribe/submit a half answer
-      try { mediaRecorderRef.current.stop(); } catch { /* noop */ }
-    }
-    if (audioCtxRef.current) { try { audioCtxRef.current.close(); } catch { /* noop */ } audioCtxRef.current = null; }
-    if (micStreamRef.current) {
-      micStreamRef.current.getTracks().forEach((t) => t.stop());
-      micStreamRef.current = null;
-    }
+    teardownRealtime();
+    setStatus("AI PROCESSING");
     try {
-      const res = await authFetch(`/api/interview/end/${sessionId}`, { method: "POST" });
-      if (!res.ok) throw new Error("Failed to end interview");
+      const res = await authFetch("/api/interview/realtime/finish", {
+        method: "POST",
+        body: JSON.stringify({ session_id: sessionId, transcript: transcriptRef.current }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Failed to finish interview");
+      }
       const data = await res.json();
       setResults(data);
       setIsFinished(true);
       setStatus("COMPLETE");
-      stopTtsAudio();
-      if (typeof window !== "undefined") window.speechSynthesis?.cancel();
     } catch (err) {
-      setError(err.message);
+      setError(friendlyNetworkError(err));
+      setStatus("WAITING FOR YOU");
     }
-  };
+  }, [authFetch, sessionId, teardownRealtime]);
+
+  // After the student has answered all MAX_QUESTIONS, end the interview once Mav
+  // has finished speaking her closing remark (so we don't cut her off), then grade.
+  useEffect(() => {
+    if (!shouldEnd || isFinished || aiVoiceActive) return;
+    if (autoEndTriggeredRef.current) return;
+    autoEndTriggeredRef.current = true;
+    handleEndCall();
+  }, [shouldEnd, aiVoiceActive, isFinished, handleEndCall]);
 
   // ── Consent gate (screen share + camera + mic are mandatory) ────────────────────
   if (!hasStarted) {
@@ -1220,7 +745,6 @@ export default function InterviewRoom({
           <div className="card" style={{ maxWidth: 540, padding: "40px", textAlign: "center", backgroundColor: "#ffffff" }}>
             <h2 style={{ fontSize: "22px", fontWeight: "700", color: "var(--text-title)", marginBottom: "12px" }}>{heading}</h2>
 
-            {/* Requirements list */}
             <div style={{ backgroundColor: "#f8f9fa", borderRadius: "10px", padding: "16px 20px", marginBottom: "20px", textAlign: "left" }}>
               <p style={{ fontSize: "13px", fontWeight: "700", color: "var(--text-title)", marginBottom: "10px" }}>📋 Required before starting:</p>
               <ul style={{ margin: 0, padding: "0 0 0 18px", fontSize: "13.5px", lineHeight: "2", color: "var(--text-muted)" }}>
@@ -1256,7 +780,7 @@ export default function InterviewRoom({
               onClick={beginInterview}
               disabled={preparing}
             >
-              {preparing ? "Checking permissions\u2026" : "\uD83D\uDCF8 Share Screen, Camera & Mic \u2014 Begin Interview"}
+              {preparing ? "Checking permissions…" : "📸 Share Screen, Camera & Mic — Begin Interview"}
             </button>
 
             <Link href={backHref} style={{ display: "inline-block", marginTop: "16px", fontSize: "13px", color: "var(--text-muted)" }}>
@@ -1273,7 +797,7 @@ export default function InterviewRoom({
       <>
         <Navbar />
         <div className="page-container" style={{ padding: "120px 32px", textAlign: "center" }}>
-          <p style={{ color: "var(--text-muted)" }}>Initializing AI oral assessment…</p>
+          <p style={{ color: "var(--text-muted)" }}>Connecting to your AI interviewer…</p>
         </div>
       </>
     );
@@ -1392,9 +916,8 @@ export default function InterviewRoom({
   }
 
   // Captions follow whoever is *actively* talking:
-  //  • Mav's voice playing       → show her line
-  //  • mic recording             → "Listening…" prompt (server STT isn't live)
-  //  • transcribing / transcript → show the student's transcribed answer
+  //  • Mav's voice playing → show her line
+  //  • student speaking     → show the live transcript / "Listening…" prompt
   let captionText = "";
   let captionSpeaker = "";
   if (aiVoiceActive && currentAIText) {
@@ -1418,18 +941,13 @@ export default function InterviewRoom({
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
               <span className="badge badge-accent" style={{ backgroundColor: "rgba(255,255,255,0.1)", borderColor: "rgba(255,255,255,0.2)", color: "#8ab4f8", marginBottom: "6px" }}>
-                LIVE AI INTERVIEW — {questionNum === 0 ? "GREETING" : `Q${questionNum}/5`}
+                LIVE AI INTERVIEW — {questionNum === 0 ? "GREETING" : `Q${questionNum}/${MAX_QUESTIONS}`}
               </span>
               <h1 style={{ fontSize: "20px", fontWeight: "600", color: "#ffffff", margin: 0 }}>
                 {heading}
               </h1>
             </div>
             <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-              {micActive && fillerCount > 0 && (
-                <span style={{ fontSize: "11px", color: "#f28b82", backgroundColor: "rgba(242,139,130,0.15)", padding: "4px 10px", borderRadius: "12px", fontFamily: "JetBrains Mono", border: "1px solid rgba(242,139,130,0.3)" }}>
-                  {fillerCount} filler word{fillerCount !== 1 ? "s" : ""}
-                </span>
-              )}
               <span style={{ fontSize: "12px", color: "#e8eaed", backgroundColor: "#202124", padding: "6px 12px", borderRadius: "16px", border: "1px solid #3c4043", fontFamily: "JetBrains Mono" }}>
                 {status}
               </span>
@@ -1553,24 +1071,24 @@ export default function InterviewRoom({
             <div style={{ color: "#f28b82", fontSize: "13px", textAlign: "center", marginTop: "8px" }}>{error}</div>
           )}
 
-          {/* Auto-submit hint */}
-          {micActive && (
+          {/* Live hint */}
+          {connected && !aiVoiceActive && (
             <div style={{ textAlign: "center", marginTop: "8px", fontSize: "12px", color: "#9aa0a6" }}>
-              Speak your answer — it submits automatically after a short pause, or click 🎤 to submit now
+              Just speak naturally — Mav listens continuously and replies in real time.
             </div>
           )}
 
-          {/* Fallback text input */}
-          {waitingForStudent && !micActive && (
+          {/* Fallback text input (type instead of speak) */}
+          {yourTurn && (
             <div style={{ marginTop: "16px", display: "flex", gap: "8px", maxWidth: "600px", margin: "16px auto 0" }}>
               <input
                 className="form-input"
-                placeholder="Type your answer here (or use the mic above)…"
+                placeholder="Prefer to type? Enter your answer here…"
                 value={typedAnswer}
                 onChange={(e) => setTypedAnswer(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && typedAnswer.trim()) {
-                    submitAnswer(typedAnswer);
+                    sendTypedAnswer(typedAnswer);
                     setTypedAnswer("");
                   }
                 }}
@@ -1578,7 +1096,7 @@ export default function InterviewRoom({
               />
               <button
                 className="btn btn-secondary btn-sm"
-                onClick={() => { if (typedAnswer.trim()) { submitAnswer(typedAnswer); setTypedAnswer(""); } }}
+                onClick={() => { if (typedAnswer.trim()) { sendTypedAnswer(typedAnswer); setTypedAnswer(""); } }}
               >
                 Send
               </button>
@@ -1588,34 +1106,30 @@ export default function InterviewRoom({
           {/* Bottom control bar */}
           <div className="meet-bottom-bar">
             <div className="meet-bar-info">
-              {status === "TRANSCRIBING" ? (
-                <span style={{ color: "#8ab4f8" }}>📝 Transcribing your answer…</span>
-              ) : micActive ? (
+              {micActive ? (
                 <span style={{ color: "#81c995", fontWeight: "600" }}>
-                  🎙 Listening… speak your answer. Click 🎤 to submit, or just pause when done
+                  🎙 Listening… speak your answer, Mav replies when you pause
                 </span>
-              ) : status === "AI SPEAKING" && isGreeting ? (
-                <span style={{ color: "#8ab4f8" }}>👋 Mav is greeting you… mic opens automatically when done</span>
-              ) : status === "AI SPEAKING" ? (
-                <span style={{ color: "#8ab4f8" }}>🔊 Mav is speaking… mic opens automatically when done</span>
-              ) : waitingForStudent ? (
-                <span style={{ color: "#81c995", fontWeight: "600" }}>🎤 Mic is open — speak your answer or click 🎤 to submit manually</span>
+              ) : aiVoiceActive && isGreeting ? (
+                <span style={{ color: "#8ab4f8" }}>👋 Mav is greeting you…</span>
+              ) : aiVoiceActive ? (
+                <span style={{ color: "#8ab4f8" }}>🔊 Mav is speaking…</span>
               ) : status === "AI PROCESSING" ? (
-                <span style={{ color: "#9aa0a6" }}>⏳ Processing your response…</span>
+                <span style={{ color: "#9aa0a6" }}>⏳ Thinking…</span>
+              ) : connected ? (
+                <span style={{ color: "#81c995", fontWeight: "600" }}>🎤 Your turn — just speak</span>
               ) : (
-                <span style={{ color: "#9aa0a6" }}>⏳ Preparing interview…</span>
+                <span style={{ color: "#9aa0a6" }}>⏳ Connecting…</span>
               )}
             </div>
 
             <div className="meet-bar-actions">
               <button
-                onClick={handleToggleMic}
-                className={`meet-action-btn ${micActive ? "mic-active" : ""}`}
-                title={micActive ? "Stop & submit answer" : "Start speaking"}
-                disabled={!waitingForStudent && !micActive}
-                style={{ opacity: (!waitingForStudent && !micActive) ? 0.4 : 1 }}
+                onClick={toggleMute}
+                className={`meet-action-btn ${micMuted ? "" : "mic-active"}`}
+                title={micMuted ? "Unmute microphone" : "Mute microphone"}
               >
-                {micActive ? "🎤" : "🔇"}
+                {micMuted ? "🔇" : "🎤"}
               </button>
               <button
                 onClick={() => setShowCaptions((p) => !p)}

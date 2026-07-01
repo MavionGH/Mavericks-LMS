@@ -35,6 +35,20 @@ OPENAI_STT_MODEL = os.getenv("OPENAI_STT_MODEL", "whisper-1")
 OPENAI_TTS_MODEL = os.getenv("OPENAI_TTS_MODEL", "tts-1")
 OPENAI_TTS_VOICE = os.getenv("OPENAI_TTS_VOICE", "nova")
 OPENAI_TTS_FORMAT = os.getenv("OPENAI_TTS_FORMAT", "mp3")
+# ─── Realtime API (speech-to-speech interview) ───
+# The browser connects DIRECTLY to OpenAI's Realtime API over WebRTC using a
+# short-lived ephemeral token minted by the backend (see services/realtime.py).
+# The backend never proxies the audio stream — it only authenticates the user,
+# builds the interview context, and issues the token.
+OPENAI_REALTIME_MODEL = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime")
+OPENAI_REALTIME_VOICE = os.getenv("OPENAI_REALTIME_VOICE", "marin")
+# Endpoint that mints an ephemeral client secret. The GA endpoint is
+# /v1/realtime/client_secrets; override if OpenAI changes it.
+OPENAI_REALTIME_SESSION_URL = os.getenv(
+    "OPENAI_REALTIME_SESSION_URL",
+    "https://api.openai.com/v1/realtime/client_secrets",
+)
+
 # Embeddings for RAG vector search.
 OPENAI_EMBED_MODEL = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
 # Embedding dimension. Kept at 384 so it stays compatible with the existing

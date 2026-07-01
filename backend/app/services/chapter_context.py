@@ -58,6 +58,17 @@ def _raw_course_context(course: Course) -> str:
     return text[:_MAX_COURSE_CONTEXT_CHARS]
 
 
+def build_course_context_no_vector(course: Course) -> str:
+    """Raw, length-bounded concatenation of every module's article + transcript.
+
+    Used by the Realtime interview, which deliberately skips vector retrieval
+    entirely (per requirement): the candidate's name, the course name, and this
+    raw module text are all the interviewer needs, and the Realtime model holds
+    it in session context for the whole call.
+    """
+    return _raw_course_context(course)
+
+
 def build_course_context(
     course: Course,
     query: Optional[str] = None,
