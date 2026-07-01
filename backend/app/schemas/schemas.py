@@ -241,7 +241,7 @@ class InterviewMessage(BaseModel):
 
 
 # ─── REALTIME (speech-to-speech) interview ───
-# The browser connects directly to OpenAI's Realtime API; the backend only mints
+# The browser connects directly to Gemini's Live API; the backend only mints
 # the ephemeral token, supplies the context, and saves the result at the end.
 class RealtimeStartRequest(BaseModel):
     # Exactly one of these identifies the assessment scope:
@@ -253,13 +253,14 @@ class RealtimeStartRequest(BaseModel):
 
 class RealtimeStartResponse(BaseModel):
     session_id: str
-    # The ephemeral client secret + OpenAI's raw session payload. The frontend
-    # uses `client_secret` to open the WebRTC connection directly to OpenAI.
+    # The ephemeral auth token + Gemini's raw token payload. The frontend uses
+    # `client_secret` as the apiKey for @google/genai's `ai.live.connect()`.
     client_secret: str
     realtime_session: dict
-    # The Realtime model the session was created with — the browser passes it on
-    # the SDP exchange so the call uses the same model.
+    # The Live model + voice the session was created with — the browser passes
+    # these to `ai.live.connect()` so the call uses the same configuration.
     model: str
+    voice: str = ""
     instructions: str
     course_name: str
     student_name: str
@@ -381,7 +382,6 @@ class DashboardStats(BaseModel):
     oral_assessments: int
     earned_credentials: int
     enrolled_courses: List[DashboardCourse]
-    recent_evaluations: List[DashboardEvaluation]
 
 
 # ─── TEACHER EVALUATION ───

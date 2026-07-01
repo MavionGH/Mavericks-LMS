@@ -129,8 +129,8 @@ class Enrollment(Base):
     __tablename__ = "enrollments"
 
     id = Column(String, primary_key=True, default=generate_uuid)
-    user_id = Column(String, ForeignKey("users.id"), nullable=False)
-    course_id = Column(String, ForeignKey("courses.id"), nullable=False)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    course_id = Column(String, ForeignKey("courses.id"), nullable=False, index=True)
     current_chapter_index = Column(Integer, default=0)
     video_watched = Column(Boolean, default=False)
     article_read = Column(Boolean, default=False)
@@ -159,8 +159,8 @@ class QuizAttempt(Base):
     __tablename__ = "quiz_attempts"
 
     id = Column(String, primary_key=True, default=generate_uuid)
-    user_id = Column(String, ForeignKey("users.id"), nullable=False)
-    chapter_id = Column(String, ForeignKey("chapters.id"), nullable=False)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    chapter_id = Column(String, ForeignKey("chapters.id"), nullable=False, index=True)
     questions = Column(JSON, nullable=False)
     score = Column(Integer, nullable=False)
     passed = Column(Boolean, nullable=False)
@@ -175,11 +175,11 @@ class InterviewSession(Base):
     __tablename__ = "interview_sessions"
 
     id = Column(String, primary_key=True, default=generate_uuid)
-    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
     # chapter_id is set for a per-module interview; course_id is set for the
     # course-wide final interview (which spans every module). Exactly one is used.
-    chapter_id = Column(String, ForeignKey("chapters.id"), nullable=True)
-    course_id = Column(String, ForeignKey("courses.id"), nullable=True)
+    chapter_id = Column(String, ForeignKey("chapters.id"), nullable=True, index=True)
+    course_id = Column(String, ForeignKey("courses.id"), nullable=True, index=True)
     status = Column(String, default="active")  # active | completed
     transcript = Column(JSON, default=list)
     pause_metrics = Column(JSON, default=list)
@@ -201,9 +201,9 @@ class Evaluation(Base):
     __tablename__ = "evaluations"
 
     id = Column(String, primary_key=True, default=generate_uuid)
-    user_id = Column(String, ForeignKey("users.id"), nullable=False)
-    chapter_id = Column(String, ForeignKey("chapters.id"), nullable=True)
-    course_id = Column(String, ForeignKey("courses.id"), nullable=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    chapter_id = Column(String, ForeignKey("chapters.id"), nullable=True, index=True)
+    course_id = Column(String, ForeignKey("courses.id"), nullable=True, index=True)
     type = Column(Enum(EvaluationType), nullable=False)
     transcript = Column(JSON, nullable=True)
     technical_score = Column(Float, default=0)
@@ -227,8 +227,8 @@ class Certificate(Base):
     __tablename__ = "certificates"
 
     id = Column(String, primary_key=True, default=generate_uuid)
-    user_id = Column(String, ForeignKey("users.id"), nullable=False)
-    course_id = Column(String, ForeignKey("courses.id"), nullable=False)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    course_id = Column(String, ForeignKey("courses.id"), nullable=False, index=True)
     issue_date = Column(DateTime, default=datetime.utcnow)
     verify_code = Column(String, unique=True, default=generate_uuid)
     # Optional: Cloudflare R2 public URL for a rendered/stored certificate PDF

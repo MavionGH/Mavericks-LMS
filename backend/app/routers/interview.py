@@ -27,7 +27,6 @@ from app.services.interview_graph import start_interview, process_answer, MAX_QU
 from app.services.realtime import (
     build_interview_instructions, create_realtime_session, extract_client_secret,
 )
-from app.services.openai_config import OPENAI_REALTIME_MODEL
 from app.services.llm import score_realtime_interview
 from app.services.stt import transcribe_audio
 from app.services.tts import synthesize_speech, MEDIA_TYPE
@@ -335,7 +334,7 @@ def start_course_interview(
 
 
 # ─── REALTIME (speech-to-speech) interview ───
-# The browser connects DIRECTLY to OpenAI's Realtime API over WebRTC. These two
+# The browser connects DIRECTLY to Gemini's Live API over WebSocket. These two
 # endpoints are all the backend does: /realtime/start authenticates the student,
 # builds the interview context (name + course name + raw module text, NO vector
 # search) and mints a short-lived ephemeral token; /realtime/finish receives the
@@ -446,7 +445,8 @@ def start_realtime_interview(
         session_id=session.id,
         client_secret=client_secret,
         realtime_session=rt_session,
-        model=OPENAI_REALTIME_MODEL,
+        model=rt_session.get("model", ""),
+        voice=rt_session.get("voice", ""),
         instructions=instructions,
         course_name=scope_name,
         student_name=current_user.name,

@@ -1,33 +1,33 @@
-"""OpenAI Realtime API integration for the speech-to-speech oral interview.
+"""Gemini Live API integration for the speech-to-speech oral interview.
 
 Architecture (see also the interview router):
 
-    Browser ──WebRTC──> OpenAI Realtime API        (live audio, both directions)
+    Browser ──WebSocket──> Gemini Live API         (live audio, both directions)
        ▲
-       │ ephemeral token
+       │ ephemeral auth token
        │
     FastAPI backend                                (auth + context + token only)
 
 The backend NEVER proxies the audio. It authenticates the student, assembles
 the interview context (the candidate's name, the course/module name, and the
-RAW text of the module articles + video transcripts — no vector search), bakes
-that into the interviewer's `instructions`, and asks OpenAI to mint a short-lived
-ephemeral client secret. The browser uses that secret to open the WebRTC session
-directly, so latency is browser↔OpenAI only.
+RAW text of the module articles + video transcripts — no vector search), and
+asks Gemini to mint a short-lived ephemeral auth token (see
+`create_realtime_session`). The browser uses that token — via the
+`@google/genai` JS SDK's `ai.live.connect()` — to open the Live API session
+directly, so latency is browser<->Gemini only. The system instructions built
+here are sent by the browser itself at connect time (Gemini Live has no
+server-side "session update" step the backend can push to beforehand).
 """
 from __future__ import annotations
 
+import datetime
 import logging
 from typing import Optional
 
-import httpx
+from google import genai
+from google.genai import types as genai_types
 
-from app.services.openai_config import (
-    OPENAI_API_KEY,
-    OPENAI_REALTIME_MODEL,
-    OPENAI_REALTIME_SESSION_URL,
-    OPENAI_REALTIME_VOICE,
-)
+from app.services.gemini_config import GEMINI_API_KEY, GEMINI_LIVE_MODEL, GEMINI_LIVE_VOICE
 
 logger = logging.getLogger(__name__)
 
@@ -84,19 +84,71 @@ def build_interview_instructions(
         "Never talk over them or interrupt.\n"
         "- Ask natural follow-up questions when an answer invites one.\n"
         "- Keep your spoken turns concise and conversational, like a real interviewer.\n"
-        "- If the candidate says they don't know or wants to skip, acknowledge it "
-        "warmly and move to a different topic.\n"
-        f"- Ask EXACTLY {INTERVIEW_QUESTION_COUNT} interview questions in total — no "
-        f"more, no fewer. Your opening greeting already includes question 1, so after "
-        f"that you ask {INTERVIEW_QUESTION_COUNT - 1} more. Brief clarifications do NOT "
-        "count as new questions.\n"
+        "\n"
+        "## Handling the candidate's response (STRICT — this determines question "
+        "progress, so getting it right matters more than anything else here)\n"
+        "Every time the candidate speaks, decide which ONE of these four cases applies:\n"
+        "1. GENUINE ANSWER — a real attempt to answer the current question (right or "
+        "wrong). React naturally to it, THEN call the `mark_question_answered` tool "
+        "exactly once, then move on to a NEW question on a different topic (unless "
+        f"this was the {INTERVIEW_QUESTION_COUNT}th one — see wrap-up below).\n"
+        "2. EXPLICIT SKIP — 'I don't know', 'not sure', 'skip', 'pass', 'move on', "
+        "'next question', or similar. Acknowledge warmly, call `mark_question_answered` "
+        "exactly once, then move on to a NEW question on a different topic.\n"
+        "3. REPEAT/CLARIFY REQUEST — the candidate asks you to repeat, rephrase, or "
+        "explain the current question. Simply repeat or rephrase THE SAME question. "
+        "Do NOT call `mark_question_answered` — this never counts as progress.\n"
+        "4. OFF-TOPIC / PERSONAL / CHITCHAT — greetings, 'how are you', jokes, or any "
+        "unrelated remark. Give a brief, warm, genuine reply, then re-ask THE EXACT "
+        "SAME question you were on. Do NOT call `mark_question_answered`.\n"
+        "Call `mark_question_answered` ONLY for cases 1 and 2 — never for 3 or 4. This "
+        "tool call is the ONLY signal the interview system uses to track how many "
+        "questions have been answered, so call it exactly once per genuine answer or "
+        "explicit skip, and never in any other case. This is a MANDATORY step, not "
+        "optional — call it silently as part of your turn, every single time case 1 "
+        "or 2 applies, even if you also plan to ask a follow-up question afterward "
+        "instead of a brand-new topic.\n"
+        "\n"
+        f"## Wrap-up (after exactly {INTERVIEW_QUESTION_COUNT} answered questions)\n"
+        f"- Ask EXACTLY {INTERVIEW_QUESTION_COUNT} questions in total, each counted "
+        "only when you call `mark_question_answered` per the rules above — repeats "
+        "and chitchat never count. Your opening greeting already includes question 1.\n"
         "- Adapt difficulty to how well they answer.\n"
         f"- The pass threshold for this assessment is {pass_threshold}%.\n"
-        f"- After the candidate has answered the {INTERVIEW_QUESTION_COUNT}th question, "
-        "do NOT ask another question. Thank them warmly, tell them the assessment is "
-        "complete, and say goodbye. Do not read out scores — those are computed "
-        "separately."
+        f"- The moment you have called `mark_question_answered` for the "
+        f"{INTERVIEW_QUESTION_COUNT}th time, do NOT ask another question. Thank the "
+        "candidate warmly, tell them the assessment is complete, and say goodbye "
+        "(e.g. include a clear closing word like 'goodbye' or 'take care'). Do "
+        "not read out scores — those are computed separately.\n"
+        f"- CRITICAL: this applies even while ON the {INTERVIEW_QUESTION_COUNT}th "
+        "question. If the candidate asks you to repeat/clarify it (case 3) or goes "
+        "off-topic/chitchat (case 4) on this LAST question, you MUST still just "
+        "repeat the question or reply-then-re-ask exactly as in those rules — do "
+        "NOT say goodbye or end the interview yet. Only say goodbye once the "
+        f"candidate has actually given a genuine answer or explicit skip to THIS "
+        f"{INTERVIEW_QUESTION_COUNT}th question (case 1 or 2)."
     )
+
+
+_client = None
+_client_resolved = False
+
+
+def _get_client():
+    """Return a cached Gemini client scoped to the v1alpha API (required for the
+    experimental ephemeral-token endpoint), or None if unconfigured."""
+    global _client, _client_resolved
+    if _client_resolved:
+        return _client
+    _client_resolved = True
+    if not GEMINI_API_KEY:
+        _client = None
+        return None
+    _client = genai.Client(
+        api_key=GEMINI_API_KEY,
+        http_options=genai_types.HttpOptions(api_version="v1alpha"),
+    )
+    return _client
 
 
 def create_realtime_session(
@@ -105,63 +157,47 @@ def create_realtime_session(
     voice: Optional[str] = None,
     model: Optional[str] = None,
 ) -> dict:
-    """Mint an ephemeral Realtime session and return OpenAI's raw JSON response.
+    """Mint a short-lived Gemini Live ephemeral auth token for the browser.
 
-    The response carries a short-lived client secret the browser uses to open the
-    WebRTC connection. We return the whole payload (the frontend reads the secret
-    + expiry from it) and also surface a normalised ``client_secret`` string via
-    :func:`extract_client_secret` at the call site.
+    The browser passes this token as the `apiKey` to `@google/genai`'s
+    `ai.live.connect()` to open the Live API session directly — the backend
+    never proxies audio. `instructions` isn't embedded in the token itself;
+    the browser sends it as `systemInstruction` on connect (kept unlocked so
+    each session can carry its own per-student context).
 
-    Raises RuntimeError on misconfiguration or an OpenAI error so the router can
+    Raises RuntimeError on misconfiguration or a Gemini error so the router can
     translate it into a clean HTTP error.
     """
-    if not OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY is not configured — cannot start a realtime interview.")
+    client = _get_client()
+    if client is None:
+        raise RuntimeError("GEMINI_API_KEY is not configured — cannot start a realtime interview.")
 
-    payload = {
-        "session": {
-            "type": "realtime",
-            "model": model or OPENAI_REALTIME_MODEL,
-            "instructions": instructions,
-            "audio": {"output": {"voice": voice or OPENAI_REALTIME_VOICE}},
-        }
-    }
-
+    now = datetime.datetime.now(datetime.timezone.utc)
     try:
-        resp = httpx.post(
-            OPENAI_REALTIME_SESSION_URL,
-            headers={
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=20.0,
+        token = client.auth_tokens.create(
+            config=genai_types.CreateAuthTokenConfig(
+                uses=1,
+                # Generous window: covers the consent-gate + connection setup
+                # time on slower connections before the token is first used.
+                expire_time=now + datetime.timedelta(minutes=30),
+                new_session_expire_time=now + datetime.timedelta(minutes=5),
+            )
         )
-    except httpx.HTTPError as exc:
-        logger.error("Realtime session request failed: %s", exc)
-        raise RuntimeError("Could not reach the OpenAI Realtime API.") from exc
+    except Exception as exc:
+        logger.error("Gemini ephemeral token creation failed: %s", exc)
+        raise RuntimeError("Could not reach the Gemini Live API.") from exc
 
-    if resp.status_code >= 400:
-        logger.error("Realtime session error %s: %s", resp.status_code, resp.text[:500])
-        raise RuntimeError(f"OpenAI Realtime API returned {resp.status_code}.")
-
-    return resp.json()
+    return {
+        "value": token.name,
+        "model": model or GEMINI_LIVE_MODEL,
+        "voice": voice or GEMINI_LIVE_VOICE,
+    }
 
 
 def extract_client_secret(session: dict) -> Optional[str]:
-    """Pull the ephemeral secret string out of OpenAI's session response.
-
-    Tolerant of the two shapes OpenAI has shipped: a top-level ``value`` (GA
-    client-secrets endpoint) or a nested ``client_secret.value`` (older sessions
-    endpoint).
-    """
+    """Pull the ephemeral token string out of the session dict returned by
+    `create_realtime_session`."""
     if not isinstance(session, dict):
         return None
-    if isinstance(session.get("value"), str):
-        return session["value"]
-    cs = session.get("client_secret")
-    if isinstance(cs, dict) and isinstance(cs.get("value"), str):
-        return cs["value"]
-    if isinstance(cs, str):
-        return cs
-    return None
+    value = session.get("value")
+    return value if isinstance(value, str) else None

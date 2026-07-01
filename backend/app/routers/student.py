@@ -1,10 +1,13 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import func
 from typing import List
 
 from app.database import get_db
-from app.models.models import Enrollment, Evaluation, Course, Chapter, User, Certificate, EnrollmentStatus
+from app.models.models import (
+    Enrollment, Evaluation, Course, Chapter, User, Certificate, EnrollmentStatus,
+    EvaluationType, QuizAttempt,
+)
 from app.schemas.schemas import DashboardStats, DashboardCourse, DashboardEvaluation, CertificateResponse
 from app.auth.dependencies import require_student
 
@@ -15,66 +18,66 @@ def get_student_dashboard(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_student)
 ):
-    # Active tracks: enrollments that are not completed
-    enrollments = db.query(Enrollment).filter(Enrollment.user_id == current_user.id).all()
+    # One query: enrollments + their course + that course's chapters, all
+    # eager-loaded up front so the loop below never re-queries per course.
+    enrollments = (
+        db.query(Enrollment)
+        .options(selectinload(Enrollment.course).selectinload(Course.chapters))
+        .filter(Enrollment.user_id == current_user.id)
+        .all()
+    )
     active_tracks = sum(1 for e in enrollments if e.status != EnrollmentStatus.COMPLETED)
-    
-    # Modules completed: count of distinct chapters passed via quiz or oral evaluation
-    from app.models.models import QuizAttempt, Evaluation
-    passed_chapters_count = (
+
+    # One query each (not per-chapter/per-course): every passed QuizAttempt
+    # chapter_id, and every Evaluation row this user has — everything below
+    # (modules_completed, oral_assessments, per-course pass state) is derived
+    # from these two already-fetched sets instead of querying in a loop.
+    passed_quiz_chapter_ids = {
+        row.chapter_id for row in
         db.query(QuizAttempt.chapter_id)
         .filter(QuizAttempt.user_id == current_user.id, QuizAttempt.passed == True)
-        .union(
-            db.query(Evaluation.chapter_id)
-            .filter(Evaluation.user_id == current_user.id, Evaluation.type == "chapter", Evaluation.passed == True)
-        )
-        .distinct()
-        .count()
+        .all()
+    }
+    all_evaluations = (
+        db.query(Evaluation)
+        .filter(Evaluation.user_id == current_user.id)
+        .all()
     )
-    modules_completed = passed_chapters_count
-    
-    # Oral Assessments: count of all evaluations
-    oral_assessments = db.query(Evaluation).filter(
-        Evaluation.user_id == current_user.id
-    ).count()
-    
+    passed_chapter_eval_ids = {
+        ev.chapter_id for ev in all_evaluations
+        if ev.type == EvaluationType.CHAPTER and ev.passed and ev.chapter_id
+    }
+    passed_capstone_course_ids = {
+        ev.course_id for ev in all_evaluations
+        if ev.type == EvaluationType.CAPSTONE and ev.passed and ev.course_id
+    }
+
+    modules_completed = len(passed_quiz_chapter_ids | passed_chapter_eval_ids)
+    oral_assessments = len(all_evaluations)
+
     # Earned credentials: count of certificates
     earned_credentials = db.query(Certificate).filter(
         Certificate.user_id == current_user.id
     ).count()
-    
+
     # Enrolled courses list
     enrolled_courses: List[DashboardCourse] = []
     for e in enrollments:
-        course = db.query(Course).filter(Course.id == e.course_id).first()
+        course = e.course
         if not course:
             continue
-            
-        total_chapters = len(course.chapters)
-        
-        # Calculate how many chapters have been passed for this course
-        course_passed_chapters = 0
-        for chapter in course.chapters:
-            passed_quiz = db.query(QuizAttempt).filter(
-                QuizAttempt.user_id == current_user.id,
-                QuizAttempt.chapter_id == chapter.id,
-                QuizAttempt.passed == True
-            ).first() is not None
-            passed_interview = db.query(Evaluation).filter(
-                Evaluation.user_id == current_user.id,
-                Evaluation.chapter_id == chapter.id,
-                Evaluation.passed == True
-            ).first() is not None
-            if passed_quiz or passed_interview:
-                course_passed_chapters += 1
 
-        # Check if they passed the capstone for this course
-        passed_capstone = db.query(Evaluation).filter(
-            Evaluation.user_id == current_user.id,
-            Evaluation.course_id == course.id,
-            Evaluation.type == "capstone",
-            Evaluation.passed == True
-        ).first() is not None
+        total_chapters = len(course.chapters)
+
+        # Chapters passed for this course — no query, just set membership
+        # against the two sets fetched once above.
+        course_passed_chapters = sum(
+            1 for chapter in course.chapters
+            if chapter.id in passed_quiz_chapter_ids or chapter.id in passed_chapter_eval_ids
+        )
+
+        # Did they pass the capstone for this course?
+        passed_capstone = course.id in passed_capstone_course_ids
 
         if e.status == EnrollmentStatus.COMPLETED:
             progress = 100
@@ -112,72 +115,13 @@ def get_student_dashboard(
             status=status_str,
             icon=icon_str
         ))
-        
-    # Recent evaluations
-    evals = db.query(Evaluation).filter(
-        Evaluation.user_id == current_user.id
-    ).order_by(Evaluation.created_at.desc()).limit(10).all()
-    
-    recent_evaluations: List[DashboardEvaluation] = []
-    for ev in evals:
-        chapter_title = "Capstone"
-        course_title = "Unknown Course"
-        
-        course = None
-        if getattr(ev, "course_id", None):
-            course = db.query(Course).filter(Course.id == ev.course_id).first()
 
-        if ev.chapter_id:
-            chapter = db.query(Chapter).filter(Chapter.id == ev.chapter_id).first()
-            if chapter:
-                chapter_title = chapter.title
-                if not course:
-                    course = db.query(Course).filter(Course.id == chapter.course_id).first()
-        else:
-            chapter_title = "Course Capstone"
-            
-        # Get matching interview session to fetch teacher_score
-        from app.models.models import InterviewSession
-        session_query = db.query(InterviewSession).filter(
-            InterviewSession.user_id == ev.user_id
-        )
-        if ev.chapter_id:
-            session_query = session_query.filter(InterviewSession.chapter_id == ev.chapter_id)
-        else:
-            session_query = session_query.filter(InterviewSession.chapter_id.is_(None))
-            if getattr(ev, "course_id", None):
-                session_query = session_query.filter(InterviewSession.course_id == ev.course_id)
-                
-        matching_session = session_query.filter(
-            InterviewSession.created_at <= ev.created_at
-        ).order_by(InterviewSession.created_at.desc()).first()
-        
-        t_score = matching_session.teacher_score if matching_session else None
-        
-        if not course and not ev.chapter_id and matching_session:
-            course = db.query(Course).filter(Course.id == matching_session.course_id).first()
-
-        if course:
-            course_title = course.title
-        recent_evaluations.append(DashboardEvaluation(
-            chapter=chapter_title,
-            course=course_title,
-            score=int(ev.overall_score),
-            passed=ev.passed,
-            date=ev.created_at.strftime("%Y-%m-%d"),
-            technical=int(ev.technical_score),
-            communication=int(ev.communication_score),
-            confidence=int(ev.confidence_score),
-            teacher_score=int(t_score) if t_score is not None else None
-        ))
-        
     return DashboardStats(
         active_tracks=active_tracks,
         modules_completed=modules_completed,
         oral_assessments=oral_assessments,
         earned_credentials=earned_credentials,
         enrolled_courses=enrolled_courses,
-        recent_evaluations=recent_evaluations
     )
 
 

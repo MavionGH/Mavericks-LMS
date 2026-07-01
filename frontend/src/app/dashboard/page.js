@@ -39,7 +39,6 @@ function StudentDashboard() {
   }
 
   const MY_COURSES = stats?.enrolled_courses || [];
-  const RECENT_EVALUATIONS = stats?.recent_evaluations || [];
 
   return (
     <>

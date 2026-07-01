@@ -4,23 +4,31 @@ import Link from "next/link";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
+import { GoogleGenAI, Modality, Type } from "@google/genai";
 // AI avatar frames (in frontend/local). Swapping between them while the AI
 // speaks makes the avatar look like it's talking.
 import avatarClosed from "../../local/closed.png";
 import avatarOpened from "../../local/opened.png";
 
-// ── OpenAI Realtime API (speech-to-speech) ─────────────────────────────────────
-// The browser opens ONE WebRTC connection straight to OpenAI and streams the mic
-// audio continuously; OpenAI streams Mav's voice back as it speaks. There is no
-// per-turn record→upload→STT→LLM→TTS round-trip through our backend, which is
-// what kept latency at ~10s before. Now the only backend calls are:
+// ── Gemini Live API (speech-to-speech) ──────────────────────────────────────────
+// The browser opens ONE WebSocket connection straight to Gemini and streams the
+// mic audio continuously (16kHz PCM16); Gemini streams Mav's voice back as she
+// speaks (24kHz PCM16). There is no per-turn record→upload→STT→LLM→TTS round-trip
+// through our backend. The only backend calls are:
 //   • POST /api/interview/realtime/start  → ephemeral token + context (once)
 //   • POST /api/interview/realtime/finish → grade the transcript (once, at end)
 //
-// SDP exchange endpoint. GA `gpt-realtime` uses /v1/realtime/calls; override via
-// NEXT_PUBLIC_OPENAI_REALTIME_URL if your account is on a different path.
-const REALTIME_BASE_URL =
-  process.env.NEXT_PUBLIC_OPENAI_REALTIME_URL || "https://api.openai.com/v1/realtime/calls";
+// Ephemeral tokens require the v1alpha API surface (see also realtime.py).
+const GEMINI_API_VERSION = "v1alpha";
+
+// Gemini Live's required audio wire format: mono PCM16, 16kHz in, 24kHz out.
+const MIC_SAMPLE_RATE = 16000;
+const PLAYBACK_SAMPLE_RATE = 24000;
+// RMS above which the student's own mic is treated as "speaking" — mirrors the
+// AI_VOICE_RMS_THRESHOLD approach below since Gemini Live (unlike OpenAI) has no
+// discrete speech_started/speech_stopped server event to key off of.
+const MIC_RMS_THRESHOLD = 0.02;
+const MIC_VOICE_HOLD_MS = 500;
 
 // RMS above which we treat Mav's incoming audio as "actively speaking" — drives
 // the avatar lip-sync and the "AI SPEAKING" label without depending on any
@@ -34,6 +42,27 @@ const AI_VOICE_HOLD_MS = 600;
 // instructed to stop at this count, but we enforce it client-side (count the
 // student's answers) so a free-flowing realtime session can never run long.
 const MAX_QUESTIONS = 5;
+
+// Mav calls this tool exactly once per genuine answer or explicit skip — never
+// for a repeat/clarify request or off-topic chitchat (see the system
+// instructions built server-side in realtime.py). It's the ONLY signal we use
+// to advance the question counter and decide when to wrap up, since Gemini
+// Live's transcription has no notion of "this reply counted as progress" on
+// its own the way a discrete per-turn event would.
+const MARK_ANSWERED_TOOL = {
+  functionDeclarations: [
+    {
+      name: "mark_question_answered",
+      description:
+        "Call this exactly once, right after the candidate gives a complete " +
+        "response to the CURRENT interview question — either a genuine attempt " +
+        "(right or wrong) or an explicit 'I don't know' / skip / move on. Do NOT " +
+        "call this when repeating/clarifying the question, or when answering an " +
+        "off-topic/personal/chitchat remark before re-asking the same question.",
+      parameters: { type: Type.OBJECT, properties: {} },
+    },
+  ],
+};
 
 // TEMP instrumentation: timestamped logs across the realtime pipeline. Flip off
 // to silence.
@@ -55,10 +84,104 @@ function friendlyNetworkError(err) {
   return err?.message || "Something went wrong — please try again.";
 }
 
+// ── PCM16 <-> base64 helpers for the raw audio Gemini Live expects ──────────────
+// Convert Float32 samples (Web Audio's native format) to little-endian Int16 PCM.
+function floatTo16BitPCM(float32Array) {
+  const out = new Int16Array(float32Array.length);
+  for (let i = 0; i < float32Array.length; i++) {
+    const s = Math.max(-1, Math.min(1, float32Array[i]));
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  return out;
+}
+
+// Average-based downsample from the mic's native rate to Gemini's required 16kHz.
+function downsampleTo16k(float32Array, inputSampleRate) {
+  if (inputSampleRate === MIC_SAMPLE_RATE) return float32Array;
+  const ratio = inputSampleRate / MIC_SAMPLE_RATE;
+  const newLength = Math.round(float32Array.length / ratio);
+  const result = new Float32Array(newLength);
+  let offsetResult = 0;
+  let offsetBuffer = 0;
+  while (offsetResult < newLength) {
+    const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
+    let accum = 0;
+    let count = 0;
+    for (let i = offsetBuffer; i < nextOffsetBuffer && i < float32Array.length; i++) {
+      accum += float32Array[i];
+      count++;
+    }
+    result[offsetResult] = count ? accum / count : 0;
+    offsetResult++;
+    offsetBuffer = nextOffsetBuffer;
+  }
+  return result;
+}
+
+function arrayBufferToBase64(buffer) {
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function base64ToInt16Array(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Int16Array(bytes.buffer);
+}
+
+// ── Fallback progress classifier ────────────────────────────────────────────────
+// `mark_question_answered` (see MARK_ANSWERED_TOOL below) is the primary signal
+// for question progress, but LLM tool-calling isn't 100% reliable — verified
+// live, Mav sometimes does the right conversational thing (moves on) without
+// actually calling the tool. This mirrors the same fast-path regexes the
+// graph-based interview already uses server-side (see llm.py's
+// _GREETING_PATTERNS/_PERSONAL_PATTERNS/_CLARIFICATION_PATTERNS/_OFFTOPIC_PATTERNS)
+// as a safety net: only consulted when the tool didn't fire for a given turn.
+const SKIP_PHRASES = [
+  "i don't know", "i dont know", "i do not know", "not sure", "no idea",
+  "no experience", "skip", "pass", "move on", "move to next", "next question",
+  "i'm not sure", "i am not sure", "don't know", "dont know",
+];
+const REPEAT_RE = /\b(repeat|say (that|it) again|come again|didn'?t (catch|hear)|one more time|repeat (that|it|the question)|say (that )?once more|what was the question|what'?s the question again)\b/i;
+const CLARIFY_RE = /\b(what do you mean|can you (explain|clarify|elaborate|rephrase)|i don'?t understand|could you (explain|clarify|repeat)|what is meant by|please (explain|clarify|repeat))\b/i;
+const GREETING_RE = /^\s*(hi+|hello+|hey+|good (morning|afternoon|evening|day)|howdy|sup|yo|greetings)\b/i;
+const PERSONAL_RE = /\b(how are you|how do you do|you doing|are you (ok|good|fine|well|alright)|what('s| is) up|how'?s it going)\b/i;
+const OFFTOPIC_RE = /\b(weather|the time|what time|today'?s date|who (are|is) you|your name|tell me a joke|joke|news|sports|music|movie|song|recipe|food|cook|are you (real|human|a robot))\b/i;
+
+function looksLikeAnsweredTurn(text) {
+  const t = (text || "").trim().toLowerCase();
+  if (!t) return false;
+  if (SKIP_PHRASES.some((p) => t.includes(p))) return true;
+  if (REPEAT_RE.test(t) || CLARIFY_RE.test(t)) return false;
+  if (GREETING_RE.test(t) || PERSONAL_RE.test(t) || OFFTOPIC_RE.test(t)) return false;
+  // Short, ambiguous utterances ("what?", "sorry?", a stray word) are NOT
+  // treated as genuine answers by default — only a clear skip phrase or
+  // substantive text (roughly a sentence or more) counts. Mirrors llm.py's
+  // _is_obvious_answer fast-path, and matters most on the LAST question: a
+  // false "answered" here would otherwise end the interview right then.
+  if (t.split(/\s+/).length < 6) return false;
+  return true; // substantive, non-chitchat text -> treat as a genuine answer
+}
+
+// Mav is told (see realtime.py's wrap-up instructions) to include a clear
+// closing word only once the 5th question has actually been answered/skipped.
+// Gating the actual "leave the meeting" trigger on detecting this phrase in
+// her own reply — rather than purely on the answer counter above — means a
+// mis-fired tool call or heuristic on a repeat/chitchat aside during the LAST
+// question can never end the interview by itself; only Mav's own real
+// goodbye can.
+const GOODBYE_RE = /\b(goodbye|good bye|take care|that'?s all for today|that concludes|assessment is complete|thanks? for (your time|joining|participating)|all the best|wish you (well|luck)|talk to you (soon|later))\b/i;
+
 /**
  * Shared, voice-driven AI interview room used by both the (legacy) per-module
  * assessment and the course-wide final assessment. Conversation runs over the
- * OpenAI Realtime API directly from the browser; the backend only mints the
+ * Gemini Live API directly from the browser; the backend only mints the
  * token and grades the result.
  *
  * Props:
@@ -92,6 +215,7 @@ export default function InterviewRoom({
   const [micMuted, setMicMuted] = useState(false);
   const [showCaptions, setShowCaptions] = useState(true);
   const [isFinished, setIsFinished] = useState(false);
+  const [isGrading, setIsGrading] = useState(false); // ended the call, waiting on /finish's grading
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -113,17 +237,22 @@ export default function InterviewRoom({
   const studentVideoRef = useRef(null);
   const cameraStreamRef = useRef(null);
 
-  // ── Realtime (WebRTC) refs ──
-  const pcRef = useRef(null);                 // RTCPeerConnection to OpenAI
-  const dcRef = useRef(null);                 // data channel for realtime events
-  const remoteAudioRef = useRef(null);        // <audio> playing Mav's voice
-  const pcMicStreamRef = useRef(null);        // mic track sent to OpenAI
-  const voiceCtxRef = useRef(null);           // AudioContext analysing Mav's voice
+  // ── Realtime (Gemini Live) refs ──
+  const sessionRef = useRef(null);            // Gemini Live Session (ai.live.connect())
+  const pcMicStreamRef = useRef(null);        // mic track streamed to Gemini
+  const micCtxRef = useRef(null);             // AudioContext capturing + downsampling the mic
+  const micProcessorRef = useRef(null);       // ScriptProcessorNode doing the PCM16 encode
+  const micActiveRef = useRef(false);         // mirrors micActive state for the audio callback
+  const playCtxRef = useRef(null);            // AudioContext playing Mav's voice (24kHz PCM16)
+  const playGainRef = useRef(null);           // gain node all played chunks route through
+  const playAnalyserRef = useRef(null);       // analyser on the playback chain, drives lip-sync
+  const nextPlayTimeRef = useRef(0);          // scheduling cursor for gapless chunk playback
   const voiceIntervalRef = useRef(null);      // RMS polling interval for lip-sync
   const transcriptRef = useRef([]);           // source of truth sent to /finish
   const aiTextRef = useRef("");               // assistant transcript accumulator
   const userTextRef = useRef("");             // student transcript accumulator
   const answersRef = useRef(0);               // count of answers the student has given
+  const turnToolFiredRef = useRef(false);     // did mark_question_answered fire this turn?
   const autoEndTriggeredRef = useRef(false);  // guard: auto-finish fires once
   const teardownDoneRef = useRef(false);
   const [shouldEnd, setShouldEnd] = useState(false); // 5 answers given → wrap up
@@ -156,206 +285,318 @@ export default function InterviewRoom({
 
   // Watch Mav's incoming audio level so the avatar lip-syncs and the status label
   // flips to "AI SPEAKING" only while sound is actually playing — independent of
-  // any particular server event name.
-  const setupVoiceAnalyser = useCallback((stream) => {
-    try {
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      const ctx = new AudioCtx();
-      voiceCtxRef.current = ctx;
-      if (ctx.state === "suspended") ctx.resume().catch(() => {});
-      const source = ctx.createMediaStreamSource(stream);
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 512;
-      source.connect(analyser);
-      const buf = new Uint8Array(analyser.fftSize);
-      // Hysteresis: go active immediately when the level rises, but only fall
-      // back to idle after AI_VOICE_HOLD_MS of continuous silence. Since React
-      // skips a re-render when the state value is unchanged, holding `true`
-      // across the word gaps stops the bottom-bar/avatar flicker.
-      let lastLoudAt = 0;
-      voiceIntervalRef.current = setInterval(() => {
-        analyser.getByteTimeDomainData(buf);
-        let sum = 0;
-        for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
-        const rms = Math.sqrt(sum / buf.length);
-        const now = Date.now();
-        if (rms > AI_VOICE_RMS_THRESHOLD) {
-          lastLoudAt = now;
-          setAiVoiceActive(true);
-        } else if (now - lastLoudAt > AI_VOICE_HOLD_MS) {
-          setAiVoiceActive(false);
-        }
-      }, 100);
-    } catch (e) {
-      tlog("voice analyser init failed (non-fatal): " + (e?.message || e));
-    }
+  // any particular server event name. `analyser` is already wired into the
+  // playback graph by connectRealtime (Gemini streams raw PCM chunks, not a
+  // MediaStream, so there's no <audio>/ontrack to hang an analyser off of here).
+  const setupVoiceAnalyser = useCallback((analyser) => {
+    const buf = new Uint8Array(analyser.fftSize);
+    // Hysteresis: go active immediately when the level rises, but only fall
+    // back to idle after AI_VOICE_HOLD_MS of continuous silence. Since React
+    // skips a re-render when the state value is unchanged, holding `true`
+    // across the word gaps stops the bottom-bar/avatar flicker.
+    let lastLoudAt = 0;
+    voiceIntervalRef.current = setInterval(() => {
+      analyser.getByteTimeDomainData(buf);
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
+      const rms = Math.sqrt(sum / buf.length);
+      const now = Date.now();
+      if (rms > AI_VOICE_RMS_THRESHOLD) {
+        lastLoudAt = now;
+        setAiVoiceActive(true);
+      } else if (now - lastLoudAt > AI_VOICE_HOLD_MS) {
+        setAiVoiceActive(false);
+      }
+    }, 100);
   }, []);
 
-  // Handle one realtime server event arriving on the data channel. Field names are
-  // matched tolerantly (delta/done suffixes) so minor API-version differences in
-  // the transcript event names don't drop captions.
-  const handleRealtimeEvent = useCallback((evt) => {
-    const t = evt.type || "";
-    if (t === "input_audio_buffer.speech_started") {
-      setIsGreeting(false);
-      setMicActive(true);
-      setStatus("LISTENING");
-    } else if (t === "input_audio_buffer.speech_stopped") {
-      setMicActive(false);
-      setStatus("AI PROCESSING");
-    } else if (t.endsWith("input_audio_transcription.delta")) {
-      userTextRef.current += evt.delta || "";
+  // Schedule one 24kHz PCM16 chunk of Mav's voice for gapless playback, queued
+  // back-to-back on the shared AudioContext clock.
+  const playPcmChunk = useCallback((base64Pcm) => {
+    const ctx = playCtxRef.current;
+    const gain = playGainRef.current;
+    if (!ctx || !gain) return;
+    const int16 = base64ToInt16Array(base64Pcm);
+    const float32 = new Float32Array(int16.length);
+    for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 0x8000;
+    const buffer = ctx.createBuffer(1, float32.length, PLAYBACK_SAMPLE_RATE);
+    buffer.copyToChannel(float32, 0);
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(gain);
+    const startAt = Math.max(ctx.currentTime, nextPlayTimeRef.current);
+    src.start(startAt);
+    nextPlayTimeRef.current = startAt + buffer.duration;
+  }, []);
+
+  // Handle one Gemini Live server message. Unlike OpenAI, Gemini has no discrete
+  // speech_started/response.created-style events — each message just carries
+  // whatever text/audio/transcription is ready, and `turnComplete` marks the end
+  // of Mav's spoken turn. The student's "speaking" indicator is driven
+  // separately from local mic RMS (see startMicCapture) since Gemini's input
+  // transcription isn't tied to a start/stop boundary either.
+  const handleRealtimeEvent = useCallback((message) => {
+    if (message.setupComplete) {
+      tlog("Gemini Live setup complete");
+      return;
+    }
+
+    // Mav calling `mark_question_answered` is the sole signal that the current
+    // question counted as answered — see MARK_ANSWERED_TOOL and the system
+    // instructions built in realtime.py for exactly when she's told to call it.
+    if (message.toolCall?.functionCalls?.length) {
+      for (const call of message.toolCall.functionCalls) {
+        if (call.name === "mark_question_answered") {
+          turnToolFiredRef.current = true;
+          answersRef.current += 1;
+          setQuestionNum(Math.min(answersRef.current, MAX_QUESTIONS));
+        }
+        // Every tool call must get a response or Gemini stalls generation —
+        // acknowledge unconditionally, even for an unexpected function name.
+        try {
+          sessionRef.current?.sendToolResponse({
+            functionResponses: { id: call.id, name: call.name, response: { output: "ok" } },
+          });
+        } catch (e) {
+          tlog("sendToolResponse failed: " + (e?.message || e));
+        }
+      }
+    }
+
+    const sc = message.serverContent;
+    if (!sc) return;
+
+    const inputText = sc.inputTranscription?.text;
+    if (inputText) {
+      userTextRef.current += inputText;
       setLiveTranscript(userTextRef.current);
-    } else if (t.endsWith("input_audio_transcription.completed")) {
-      const text = (evt.transcript || userTextRef.current || "").trim();
-      userTextRef.current = "";
-      if (text) {
-        pushTranscript({ speaker: "student", text });
-        setLiveTranscript(text);
-        answersRef.current += 1;
-      }
-    } else if (t === "response.created") {
-      aiTextRef.current = "";
-      setStatus("AI SPEAKING");
-    } else if (t.includes("audio_transcript") && t.endsWith(".delta")) {
-      aiTextRef.current += evt.delta || "";
+    }
+
+    const outputText = sc.outputTranscription?.text;
+    if (outputText) {
+      if (!aiTextRef.current) setStatus("AI SPEAKING");
+      aiTextRef.current += outputText;
       setCurrentAIText(aiTextRef.current);
-    } else if (t.includes("audio_transcript") && t.endsWith(".done")) {
-      const text = (evt.transcript || aiTextRef.current || "").trim();
-      aiTextRef.current = "";
-      if (text) {
-        pushTranscript({ speaker: "ai", text });
-        setCurrentAIText(text);
-        setQuestionNum((n) => Math.min(n + 1, MAX_QUESTIONS));
+    }
+
+    for (const part of sc.modelTurn?.parts || []) {
+      if (part.inlineData?.data) playPcmChunk(part.inlineData.data);
+    }
+
+    if (sc.interrupted) {
+      tlog("Gemini Live turn interrupted by the student");
+    }
+
+    if (sc.turnComplete) {
+      // Flush whatever accumulated since the last turn: the student's spoken
+      // answer (if any — the opening turn has none) first, then Mav's reply,
+      // preserving conversation order in the saved transcript.
+      const studentText = userTextRef.current.trim();
+      userTextRef.current = "";
+      if (studentText) {
+        pushTranscript({ speaker: "student", text: studentText });
+        setLiveTranscript(studentText);
+        // Progress is normally driven solely by the mark_question_answered tool
+        // call above. But LLM tool-calling isn't 100% reliable — verified live,
+        // Mav sometimes moves on without calling it — so if it didn't fire this
+        // turn, fall back to classifying the student's own words instead.
+        if (!turnToolFiredRef.current && looksLikeAnsweredTurn(studentText)) {
+          answersRef.current += 1;
+          setQuestionNum(Math.min(answersRef.current, MAX_QUESTIONS));
+        }
       }
-    } else if (t === "response.done") {
-      // Once the student has answered all questions, flag the interview to end
-      // after Mav finishes speaking her closing remark (handled in an effect).
-      if (answersRef.current >= MAX_QUESTIONS) {
+      turnToolFiredRef.current = false;
+      const aiText = aiTextRef.current.trim();
+      aiTextRef.current = "";
+      if (aiText) {
+        pushTranscript({ speaker: "ai", text: aiText });
+        setCurrentAIText(aiText);
+      }
+      // Flag the interview to end (after Mav finishes speaking, handled in an
+      // effect) ONLY when she's actually said a real goodbye — not purely on
+      // the answer counter. This is deliberate: if a repeat/clarify or
+      // chitchat aside during the LAST question were ever misclassified as an
+      // answer (mis-fired tool call, or a heuristic miss), the counter alone
+      // would end the meeting right then, even though Mav just re-asked the
+      // question. Requiring her own closing language as well means only an
+      // actual wrap-up can end the session.
+      if (aiText && GOODBYE_RE.test(aiText) && answersRef.current >= MAX_QUESTIONS - 1) {
         setShouldEnd(true);
       } else {
         setStatus("WAITING FOR YOU");
       }
-    } else if (t === "error") {
-      tlog("realtime error event: " + JSON.stringify(evt.error || evt));
     }
-  }, [pushTranscript]);
+  }, [pushTranscript, playPcmChunk]);
 
-  // Configure the session once the data channel is open, then ask Mav to open the
-  // interview (speak the greeting + first question).
-  const configureSession = useCallback((dc) => {
+  // Kick Mav off right after connecting — Gemini Live (unlike OpenAI) won't
+  // speak first on its own, so we send a scripted turn asking her to begin.
+  // This goes in as `clientContent`, not spoken audio, so it never reaches
+  // input transcription and can't leak into the saved transcript as something
+  // the student "said".
+  const configureSession = useCallback((session) => {
     try {
-      // Enable transcription of the student's speech and server-side turn
-      // detection so Mav waits for the student to finish before replying.
-      dc.send(JSON.stringify({
-        type: "session.update",
-        session: {
-          type: "realtime",
-          audio: {
-            input: {
-              // Pin transcription to English so the captions (and the saved
-              // transcript) don't get mis-detected as another language.
-              transcription: { model: "whisper-1", language: "en" },
-              turn_detection: { type: "server_vad", silence_duration_ms: 700 },
-            },
-          },
-        },
-      }));
-      // Kick off the conversation — Mav greets and asks the first question.
-      dc.send(JSON.stringify({ type: "response.create" }));
+      session.sendClientContent({
+        turns: [{ role: "user", parts: [{ text: "Let's begin the interview." }] }],
+        turnComplete: true,
+      });
     } catch (e) {
       tlog("configureSession failed: " + (e?.message || e));
     }
   }, []);
 
-  // Tear down the WebRTC connection + analyser + mic. Idempotent.
+  // Tear down the Gemini Live session + mic capture + playback graph. Idempotent.
   const teardownRealtime = useCallback(() => {
     if (teardownDoneRef.current) return;
     teardownDoneRef.current = true;
     if (voiceIntervalRef.current) { clearInterval(voiceIntervalRef.current); voiceIntervalRef.current = null; }
-    if (voiceCtxRef.current) { try { voiceCtxRef.current.close(); } catch { /* noop */ } voiceCtxRef.current = null; }
-    if (dcRef.current) { try { dcRef.current.close(); } catch { /* noop */ } dcRef.current = null; }
+    if (micProcessorRef.current) { try { micProcessorRef.current.disconnect(); } catch { /* noop */ } micProcessorRef.current = null; }
+    if (micCtxRef.current) { try { micCtxRef.current.close(); } catch { /* noop */ } micCtxRef.current = null; }
     if (pcMicStreamRef.current) { pcMicStreamRef.current.getTracks().forEach((tr) => tr.stop()); pcMicStreamRef.current = null; }
-    if (pcRef.current) { try { pcRef.current.close(); } catch { /* noop */ } pcRef.current = null; }
-    if (remoteAudioRef.current) { try { remoteAudioRef.current.pause(); } catch { /* noop */ } remoteAudioRef.current.srcObject = null; remoteAudioRef.current = null; }
+    if (sessionRef.current) { try { sessionRef.current.close(); } catch { /* noop */ } sessionRef.current = null; }
+    if (playCtxRef.current) { try { playCtxRef.current.close(); } catch { /* noop */ } playCtxRef.current = null; }
+    playGainRef.current = null;
+    playAnalyserRef.current = null;
+    nextPlayTimeRef.current = 0;
+    micActiveRef.current = false;
     setAiVoiceActive(false);
     setMicActive(false);
   }, []);
 
-  // Open the WebRTC connection to OpenAI using the ephemeral client secret.
+  // Capture the student's mic, downsample to 16kHz PCM16, and stream it to
+  // Gemini continuously. Also drives the local "LISTENING" indicator from mic
+  // RMS, since Gemini's automatic voice-activity detection doesn't surface a
+  // discrete speech_started/speech_stopped event to the client the way OpenAI did.
+  const startMicCapture = useCallback((stream, session) => {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new AudioCtx();
+    micCtxRef.current = ctx;
+    if (ctx.state === "suspended") ctx.resume().catch(() => {});
+    const source = ctx.createMediaStreamSource(stream);
+    const processor = ctx.createScriptProcessor(4096, 1, 1);
+    micProcessorRef.current = processor;
+    const inputSampleRate = ctx.sampleRate;
+    let lastLoudAt = 0;
+
+    processor.onaudioprocess = (e) => {
+      const input = e.inputBuffer.getChannelData(0);
+      let sum = 0;
+      for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
+      const rms = Math.sqrt(sum / input.length);
+      const now = Date.now();
+      if (rms > MIC_RMS_THRESHOLD) {
+        lastLoudAt = now;
+        if (!micActiveRef.current) {
+          micActiveRef.current = true;
+          setIsGreeting(false);
+          setMicActive(true);
+          setStatus("LISTENING");
+        }
+      } else if (micActiveRef.current && now - lastLoudAt > MIC_VOICE_HOLD_MS) {
+        micActiveRef.current = false;
+        setMicActive(false);
+      }
+
+      const downsampled = downsampleTo16k(input, inputSampleRate);
+      const pcm16 = floatTo16BitPCM(downsampled);
+      const b64 = arrayBufferToBase64(pcm16.buffer);
+      try {
+        session.sendRealtimeInput({ audio: { data: b64, mimeType: `audio/pcm;rate=${MIC_SAMPLE_RATE}` } });
+      } catch {
+        // Session already closing — drop the chunk.
+      }
+    };
+
+    source.connect(processor);
+    // A ScriptProcessorNode only fires while connected into the graph; route it
+    // through a muted gain so the student never hears their own mic looped back.
+    const mute = ctx.createGain();
+    mute.gain.value = 0;
+    processor.connect(mute);
+    mute.connect(ctx.destination);
+  }, []);
+
+  // Open the Gemini Live session using the ephemeral token, wire up playback for
+  // Mav's voice, then start streaming the student's mic.
   const connectRealtime = useCallback(async (startData) => {
     const clientSecret = startData.client_secret;
     const model = startData.model;
+    const voice = startData.voice;
+    const instructions = startData.instructions;
     if (!clientSecret) throw new Error("No realtime token returned — cannot start the interview.");
     teardownDoneRef.current = false;
 
-    const pc = new RTCPeerConnection();
-    pcRef.current = pc;
+    // Playback graph for Mav's voice (Gemini streams raw 24kHz PCM16, not a
+    // MediaStream, so we build our own AudioContext instead of an <audio> el).
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    const playCtx = new AudioCtx({ sampleRate: PLAYBACK_SAMPLE_RATE });
+    playCtxRef.current = playCtx;
+    const gain = playCtx.createGain();
+    const analyser = playCtx.createAnalyser();
+    analyser.fftSize = 512;
+    gain.connect(analyser);
+    analyser.connect(playCtx.destination);
+    playGainRef.current = gain;
+    playAnalyserRef.current = analyser;
+    nextPlayTimeRef.current = 0;
+    setupVoiceAnalyser(analyser);
 
-    // Play Mav's voice and analyse it for lip-sync.
-    const audioEl = new Audio();
-    audioEl.autoplay = true;
-    remoteAudioRef.current = audioEl;
-    pc.ontrack = (e) => {
-      const [stream] = e.streams;
-      audioEl.srcObject = stream;
-      audioEl.play().catch((err) => tlog("remote audio play() blocked: " + (err?.message || err)));
-      setupVoiceAnalyser(stream);
-    };
+    const ai = new GoogleGenAI({ apiKey: clientSecret, apiVersion: GEMINI_API_VERSION });
+    const session = await ai.live.connect({
+      model,
+      config: {
+        responseModalities: [Modality.AUDIO],
+        systemInstruction: instructions,
+        speechConfig: voice
+          ? { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } }
+          : undefined,
+        inputAudioTranscription: {},
+        outputAudioTranscription: {},
+        tools: [MARK_ANSWERED_TOOL],
+      },
+      callbacks: {
+        onopen: () => tlog("Gemini Live session open"),
+        onmessage: (message) => handleRealtimeEvent(message),
+        onerror: (e) => tlog("Gemini Live error: " + (e?.message || e)),
+        onclose: () => tlog("Gemini Live session closed"),
+      },
+    });
+    sessionRef.current = session;
+    // `connect()` only resolves once the socket is open, so it's safe to kick
+    // off the conversation immediately rather than waiting on the onopen callback.
+    configureSession(session);
 
-    // Stream the student's mic to OpenAI.
+    // Stream the student's mic to Gemini.
     const mic = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       video: false,
     });
     pcMicStreamRef.current = mic;
-    mic.getTracks().forEach((tr) => pc.addTrack(tr, mic));
+    startMicCapture(mic, session);
 
-    // Realtime events flow over a data channel.
-    const dc = pc.createDataChannel("oai-events");
-    dcRef.current = dc;
-    dc.onopen = () => { tlog("data channel open"); configureSession(dc); };
-    dc.onmessage = (e) => {
-      let evt;
-      try { evt = JSON.parse(e.data); } catch { return; }
-      handleRealtimeEvent(evt);
-    };
+    tlog("Gemini Live connected");
+  }, [configureSession, handleRealtimeEvent, setupVoiceAnalyser, startMicCapture]);
 
-    // SDP offer/answer handshake with OpenAI (authenticated by the ephemeral key).
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    const resp = await fetch(`${REALTIME_BASE_URL}?model=${encodeURIComponent(model || "")}`, {
-      method: "POST",
-      body: offer.sdp,
-      headers: {
-        Authorization: `Bearer ${clientSecret}`,
-        "Content-Type": "application/sdp",
-      },
-    });
-    if (!resp.ok) {
-      const detail = await resp.text().catch(() => "");
-      throw new Error(`Realtime connection failed (${resp.status}). ${detail.slice(0, 200)}`);
-    }
-    const answerSdp = await resp.text();
-    await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
-    tlog("WebRTC connected to OpenAI Realtime");
-  }, [configureSession, handleRealtimeEvent, setupVoiceAnalyser]);
-
-  // Send a typed answer over the data channel (the accessibility fallback when
-  // the student would rather type than speak).
+  // Send a typed answer (the accessibility fallback when the student would
+  // rather type than speak) as a scripted client-content turn. Rather than
+  // pushing to the transcript / counting progress here, it's written into
+  // userTextRef so it flows through the exact same turnComplete handling as a
+  // spoken answer — one shared place decides the tool-call-or-heuristic count.
   const sendTypedAnswer = useCallback((text) => {
-    const dc = dcRef.current;
+    const session = sessionRef.current;
     const trimmed = (text || "").trim();
-    if (!dc || dc.readyState !== "open" || !trimmed) return;
-    pushTranscript({ speaker: "student", text: trimmed });
+    if (!session || !trimmed) return;
+    userTextRef.current = trimmed;
     setLiveTranscript(trimmed);
-    dc.send(JSON.stringify({
-      type: "conversation.item.create",
-      item: { type: "message", role: "user", content: [{ type: "input_text", text: trimmed }] },
-    }));
-    dc.send(JSON.stringify({ type: "response.create" }));
+    try {
+      session.sendClientContent({
+        turns: [{ role: "user", parts: [{ text: trimmed }] }],
+        turnComplete: true,
+      });
+    } catch (e) {
+      tlog("sendTypedAnswer failed: " + (e?.message || e));
+    }
     setStatus("AI PROCESSING");
-  }, [pushTranscript]);
+  }, []);
 
   // Toggle the local mic on/off (mute). Realtime streams continuously, so muting
   // simply disables the outgoing track.
@@ -523,7 +764,7 @@ export default function InterviewRoom({
   }, [finalizeSessionRecording]);
 
   // Start the interview: fetch the ephemeral token + context, start the recorder,
-  // then open the WebRTC connection. Mav greets and the conversation begins.
+  // then open the Gemini Live session. Mav greets and the conversation begins.
   const startSession = useCallback(async () => {
     setLoading(true);
     setError("");
@@ -663,10 +904,13 @@ export default function InterviewRoom({
   }, []);
 
   // End the interview: close the realtime connection, then grade the transcript.
+  // isGrading swaps the whole screen to a "Calculating your results…" page for
+  // the (few-second) grading round-trip, instead of leaving the meet UI up.
   const handleEndCall = useCallback(async () => {
     if (!sessionId) return;
     teardownRealtime();
     setStatus("AI PROCESSING");
+    setIsGrading(true);
     try {
       const res = await authFetch("/api/interview/realtime/finish", {
         method: "POST",
@@ -683,6 +927,8 @@ export default function InterviewRoom({
     } catch (err) {
       setError(friendlyNetworkError(err));
       setStatus("WAITING FOR YOU");
+    } finally {
+      setIsGrading(false);
     }
   }, [authFetch, sessionId, teardownRealtime]);
 
@@ -771,6 +1017,32 @@ export default function InterviewRoom({
           <Link href={backHref} className="btn btn-primary">
             Go back
           </Link>
+        </div>
+      </>
+    );
+  }
+
+  if (isGrading) {
+    return (
+      <>
+        <Navbar />
+        <div className="page-container" style={{ display: "grid", placeItems: "center", minHeight: "100vh", backgroundColor: "var(--bg-canvas)" }}>
+          <div style={{ textAlign: "center" }}>
+            <div style={{
+              width: 36, height: 36,
+              margin: "0 auto 20px",
+              border: "3px solid var(--border-muted)",
+              borderTopColor: "var(--brand)",
+              borderRadius: "50%",
+              animation: "spin 0.7s linear infinite",
+            }} />
+            <p style={{ color: "var(--text-title)", fontSize: "16px", fontWeight: "600", marginBottom: "8px" }}>
+              Calculating your results…
+            </p>
+            <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+              Grading your responses on technical accuracy, communication, and confidence.
+            </p>
+          </div>
         </div>
       </>
     );
