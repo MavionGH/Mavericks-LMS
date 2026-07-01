@@ -1,11 +1,10 @@
+"use client";
 import Navbar from "@/components/Navbar";
 import Link from "next/link";
-
-const MOCK_COURSES = [
-  { id: "1", title: "JavaScript Fundamentals", description: "Master core JS concepts from variables to async/await with modular testing.", chapters: 8, icon: "JS" },
-  { id: "2", title: "React & Next.js Mastery", description: "Build scalable apps with server components, streaming, and advanced routing.", chapters: 12, icon: "RX" },
-  { id: "3", title: "Python for Data Science", description: "Analyze real datasets and build predictive models with Python.", chapters: 10, icon: "PY" },
-];
+import FeaturedCourses from "@/components/FeaturedCourses";
+import { useAuth } from "@/context/AuthContext";
+import { useRouter } from "next/navigation";
+import { useEffect } from "react";
 
 const FEATURES = [
   { metric: "01", title: "Adaptive Voice Interviews", desc: "Interact with an AI agent that speaks, listens, and tailors technical questions dynamically." },
@@ -15,6 +14,54 @@ const FEATURES = [
 ];
 
 export default function HomePage() {
+  const { user, loading } = useAuth();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!loading && user) {
+      if (user.role === "admin") {
+        router.replace("/admin");
+      } else if (user.role === "teacher") {
+        router.replace("/teacher");
+      } else {
+        router.replace("/dashboard");
+      }
+    }
+  }, [user, loading, router]);
+
+  // Loading state or authenticated state redirecting to dashboard
+  if (loading || user) {
+    return (
+      <div style={{
+        height: "100vh",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "var(--bg-canvas)",
+        color: "var(--text-muted)",
+        fontFamily: "JetBrains Mono, monospace",
+        gap: "16px"
+      }}>
+        <div style={{
+          width: 32,
+          height: 32,
+          border: "3px solid var(--border-muted)",
+          borderTopColor: "var(--brand)",
+          borderRadius: "50%",
+          animation: "spin 0.7s linear infinite",
+        }} />
+        <span>Loading...</span>
+        <style jsx global>{`
+          @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+          }
+        `}</style>
+      </div>
+    );
+  }
+
   return (
     <>
       <Navbar />
@@ -32,10 +79,8 @@ export default function HomePage() {
                 <Link href="/courses" className="btn btn-primary btn-lg">Explore Catalog</Link>
                 <Link href="/register" className="btn btn-secondary btn-lg">Create account</Link>
               </div>
-            
             </div>
             
-            {/* Visual illustration for Coursera/Udemy style */}
             <div style={{ display: "flex", justifyContent: "center", alignItems: "center" }}>
               <svg width="320" height="320" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <circle cx="100" cy="100" r="80" fill="var(--brand-muted)" />
@@ -75,23 +120,7 @@ export default function HomePage() {
               <h2>Featured Learning Tracks</h2>
               <p>Acquire, practice, and verify your skills in real-time.</p>
             </div>
-            <div className="grid-3">
-              {MOCK_COURSES.map((c) => (
-                <div className="card course-card" key={c.id}>
-                  <div className="course-card-thumb">
-                    {c.icon}
-                  </div>
-                  <div className="course-card-body">
-                    <h3>{c.title}</h3>
-                    <p>{c.description}</p>
-                    <div className="course-card-meta">
-                      <span className="course-card-chapters">{c.chapters} chapters</span>
-                      <Link href={`/courses/${c.id}`} className="btn btn-secondary btn-sm">View details</Link>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
+            <FeaturedCourses />
           </div>
         </section>
 

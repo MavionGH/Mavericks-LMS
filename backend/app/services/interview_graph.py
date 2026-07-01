@@ -14,6 +14,8 @@ from app.services.llm import (
     llm_score_interview,
     llm_classify_response,
     llm_handle_chitchat,
+    llm_generate_greeting,
+    llm_greeting_transition,
 )
 
 MAX_QUESTIONS = 5
@@ -33,6 +35,8 @@ class InterviewState(TypedDict, total=False):
     chapter_title: str
     chapter_context: str
     pass_threshold: int
+    student_name: str               # student's name so Mav can address them personally
+    asked_questions: List[str]      # interview questions already asked (for uniqueness)
     transcript: List[dict]
     pause_metrics: List[dict]
     question_count: int
@@ -55,17 +59,22 @@ class InterviewState(TypedDict, total=False):
 
 def _generate_question(state: InterviewState) -> InterviewState:
     q_num = state.get("question_count", 0) + 1
+    asked = list(state.get("asked_questions", []))
     question = llm_generate_question(
         state["chapter_title"],
         state["chapter_context"],
         state.get("transcript", []),
         q_num,
+        student_name=state.get("student_name", ""),
+        asked_questions=asked,
     )
     transcript = list(state.get("transcript", []))
     transcript.append({"speaker": "ai", "text": question})
+    asked.append(question)
     return {
         **state,
         "transcript": transcript,
+        "asked_questions": asked,
         "question_count": q_num,
         "current_question": question,
         "next_question": question,
@@ -178,10 +187,9 @@ def _score_interview(state: InterviewState) -> InterviewState:
 
 
 def _greet_student(state: InterviewState) -> InterviewState:
-    greeting = (
-        "Hello! Welcome to your interview. I'm Mav, your AI interviewer, and I'm glad "
-        "to be speaking with you today. We'll go through a few questions about this module. "
-        "Feel free to ask me to repeat or clarify anything at any time. Let's begin."
+    greeting = llm_generate_greeting(
+        state["chapter_title"],
+        state.get("student_name", ""),
     )
     transcript = list(state.get("transcript", []))
     if not any(m.get("text") == greeting for m in transcript):
@@ -198,18 +206,16 @@ def _greet_student(state: InterviewState) -> InterviewState:
 
 
 def _build_start_graph():
-    """Graph for interview start: greet, then immediately generate Question 1.
+    """Graph for interview start: greet ONLY.
 
-    Per the interview spec, the greeting flows straight into the first question
-    in a single turn — the student's first spoken reply is the answer to Q1, not
-    a reply to the greeting.
+    The greeting is its own interactive turn — Mav introduces herself, names the
+    course, and invites the student to say hello. The student's first reply is a
+    greeting back (handled in process_answer), and only THEN is Question 1 asked.
     """
     g = StateGraph(InterviewState)
     g.add_node("GreetingNode", _greet_student)
-    g.add_node("FirstQuestion", _generate_question)
     g.set_entry_point("GreetingNode")
-    g.add_edge("GreetingNode", "FirstQuestion")
-    g.add_edge("FirstQuestion", END)
+    g.add_edge("GreetingNode", END)
     return g.compile()
 
 
@@ -249,11 +255,18 @@ def _get_answer_graph():
     return _answer_graph
 
 
-def start_interview(chapter_title: str, chapter_context: str, pass_threshold: int) -> dict:
+def start_interview(
+    chapter_title: str,
+    chapter_context: str,
+    pass_threshold: int,
+    student_name: str = "",
+) -> dict:
     initial: InterviewState = {
         "chapter_title": chapter_title,
         "chapter_context": chapter_context,
         "pass_threshold": pass_threshold,
+        "student_name": student_name or "",
+        "asked_questions": [],
         "transcript": [],
         "pause_metrics": [],
         "question_count": 0,
@@ -266,15 +279,10 @@ def start_interview(chapter_title: str, chapter_context: str, pass_threshold: in
         "greeting": None,
         "phase": "greeting",
     }
-    # Invoke start graph (runs greet_student -> generate_question)
+    # Invoke start graph (runs greet_student only). The interview opens on the
+    # greeting alone; Question 1 is asked once the student greets back, so
+    # `next_question` here is just the greeting and question_count stays 0.
     result = dict(_get_start_graph().invoke(initial))
-    # Deliver greeting + Question 1 as ONE spoken turn so the avatar speaks them
-    # back-to-back and the student's first answer is for Q1. `current_question`
-    # stays Q1 (used for classification / re-asks); `greeting` stays separate.
-    greeting = result.get("greeting", "")
-    first_question = result.get("current_question", "")
-    if greeting and first_question and not result.get("is_complete"):
-        result["next_question"] = f"{greeting}\n\n{first_question}"
     return result
 
 
@@ -289,18 +297,29 @@ def process_answer(
     """Process the student's message — classify first, then route appropriately."""
     state = dict(state)
 
-    # ── Backward-compat path: question_count == 0 means this session was started
-    # under the old flow (greeting-only first turn). New sessions arrive with Q1
-    # already asked (question_count == 1), so this branch only runs for sessions
-    # that were already active before greeting+Q1 were merged into one turn. ──
+    # ── Greeting phase: question_count == 0 means Mav has greeted but not yet asked
+    # Question 1. The student's first message is their greeting/readiness reply
+    # (NOT an interview answer), so we acknowledge it warmly by name and then ask
+    # the first question. No pause metric is recorded for this turn, so it never
+    # counts toward the 5 scored answers. ──
     if state.get("question_count", 0) == 0:
-        state["last_answer"] = answer
-        state["last_response_time_ms"] = 0
-        state["last_pause_count"] = 0
-        state["last_long_pause_ms"] = 0
-        state["last_filler_word_count"] = 0
-        result = dict(_get_answer_graph().invoke(state))
+        student_name = state.get("student_name", "")
+        transition = llm_greeting_transition(answer, student_name)
+
+        transcript = list(state.get("transcript", []))
+        transcript.append({"speaker": "student", "text": answer})
+        state["transcript"] = transcript
+
+        # Generate Question 1 (advances question_count to 1, appends to transcript
+        # and asked_questions).
+        result = dict(_generate_question(state))
+
+        # Speak the warm acknowledgement immediately before Question 1.
+        first_question = result.get("current_question", "")
+        if transition and first_question:
+            result["next_question"] = f"{transition}\n\n{first_question}"
         result["is_chitchat"] = False
+        result["phase"] = "asking"
         return result
 
     current_q = state.get("current_question") or state.get("next_question", "")
@@ -319,7 +338,7 @@ def process_answer(
 
     if category in ("greeting", "personal", "clarification", "offtopic"):
         # Generate a conversational reply without advancing the interview
-        reply = llm_handle_chitchat(answer, current_q, category)
+        reply = llm_handle_chitchat(answer, current_q, category, state.get("student_name", ""))
 
         # Record student message + Mav's chitchat reply in transcript
         transcript = list(state.get("transcript", []))

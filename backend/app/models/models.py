@@ -8,7 +8,8 @@ import uuid
 
 try:
     from pgvector.sqlalchemy import Vector
-    _embedding_type = Vector(384)
+    from app.services.openai_config import EMBED_DIM
+    _embedding_type = Vector(EMBED_DIM)
 except ImportError:
     from sqlalchemy import Text as _TextFallback
     _embedding_type = _TextFallback()
@@ -48,6 +49,7 @@ class User(Base):
     role = Column(Enum(UserRole), default=UserRole.STUDENT)
     is_approved = Column(Boolean, default=True)
     avatar = Column(String(500), nullable=True)
+    certificate_name = Column(String(100), nullable=True)
     google_id = Column(String(255), unique=True, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -77,10 +79,24 @@ class Course(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     teacher = relationship("User", foreign_keys=[teacher_id])
-    chapters = relationship("Chapter", back_populates="course", order_by="Chapter.order_index")
-    enrollments = relationship("Enrollment", back_populates="course")
-    certificates = relationship("Certificate", back_populates="course")
+    chapters = relationship("Chapter", back_populates="course", order_by="Chapter.order_index", cascade="all, delete-orphan")
+    enrollments = relationship("Enrollment", back_populates="course", cascade="all, delete-orphan")
+    certificates = relationship("Certificate", back_populates="course", cascade="all, delete-orphan")
     chunk_embeddings = relationship("ChunkEmbedding", back_populates="course", cascade="all, delete-orphan")
+    interview_sessions = relationship("InterviewSession", back_populates="course", cascade="all, delete-orphan")
+    evaluations = relationship("Evaluation", back_populates="course", cascade="all, delete-orphan")
+
+    @property
+    def student_count(self) -> int:
+        return len(self.enrollments)
+
+    @property
+    def pass_rate(self) -> float:
+        total = len(self.enrollments)
+        if total == 0:
+            return 0.0
+        completed = sum(1 for e in self.enrollments if e.status == EnrollmentStatus.COMPLETED)
+        return round((completed / total) * 100, 1)
 
 
 # ─── CHAPTER ───
@@ -96,10 +112,11 @@ class Chapter(Base):
     course_id = Column(String, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False)
 
     course = relationship("Course", back_populates="chapters")
-    evaluations = relationship("Evaluation", back_populates="chapter")
-    quiz_attempts = relationship("QuizAttempt", back_populates="chapter")
-    quiz_question = relationship("QuizQuestion", back_populates="chapter", uselist=False)
+    evaluations = relationship("Evaluation", back_populates="chapter", cascade="all, delete-orphan")
+    quiz_attempts = relationship("QuizAttempt", back_populates="chapter", cascade="all, delete-orphan")
+    quiz_question = relationship("QuizQuestion", back_populates="chapter", uselist=False, cascade="all, delete-orphan")
     chunk_embeddings = relationship("ChunkEmbedding", back_populates="chapter", cascade="all, delete-orphan")
+    interview_sessions = relationship("InterviewSession", back_populates="chapter", cascade="all, delete-orphan")
 
     @property
     def has_transcript(self) -> bool:
@@ -171,11 +188,12 @@ class InterviewSession(Base):
     # Public R2 URL of the full screen+audio recording of the interview, uploaded
     # by the browser when the session ends. Null until the upload completes.
     recording_url = Column(String(500), nullable=True)
+    teacher_score = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User")
-    chapter = relationship("Chapter")
-    course = relationship("Course")
+    chapter = relationship("Chapter", back_populates="interview_sessions")
+    course = relationship("Course", back_populates="interview_sessions")
 
 
 # ─── EVALUATION (AI Interview) ───
@@ -185,6 +203,7 @@ class Evaluation(Base):
     id = Column(String, primary_key=True, default=generate_uuid)
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
     chapter_id = Column(String, ForeignKey("chapters.id"), nullable=True)
+    course_id = Column(String, ForeignKey("courses.id"), nullable=True)
     type = Column(Enum(EvaluationType), nullable=False)
     transcript = Column(JSON, nullable=True)
     technical_score = Column(Float, default=0)
@@ -200,6 +219,7 @@ class Evaluation(Base):
 
     user = relationship("User", back_populates="evaluations")
     chapter = relationship("Chapter", back_populates="evaluations")
+    course = relationship("Course", back_populates="evaluations")
 
 
 # ─── CERTIFICATE ───
@@ -211,6 +231,8 @@ class Certificate(Base):
     course_id = Column(String, ForeignKey("courses.id"), nullable=False)
     issue_date = Column(DateTime, default=datetime.utcnow)
     verify_code = Column(String, unique=True, default=generate_uuid)
+    # Optional: Cloudflare R2 public URL for a rendered/stored certificate PDF
+    pdf_url = Column(String(500), nullable=True)
 
     user = relationship("User", back_populates="certificates")
     course = relationship("Course", back_populates="certificates")

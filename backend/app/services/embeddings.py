@@ -1,23 +1,59 @@
-"""Text chunking and sentence-transformer embedding service for RAG."""
+"""Text chunking and OpenAI embedding service for RAG.
+
+Embeddings are produced by OpenAI's text-embedding-3-small (cost-efficient),
+truncated to EMBED_DIM (384) dimensions via the `dimensions` parameter so they
+stay compatible with the existing Postgres `Vector(384)` column and Pinecone
+index — no schema migration required.
+"""
 import logging
 from typing import List, Optional
 
+from app.services.openai_config import (
+    EMBED_DIM,
+    OPENAI_EMBED_MODEL,
+    get_openai_client,
+    has_openai,
+)
+
 logger = logging.getLogger(__name__)
 
-_model = None
+# OpenAI's embeddings endpoint accepts many inputs per request; batch to keep
+# each request well within token limits while minimising round-trips.
+_EMBED_BATCH = 128
 
 
-def _get_model():
-    """Lazy-load sentence-transformers model (downloads ~90 MB on first call)."""
-    global _model
-    if _model is None:
-        try:
-            from sentence_transformers import SentenceTransformer
-            _model = SentenceTransformer("all-MiniLM-L6-v2")
-            logger.info("Loaded sentence-transformers model (all-MiniLM-L6-v2, 384-dim).")
-        except Exception as exc:
-            logger.error("Could not load sentence-transformers: %s", exc)
-    return _model
+def embeddings_available() -> bool:
+    """True when embeddings can be produced (OpenAI key present)."""
+    return has_openai()
+
+
+def embed_texts(texts: List[str]) -> Optional[List[List[float]]]:
+    """Embed a list of texts with OpenAI. Returns a list of vectors (one per
+    input) or None if embeddings are unavailable / the call fails — callers then
+    degrade gracefully (store without embeddings, or fall back to raw content).
+    """
+    if not texts:
+        return []
+    client = get_openai_client()
+    if client is None:
+        logger.warning("Embeddings unavailable: no OpenAI client (missing OPENAI_API_KEY?)")
+        return None
+    try:
+        vectors: List[List[float]] = []
+        for start in range(0, len(texts), _EMBED_BATCH):
+            batch = texts[start : start + _EMBED_BATCH]
+            resp = client.embeddings.create(
+                model=OPENAI_EMBED_MODEL,
+                input=batch,
+                dimensions=EMBED_DIM,
+            )
+            # Preserve input order (the API returns items with an `index`).
+            for item in sorted(resp.data, key=lambda d: d.index):
+                vectors.append(item.embedding)
+        return vectors
+    except Exception as exc:
+        logger.error("OpenAI embedding call failed: %s", exc)
+        return None
 
 
 def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[str]:
@@ -65,8 +101,8 @@ def embed_and_store_chapter(
             db.commit()
             return
 
-        model = _get_model()
-        if model is None:
+        embeddings = embed_texts(raw_chunks)
+        if embeddings is None:
             for chunk in raw_chunks:
                 db.add(ChunkEmbedding(
                     chapter_id=chapter_id, course_id=course_id,
@@ -76,13 +112,12 @@ def embed_and_store_chapter(
             logger.warning("Stored %d chunks without embeddings for chapter %s", len(raw_chunks), chapter_id)
             return
 
-        embeddings = model.encode(raw_chunks, show_progress_bar=False)
         for chunk, emb in zip(raw_chunks, embeddings):
             db.add(ChunkEmbedding(
                 chapter_id=chapter_id,
                 course_id=course_id,
                 chunk_text=chunk,
-                embedding=emb.tolist(),
+                embedding=emb,
             ))
         db.commit()
         logger.info("Stored %d embeddings for chapter %s", len(raw_chunks), chapter_id)
@@ -111,11 +146,11 @@ def retrieve_relevant_chunks(
     from app.models.models import ChunkEmbedding
     from sqlalchemy import text
 
-    model = _get_model()
-    if model is not None:
+    query_vecs = embed_texts([query])
+    if query_vecs:
         try:
-            query_emb = model.encode([query])[0]
-            vec_str = "[" + ",".join(f"{x:.6f}" for x in query_emb.tolist()) + "]"
+            query_emb = query_vecs[0]
+            vec_str = "[" + ",".join(f"{x:.6f}" for x in query_emb) + "]"
             # Use CAST(:emb AS vector) instead of :emb::vector — the latter is
             # invalid syntax with psycopg's parameterized queries.
             rows = db.execute(

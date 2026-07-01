@@ -14,7 +14,7 @@ from app.schemas.schemas import (
     CourseCreate, CourseResponse, CourseListResponse,
     ChapterCreate, ChapterResponse, ChapterMinResponse, ChapterDetailResponse
 )
-from app.auth.dependencies import get_current_user, require_teacher, require_admin
+from app.auth.dependencies import get_current_user, require_teacher, require_admin, get_optional_current_user
 from app.services.transcript import fetch_youtube_transcript
 from app.services.storage import upload_video_to_r2
 from app.services.pinecone_store import index_module_content
@@ -45,7 +45,10 @@ def list_managed_courses(
     Teachers see only their own courses (all statuses).
     Admins see every course.
     """
-    q = db.query(Course).options(joinedload(Course.chapters))
+    q = db.query(Course).options(
+        joinedload(Course.chapters),
+        joinedload(Course.enrollments)
+    )
     if current_user.role != UserRole.ADMIN:
         q = q.filter(Course.teacher_id == current_user.id)
     courses = q.order_by(Course.created_at.desc()).all()
@@ -84,7 +87,10 @@ def preview_youtube_transcript(
 # ─── PUBLIC LISTING ───
 
 @router.get("/", response_model=List[CourseListResponse])
-def list_courses(db: Session = Depends(get_db)):
+def list_courses(
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
+):
     """Public — lists all courses published by an approved teacher."""
     query_results = db.query(
         Course,
@@ -97,8 +103,16 @@ def list_courses(db: Session = Depends(get_db)):
         Course.id
     ).all()
 
+    # Fetch user's enrollments if logged in
+    enrollments_dict = {}
+    if current_user:
+        from app.models.models import Enrollment
+        user_enrollments = db.query(Enrollment).filter(Enrollment.user_id == current_user.id).all()
+        enrollments_dict = {e.course_id: e.status for e in user_enrollments}
+
     result = []
     for c, count in query_results:
+        enroll_status = enrollments_dict.get(c.id, None)
         result.append(CourseListResponse(
             id=c.id,
             title=c.title,
@@ -106,6 +120,7 @@ def list_courses(db: Session = Depends(get_db)):
             thumbnail=c.thumbnail,
             is_published=c.is_published,
             chapter_count=count,
+            enrollment_status=enroll_status.value if enroll_status else None
         ))
     return result
 
@@ -167,13 +182,19 @@ def update_course(
 def delete_course(
     course_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_teacher),
 ):
     course = db.query(Course).filter(Course.id == course_id).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
-    db.delete(course)
-    db.commit()
+    _assert_course_owner(course, current_user)
+    try:
+        db.delete(course)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Error deleting course")
+        raise HTTPException(status_code=400, detail=f"Failed to delete course: {exc}")
     return {"message": "Course deleted"}
 
 
@@ -260,7 +281,7 @@ def add_chapter(
     db.commit()
     db.refresh(chapter)
 
-    # Embed transcript + article with HuggingFace and store the vectors in
+    # Embed transcript + article with OpenAI and store the vectors in
     # Pinecone (the single source of truth for vectors). The transcript/article
     # text itself stays in Supabase (the Chapter row above) for quiz generation.
     background_tasks.add_task(
@@ -320,8 +341,13 @@ def delete_chapter(
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
     _assert_course_owner(chapter.course, current_user)
-    db.delete(chapter)
-    db.commit()
+    try:
+        db.delete(chapter)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Error deleting chapter")
+        raise HTTPException(status_code=400, detail=f"Failed to delete chapter: {exc}")
     return {"message": "Chapter deleted"}
 
 
@@ -351,7 +377,7 @@ def upload_video(
 
     url = upload_video_to_r2(file)
 
-    # Auto-generate the transcript from the uploaded video (Groq Whisper).
+    # Auto-generate the transcript from the uploaded video (OpenAI Whisper).
     # Returns "" on any failure so the teacher can still fill it in manually.
     transcript = transcribe_video_bytes(data, file.filename) or ""
     return {"video_url": url, "transcript": transcript}

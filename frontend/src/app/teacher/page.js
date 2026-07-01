@@ -39,6 +39,25 @@ function RecordingPlayer({ src }) {
   );
 }
 
+// Small inline spinner shown next to the per-stage transcription status text.
+function StageSpinner() {
+  return (
+    <span
+      style={{
+        width: 11,
+        height: 11,
+        border: "2px solid currentColor",
+        borderTopColor: "transparent",
+        borderRadius: "50%",
+        display: "inline-block",
+        marginRight: 6,
+        verticalAlign: "-1px",
+        animation: "spin 0.7s linear infinite",
+      }}
+    />
+  );
+}
+
 function TeacherPanel() {
   const { user, token, authFetch, refreshUser } = useAuth();
   const [checkingApproval, setCheckingApproval] = useState(false);
@@ -55,13 +74,12 @@ function TeacherPanel() {
     video_transcript: "",
   });
   const [chapterStatus, setChapterStatus] = useState("");
-  
+
   // Video upload state
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadedFileName, setUploadedFileName] = useState("");
   const [uploadError, setUploadError] = useState("");
-
 
   // Article document import state (txt / md / pdf / docx → article text)
   const [articleUploading, setArticleUploading] = useState(false);
@@ -72,6 +90,147 @@ function TeacherPanel() {
   const [recordings, setRecordings] = useState([]);
   const [recordingsLoading, setRecordingsLoading] = useState(false);
   const [recordingsError, setRecordingsError] = useState("");
+
+  // Student enrollment/recordings list
+  const [students, setStudents] = useState([]);
+  const [studentsLoading, setStudentsLoading] = useState(false);
+  const [studentsError, setStudentsError] = useState("");
+  const [selectedStudent, setSelectedStudent] = useState(null);
+
+  // Nested views for My Courses click flow
+  const [selectedCourseForStudents, setSelectedCourseForStudents] = useState(null);
+  const [selectedStudentForInterviews, setSelectedStudentForInterviews] = useState(null);
+  const [courseStudents, setCourseStudents] = useState([]);
+  const [courseStudentsLoading, setCourseStudentsLoading] = useState(false);
+  const [courseStudentsError, setCourseStudentsError] = useState("");
+  const [courseRecordings, setCourseRecordings] = useState([]);
+  const [courseRecordingsLoading, setCourseRecordingsLoading] = useState(false);
+  const [courseRecordingsError, setCourseRecordingsError] = useState("");
+
+  // State variables for Ungraded Interviews flow
+  const [selectedUngradedCourse, setSelectedUngradedCourse] = useState(null);
+  const [selectedUngradedStudent, setSelectedUngradedStudent] = useState(null);
+  const [ungradedCourses, setUngradedCourses] = useState([]);
+  const [ungradedCoursesLoading, setUngradedCoursesLoading] = useState(false);
+  const [ungradedCoursesError, setUngradedCoursesError] = useState("");
+  const [ungradedStudents, setUngradedStudents] = useState([]);
+  const [ungradedStudentsLoading, setUngradedStudentsLoading] = useState(false);
+  const [ungradedStudentsError, setUngradedStudentsError] = useState("");
+  const [ungradedRecordings, setUngradedRecordings] = useState([]);
+  const [ungradedRecordingsLoading, setUngradedRecordingsLoading] = useState(false);
+  const [ungradedRecordingsError, setUngradedRecordingsError] = useState("");
+
+  const loadCourseStudents = useCallback(async (courseId) => {
+    setCourseStudentsLoading(true);
+    setCourseStudentsError("");
+    try {
+      const res = await authFetch(`/api/teacher/students?course_id=${courseId}`);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "Failed to load students");
+      setCourseStudents(await res.json());
+    } catch (err) {
+      setCourseStudentsError(err.message);
+    } finally {
+      setCourseStudentsLoading(false);
+    }
+  }, [authFetch]);
+
+  const loadCourseRecordings = useCallback(async (studentId, courseId) => {
+    setCourseRecordings([]);
+    setCourseRecordingsLoading(true);
+    setCourseRecordingsError("");
+    try {
+      const res = await authFetch(`/api/teacher/recordings?student_id=${studentId}&course_id=${courseId}`);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "Failed to load recordings");
+      setCourseRecordings(await res.json());
+    } catch (err) {
+      setCourseRecordingsError(err.message);
+    } finally {
+      setCourseRecordingsLoading(false);
+    }
+  }, [authFetch]);
+
+  const loadUngradedCourses = useCallback(async () => {
+    setUngradedCoursesLoading(true);
+    setUngradedCoursesError("");
+    try {
+      const res = await authFetch("/api/teacher/ungraded-courses");
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "Failed to load ungraded courses");
+      setUngradedCourses(await res.json());
+    } catch (err) {
+      setUngradedCoursesError(err.message);
+    } finally {
+      setUngradedCoursesLoading(false);
+    }
+  }, [authFetch]);
+
+  const loadUngradedStudents = useCallback(async (courseId) => {
+    setUngradedStudentsLoading(true);
+    setUngradedStudentsError("");
+    try {
+      const res = await authFetch(`/api/teacher/ungraded-students?course_id=${courseId}`);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "Failed to load ungraded students");
+      setUngradedStudents(await res.json());
+    } catch (err) {
+      setUngradedStudentsError(err.message);
+    } finally {
+      setUngradedStudentsLoading(false);
+    }
+  }, [authFetch]);
+
+  const loadUngradedRecordings = useCallback(async (studentId, courseId) => {
+    setUngradedRecordings([]);
+    setUngradedRecordingsLoading(true);
+    setUngradedRecordingsError("");
+    try {
+      const res = await authFetch(`/api/teacher/recordings?student_id=${studentId}&course_id=${courseId}&ungraded=true`);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "Failed to load ungraded recordings");
+      setUngradedRecordings(await res.json());
+    } catch (err) {
+      setUngradedRecordingsError(err.message);
+    } finally {
+      setUngradedRecordingsLoading(false);
+    }
+  }, [authFetch]);
+
+  // Teacher evaluation scoring state & handler
+  const [scoresInput, setScoresInput] = useState({});
+  const [submittingScores, setSubmittingScores] = useState({});
+
+  const handleSaveScore = async (sessionId, scoreVal) => {
+    const parsedScore = parseInt(scoreVal, 10);
+    if (isNaN(parsedScore) || parsedScore < 0 || parsedScore > 100) {
+      alert("Please enter a valid score between 0 and 100.");
+      return;
+    }
+
+    setSubmittingScores((prev) => ({ ...prev, [sessionId]: true }));
+    try {
+      const res = await authFetch(`/api/teacher/recordings/${sessionId}/score`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ score: parsedScore }),
+      });
+      if (!res.ok) {
+        throw new Error((await res.json().catch(() => ({}))).detail || "Failed to save score");
+      }
+
+      // Update local state arrays to reflect the change
+      setRecordings((prev) =>
+        prev.map((r) => (r.session_id === sessionId ? { ...r, teacher_score: parsedScore } : r))
+      );
+      setCourseRecordings((prev) =>
+        prev.map((r) => (r.session_id === sessionId ? { ...r, teacher_score: parsedScore } : r))
+      );
+      setUngradedRecordings((prev) =>
+        prev.map((r) => (r.session_id === sessionId ? { ...r, teacher_score: parsedScore } : r))
+      );
+
+    } catch (err) {
+      alert(`Error saving score: ${err.message}`);
+    } finally {
+      setSubmittingScores((prev) => ({ ...prev, [sessionId]: false }));
+    }
+  };
 
   // Transcript generation state
   const [transcribing, setTranscribing] = useState(false);
@@ -164,6 +323,85 @@ function TeacherPanel() {
     xhr.send(formData);
   };
 
+  // Manually (re)generate the transcript for the already-selected video file.
+  // Drives the staged "Auto-generate transcript" panel: uploads the stored file
+  // to the same /upload-video endpoint (which extracts audio + runs Whisper
+  // server-side) and fills the transcript box from the response. Safe to run
+  // multiple times; degrades gracefully when no speech is detected or on error.
+  const handleGenerateTranscript = () => {
+    const file = videoFileRef.current;
+    if (!file) {
+      setTranscribeError("Please choose a video file first.");
+      return;
+    }
+
+    setTranscribeError("");
+    setTranscribeProgress(0);
+    setTranscribeStage("uploading");
+    setTranscribing(true);
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API_BASE}/api/courses/upload-video`, true);
+    if (token) {
+      xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    }
+
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        const pct = Math.round((event.loaded / event.total) * 100);
+        setTranscribeProgress(pct);
+        // Once bytes are uploaded the server extracts audio + runs Whisper
+        // before it responds — reflect that in the stage indicator.
+        if (pct >= 100) {
+          setTranscribeStage("transcribing");
+        }
+      }
+    };
+
+    xhr.onload = () => {
+      setTranscribing(false);
+      if (xhr.status === 200) {
+        try {
+          const res = JSON.parse(xhr.responseText);
+          setChapterForm((prev) => ({
+            ...prev,
+            youtube_url: res.video_url || prev.youtube_url,
+            // Keep any text the teacher already typed if Whisper returned nothing.
+            video_transcript: res.transcript ? res.transcript : prev.video_transcript,
+          }));
+          setUploadedFileName(file.name);
+          if (res.transcript) {
+            setTranscribeStage("done");
+          } else {
+            setTranscribeStage("");
+            setTranscribeError("No speech detected in the video — add a transcript manually below if needed.");
+          }
+        } catch {
+          setTranscribeStage("");
+          setTranscribeError("Failed to parse the transcription response.");
+        }
+      } else {
+        let detail = `Transcription failed with status code ${xhr.status}.`;
+        try {
+          detail = JSON.parse(xhr.responseText).detail || detail;
+        } catch { /* keep default */ }
+        setTranscribeStage("");
+        setTranscribeError(detail);
+      }
+    };
+
+    xhr.onerror = () => {
+      setTranscribing(false);
+      setTranscribeStage("");
+      setTranscribeError("Network error during transcription.");
+    };
+
+    xhr.send(formData);
+  };
+
   // Upload a text/PDF/DOCX file → backend extracts plain text → fills the
   // article box. The extracted text is saved to article_content like typed text.
   const handleArticleUpload = async (e) => {
@@ -229,11 +467,13 @@ function TeacherPanel() {
     loadCourses();
   }, [loadCourses]);
 
-  const loadRecordings = useCallback(async () => {
+  const loadRecordings = useCallback(async (studentId = null) => {
+    setRecordings([]);
     setRecordingsLoading(true);
     setRecordingsError("");
     try {
-      const res = await authFetch("/api/teacher/recordings");
+      const url = studentId ? `/api/teacher/recordings?student_id=${studentId}` : "/api/teacher/recordings";
+      const res = await authFetch(url);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "Failed to load recordings");
       setRecordings(await res.json());
     } catch (err) {
@@ -243,11 +483,29 @@ function TeacherPanel() {
     }
   }, [authFetch]);
 
-  // Load recordings the first time the teacher opens that tab.
+  const loadStudents = useCallback(async () => {
+    setStudentsLoading(true);
+    setStudentsError("");
+    try {
+      const res = await authFetch("/api/teacher/students");
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "Failed to load students");
+      setStudents(await res.json());
+    } catch (err) {
+      setStudentsError(err.message);
+    } finally {
+      setStudentsLoading(false);
+    }
+  }, [authFetch]);
+
+  // Load ungraded courses the first time the teacher opens that tab.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (activeTab === "recordings") loadRecordings();
-  }, [activeTab, loadRecordings]);
+    if (activeTab === "recordings") {
+      setSelectedUngradedCourse(null);
+      setSelectedUngradedStudent(null);
+      loadUngradedCourses();
+    }
+  }, [activeTab, loadUngradedCourses]);
 
   const selectedCourse = courses.find((c) => c.id === selectedCourseId);
 
@@ -310,12 +568,46 @@ function TeacherPanel() {
     loadCourses();
   };
 
+  const handleDeleteCourse = async (courseId) => {
+    if (!window.confirm("Are you sure you want to delete this course? This will remove all modules and enrollments.")) return;
+    try {
+      const res = await authFetch(`/api/courses/${courseId}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        loadCourses();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.detail || "Failed to delete course.");
+      }
+    } catch (e) {
+      alert("Error deleting course: " + e.message);
+    }
+  };
+
+  const handleDeleteChapter = async (chapterId) => {
+    if (!window.confirm("Are you sure you want to delete this module?")) return;
+    try {
+      const res = await authFetch(`/api/courses/chapters/${chapterId}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        loadCourses();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.detail || "Failed to delete module.");
+      }
+    } catch (e) {
+      alert("Error deleting module: " + e.message);
+    }
+  };
+
   const TABS = [
-    { key: "overview",  label: "Overview"     },
-    { key: "courses",   label: "My Courses"   },
-    { key: "modules",   label: "Add Modules"  },
-    { key: "create",    label: "Add Course"   },
-    { key: "recordings", label: "Student Recordings" },
+    { key: "overview", label: "Overview" },
+    { key: "courses", label: "My Courses" },
+    { key: "modules", label: "Add Modules" },
+    { key: "create", label: "Add Course" },
+    { key: "recordings", label: "Ungraded Interviews" },
   ];
 
   const handleCheckApproval = async () => {
@@ -393,7 +685,13 @@ function TeacherPanel() {
               <div
                 key={t.key}
                 className={`tab ${activeTab === t.key ? "active" : ""}`}
-                onClick={() => setActiveTab(t.key)}
+                onClick={() => {
+                  setActiveTab(t.key);
+                  setSelectedCourseForStudents(null);
+                  setSelectedStudentForInterviews(null);
+                  setSelectedUngradedCourse(null);
+                  setSelectedUngradedStudent(null);
+                }}
               >
                 {t.label}
               </div>
@@ -491,8 +789,8 @@ function TeacherPanel() {
             </div>
           )}
 
-          {/* My Courses */}
-          {activeTab === "courses" && (
+          {/* My Courses - Level 1 (Courses List) */}
+          {activeTab === "courses" && !selectedCourseForStudents && (
             <div className="table-container">
               <table>
                 <thead>
@@ -502,20 +800,44 @@ function TeacherPanel() {
                 </thead>
                 <tbody>
                   {courses.map((c) => (
-                    <tr key={c.id}>
-                      <td style={{ fontWeight: "700", color: "var(--text-title)" }}>{c.title}</td>
+                    <tr
+                      key={c.id}
+                      style={{ cursor: "pointer" }}
+                      onClick={() => {
+                        setSelectedCourseForStudents(c);
+                        loadCourseStudents(c.id);
+                      }}
+                    >
+                      <td style={{ fontWeight: "700", color: "#000000" }}>
+                        {c.title}
+                      </td>
                       <td className="mono">{c.chapters?.length || 0}</td>
-                      <td className="mono">—</td>
-                      <td className="mono">—</td>
+                      <td className="mono">{c.student_count ?? 0}</td>
+                      <td className="mono">{c.pass_rate !== undefined && c.pass_rate !== null ? `${c.pass_rate}%` : "0%"}</td>
                       <td>
                         <span className={`badge ${c.is_published ? "badge-success" : "badge-warning"}`}>
                           {c.is_published ? "Live" : "Draft"}
                         </span>
                       </td>
-                      <td style={{ display: "flex", gap: "8px" }}>
+                      <td style={{ display: "flex", gap: "8px" }} onClick={(e) => e.stopPropagation()}>
+                        <button
+                          className="btn btn-primary btn-sm"
+                          onClick={() => {
+                            setSelectedCourseForStudents(c);
+                            loadCourseStudents(c.id);
+                          }}
+                        >
+                          View Students
+                        </button>
                         <button className="btn btn-secondary btn-sm" onClick={() => { setSelectedCourseId(c.id); setActiveTab("modules"); }}>Add Modules</button>
                         <button className="btn btn-secondary btn-sm" onClick={() => handlePublish(c.id, c.is_published)}>
                           {c.is_published ? "Unpublish" : "Publish"}
+                        </button>
+                        <button
+                          className="btn btn-danger btn-sm"
+                          onClick={() => handleDeleteCourse(c.id)}
+                        >
+                          Delete
                         </button>
                       </td>
                     </tr>
@@ -525,6 +847,204 @@ function TeacherPanel() {
                   )}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {/* My Courses - Level 2 (Enrolled Students List) */}
+          {activeTab === "courses" && selectedCourseForStudents && !selectedStudentForInterviews && (
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "20px" }}>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => setSelectedCourseForStudents(null)}
+                  style={{ padding: "6px 12px", fontSize: "13px", display: "flex", alignItems: "center", gap: "6px" }}
+                >
+                  ← Back to Courses
+                </button>
+                <div style={{ flex: 1 }}>
+                  <h3 style={{ fontSize: "14px", fontWeight: "700", textTransform: "uppercase", fontFamily: "JetBrains Mono", margin: 0 }}>
+                    Students Enrolled in {selectedCourseForStudents.title}
+                  </h3>
+                  <p style={{ color: "var(--text-muted)", fontSize: "13px", marginTop: "4px" }}>
+                    Select a student to view their interviews for this course.
+                  </p>
+                </div>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => loadCourseStudents(selectedCourseForStudents.id)}
+                  style={{ fontSize: "11px", padding: "4px 10px" }}
+                >
+                  Refresh
+                </button>
+              </div>
+              {courseStudentsLoading && (
+                <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>Loading students…</p>
+              )}
+              {courseStudentsError && (
+                <p style={{ color: "var(--color-danger)", fontSize: "13px" }}>❌ {courseStudentsError}</p>
+              )}
+              {!courseStudentsLoading && !courseStudentsError && courseStudents.length === 0 && (
+                <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+                  No students enrolled in this course yet.
+                </p>
+              )}
+              {!courseStudentsLoading && !courseStudentsError && courseStudents.length > 0 && (
+                <div className="table-container">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Student Name</th>
+                        <th>Email Address</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {courseStudents.map((student) => (
+                        <tr
+                          key={student.id}
+                          style={{ cursor: "pointer" }}
+                          onClick={() => {
+                            setSelectedStudentForInterviews(student);
+                            loadCourseRecordings(student.id, selectedCourseForStudents.id);
+                          }}
+                        >
+                          <td>
+                            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                              <div style={{
+                                width: 32, height: 32, borderRadius: "50%",
+                                background: "linear-gradient(135deg, var(--brand) 0%, #8b5cf6 100%)",
+                                color: "#fff", display: "flex", alignItems: "center", justifyContent: "center",
+                                fontWeight: "600", fontSize: "13px"
+                              }}>
+                                {student.name.charAt(0).toUpperCase()}
+                              </div>
+                              <div style={{ fontWeight: "700", color: "var(--text-title)" }}>
+                                {student.name}
+                              </div>
+                            </div>
+                          </td>
+                          <td className="mono" style={{ color: "var(--text-muted)" }}>{student.email}</td>
+                          <td>
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedStudentForInterviews(student);
+                                loadCourseRecordings(student.id, selectedCourseForStudents.id);
+                              }}
+                            >
+                              View Interviews
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+          {/* My Courses - Level 3 (Student Interviews List) */}
+          {activeTab === "courses" && selectedCourseForStudents && selectedStudentForInterviews && (
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "20px" }}>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => setSelectedStudentForInterviews(null)}
+                  style={{ padding: "6px 12px", fontSize: "13px", display: "flex", alignItems: "center", gap: "6px" }}
+                >
+                  ← Back to Students
+                </button>
+                <div style={{ flex: 1 }}>
+                  <h3 style={{ fontSize: "14px", fontWeight: "700", textTransform: "uppercase", fontFamily: "JetBrains Mono", margin: 0 }}>
+                    Interviews for {selectedStudentForInterviews.name}
+                  </h3>
+                  <p style={{ color: "var(--text-muted)", fontSize: "13.5px", marginTop: "4px" }}>
+                    Course: <strong style={{ color: "var(--text-title)" }}>{selectedCourseForStudents.title}</strong> · {selectedStudentForInterviews.email}
+                  </p>
+                </div>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => loadCourseRecordings(selectedStudentForInterviews.id, selectedCourseForStudents.id)}
+                  style={{ fontSize: "11px", padding: "4px 10px" }}
+                >
+                  Refresh
+                </button>
+              </div>
+              {courseRecordingsLoading && (
+                <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>Loading recordings…</p>
+              )}
+              {courseRecordingsError && (
+                <p style={{ color: "var(--color-danger)", fontSize: "13px" }}>❌ {courseRecordingsError}</p>
+              )}
+              {!courseRecordingsLoading && !courseRecordingsError && courseRecordings.length === 0 && (
+                <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+                  No interview recordings found for this student in this course.
+                </p>
+              )}
+              <div className="grid-2" style={{ alignItems: "start" }}>
+                {courseRecordings.map((r) => (
+                  <div key={r.session_id} className="card" style={{ padding: "16px", backgroundColor: "#ffffff" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px" }}>
+                      <div>
+                        <div style={{ fontWeight: "700", fontSize: "14px", color: "var(--text-title)" }}>{r.student?.name}</div>
+                        <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>{r.student?.email}</div>
+                      </div>
+                      {r.overall_score !== null && r.overall_score !== undefined && (
+                        <span className={`badge ${r.passed ? "badge-success" : "badge-warning"}`} style={{ fontSize: "10px" }}>
+                          {r.passed ? "PASSED" : "NEEDS REVIEW"} · {r.overall_score}%
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "10px" }}>
+                      <strong style={{ color: "var(--text-main)" }}>{r.course?.title}</strong>
+                      {r.module ? ` · ${r.module}` : " · Course-wide interview"}
+                      {r.created_at ? ` · ${new Date(r.created_at).toLocaleDateString()}` : ""}
+                    </div>
+                    <RecordingPlayer src={r.recording_url} />
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "8px" }}>
+                      <a
+                        href={r.recording_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ fontSize: "12px", color: "var(--brand)" }}
+                      >
+                        Open in new tab ↗
+                      </a>
+                    </div>
+                    <div style={{ marginTop: "12px", borderTop: "1px solid var(--border-muted, #e5e7eb)", paddingTop: "12px" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                        <span style={{ fontSize: "12px", fontWeight: "600", color: "var(--text-title)" }}>Teacher Score:</span>
+                        {r.teacher_score !== null && r.teacher_score !== undefined ? (
+                          <span className="badge badge-success" style={{ fontSize: "11px", fontWeight: "bold" }}>{r.teacher_score} / 100</span>
+                        ) : (
+                          <span style={{ fontSize: "11px", color: "var(--text-muted)", fontStyle: "italic" }}>Not Graded</span>
+                        )}
+                      </div>
+                      <div style={{ display: "flex", gap: "8px" }}>
+                        <input
+                          type="number"
+                          min="0"
+                          max="100"
+                          placeholder="Score"
+                          className="form-input"
+                          style={{ padding: "4px 8px", fontSize: "12px", width: "80px", margin: 0 }}
+                          value={scoresInput[r.session_id] !== undefined ? scoresInput[r.session_id] : (r.teacher_score || "")}
+                          onChange={(e) => setScoresInput({ ...scoresInput, [r.session_id]: e.target.value })}
+                        />
+                        <button
+                          className="btn btn-primary"
+                          style={{ padding: "4px 12px", fontSize: "12px" }}
+                          disabled={submittingScores[r.session_id]}
+                          onClick={() => handleSaveScore(r.session_id, scoresInput[r.session_id] !== undefined ? scoresInput[r.session_id] : (r.teacher_score || ""))}
+                        >
+                          {submittingScores[r.session_id] ? "Saving…" : "Save Score"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
@@ -569,7 +1089,7 @@ function TeacherPanel() {
                       style={{ padding: "8px" }}
                       required={!chapterForm.youtube_url}
                     />
-                    
+
                     {uploading && (
                       <div style={{ marginTop: "12px" }}>
                         <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "4px" }}>
@@ -620,7 +1140,10 @@ function TeacherPanel() {
                     )}
 
                     {/* ── Auto-Transcript Generation ─────────────────────── */}
-                    {videoFileRef.current && !uploading && (
+                    {/* Gate on state (not the ref) so the panel re-renders
+                        reliably; the raw File is still read from videoFileRef
+                        inside the click handler, which is allowed. */}
+                    {uploadedFileName && !uploading && (
                       <div style={{ marginTop: "16px", padding: "14px 16px", borderRadius: "10px", border: "1px solid rgba(99,102,241,0.25)", background: "linear-gradient(135deg, rgba(99,102,241,0.04) 0%, rgba(139,92,246,0.04) 100%)" }}>
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
                           <div style={{ fontSize: "12px", color: "var(--text-main)", fontWeight: "500" }}>
@@ -757,16 +1280,26 @@ function TeacherPanel() {
                     <div key={ch.id} style={{ padding: "12px 0", borderBottom: "1px solid var(--border-muted)" }}>
                       <div style={{ fontWeight: "700", fontSize: "14px" }}>{String(i + 1).padStart(2, "0")} — {ch.title}</div>
                       <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px", wordBreak: "break-all" }}>{ch.youtube_url}</div>
-                      <div style={{ fontSize: "11px", marginTop: "4px" }}>
-                        {hasTranscript ? (
-                          <span style={{ color: "var(--color-success)" }}>
-                            ✓ Transcript ready ({wordCount.toLocaleString()} words)
-                          </span>
-                        ) : (
-                          <span style={{ color: "#f59e0b" }}>
-                            ⏳ Transcript pending — click Refresh after a moment
-                          </span>
-                        )}
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "4px" }}>
+                        <div style={{ fontSize: "11px" }}>
+                          {hasTranscript ? (
+                            <span style={{ color: "var(--color-success)" }}>
+                              ✓ Transcript ready ({wordCount.toLocaleString()} words)
+                            </span>
+                          ) : (
+                            <span style={{ color: "#f59e0b" }}>
+                              ⏳ Transcript pending — click Refresh after a moment
+                            </span>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          className="btn btn-danger btn-sm"
+                          style={{ padding: "2px 8px", fontSize: "11px" }}
+                          onClick={() => handleDeleteChapter(ch.id)}
+                        >
+                          Delete Module
+                        </button>
                       </div>
                     </div>
                   );
@@ -858,37 +1391,212 @@ function TeacherPanel() {
             </div>
           )}
 
-          {/* Student Recordings */}
-          {activeTab === "recordings" && (
+          {/* Ungraded Interviews - Level 1 (Courses List) */}
+          {activeTab === "recordings" && !selectedUngradedCourse && (
             <div>
               <div style={{ display: "flex", alignItems: "center", marginBottom: "20px" }}>
                 <div style={{ flex: 1 }}>
                   <h3 style={{ fontSize: "14px", fontWeight: "700", textTransform: "uppercase", fontFamily: "JetBrains Mono", margin: 0 }}>
-                    AI Interview Recordings
+                    Ungraded Interviews By Course
                   </h3>
                   <p style={{ color: "var(--text-muted)", fontSize: "13px", marginTop: "4px" }}>
-                    Screen + voice recordings of each student&apos;s oral interview in your courses.
+                    Select a course to view students pending interview evaluations.
                   </p>
                 </div>
-                <button className="btn btn-secondary" onClick={loadRecordings} style={{ fontSize: "11px", padding: "4px 10px" }}>
+                <button className="btn btn-secondary" onClick={loadUngradedCourses} style={{ fontSize: "11px", padding: "4px 10px" }}>
                   Refresh
                 </button>
               </div>
 
-              {recordingsLoading && (
-                <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>Loading recordings…</p>
+              {ungradedCoursesLoading && (
+                <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>Loading courses…</p>
               )}
-              {recordingsError && (
-                <p style={{ color: "var(--color-danger)", fontSize: "13px" }}>❌ {recordingsError}</p>
+              {ungradedCoursesError && (
+                <p style={{ color: "var(--color-danger)", fontSize: "13px" }}>❌ {ungradedCoursesError}</p>
               )}
-              {!recordingsLoading && !recordingsError && recordings.length === 0 && (
+              {!ungradedCoursesLoading && !ungradedCoursesError && ungradedCourses.length === 0 && (
                 <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>
-                  No interview recordings yet. They appear here once your students complete recorded interviews.
+                  No published courses with ungraded interviews found.
                 </p>
               )}
 
+              {!ungradedCoursesLoading && !ungradedCoursesError && ungradedCourses.length > 0 && (
+                <div className="table-container">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Course Title</th><th>Students</th><th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ungradedCourses.map((c) => (
+                        <tr
+                          key={c.id}
+                          style={{ cursor: "pointer" }}
+                          onClick={() => {
+                            setSelectedUngradedCourse(c);
+                            loadUngradedStudents(c.id);
+                          }}
+                        >
+                          <td style={{ fontWeight: "700", color: "#000000" }}>
+                            {c.title}
+                          </td>
+                          <td className="mono">{c.student_count ?? 0}</td>
+                          <td style={{ display: "flex", gap: "8px" }} onClick={(e) => e.stopPropagation()}>
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              onClick={() => {
+                                setSelectedUngradedCourse(c);
+                                loadUngradedStudents(c.id);
+                              }}
+                            >
+                              Select Student
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Ungraded Interviews - Level 2 (Enrolled Students List) */}
+          {activeTab === "recordings" && selectedUngradedCourse && !selectedUngradedStudent && (
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "20px" }}>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => setSelectedUngradedCourse(null)}
+                  style={{ padding: "6px 12px", fontSize: "13px", display: "flex", alignItems: "center", gap: "6px" }}
+                >
+                  ← Back to Courses
+                </button>
+                <div style={{ flex: 1 }}>
+                  <h3 style={{ fontSize: "14px", fontWeight: "700", textTransform: "uppercase", fontFamily: "JetBrains Mono", margin: 0 }}>
+                    Students Pending Evaluation in {selectedUngradedCourse.title}
+                  </h3>
+                  <p style={{ color: "var(--text-muted)", fontSize: "13px", marginTop: "4px" }}>
+                    Select a student to view their ungraded interviews for this course.
+                  </p>
+                </div>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => loadUngradedStudents(selectedUngradedCourse.id)}
+                  style={{ fontSize: "11px", padding: "4px 10px" }}
+                >
+                  Refresh
+                </button>
+              </div>
+              {ungradedStudentsLoading && (
+                <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>Loading students…</p>
+              )}
+              {ungradedStudentsError && (
+                <p style={{ color: "var(--color-danger)", fontSize: "13px" }}>❌ {ungradedStudentsError}</p>
+              )}
+              {!ungradedStudentsLoading && !ungradedStudentsError && ungradedStudents.length === 0 && (
+                <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+                  No students pending evaluation in this course.
+                </p>
+              )}
+              {!ungradedStudentsLoading && !ungradedStudentsError && ungradedStudents.length > 0 && (
+                <div className="table-container">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Student Name</th>
+                        <th>Email Address</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ungradedStudents.map((student) => (
+                        <tr
+                          key={student.id}
+                          style={{ cursor: "pointer" }}
+                          onClick={() => {
+                            setSelectedUngradedStudent(student);
+                            loadUngradedRecordings(student.id, selectedUngradedCourse.id);
+                          }}
+                        >
+                          <td>
+                            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                              <div style={{
+                                width: 32, height: 32, borderRadius: "50%",
+                                background: "linear-gradient(135deg, var(--brand) 0%, #8b5cf6 100%)",
+                                color: "#fff", display: "flex", alignItems: "center", justifyContent: "center",
+                                fontWeight: "600", fontSize: "13px"
+                              }}>
+                                {student.name.charAt(0).toUpperCase()}
+                              </div>
+                              <div style={{ fontWeight: "700", color: "var(--text-title)" }}>
+                                {student.name}
+                              </div>
+                            </div>
+                          </td>
+                          <td className="mono" style={{ color: "var(--text-muted)" }}>{student.email}</td>
+                          <td>
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedUngradedStudent(student);
+                                loadUngradedRecordings(student.id, selectedUngradedCourse.id);
+                              }}
+                            >
+                              View Ungraded Interviews
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Ungraded Interviews - Level 3 (Student Interviews List) */}
+          {activeTab === "recordings" && selectedUngradedCourse && selectedUngradedStudent && (
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "20px" }}>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => setSelectedUngradedStudent(null)}
+                  style={{ padding: "6px 12px", fontSize: "13px", display: "flex", alignItems: "center", gap: "6px" }}
+                >
+                  ← Back to Students
+                </button>
+                <div style={{ flex: 1 }}>
+                  <h3 style={{ fontSize: "14px", fontWeight: "700", textTransform: "uppercase", fontFamily: "JetBrains Mono", margin: 0 }}>
+                    Ungraded Interviews for {selectedUngradedStudent.name}
+                  </h3>
+                  <p style={{ color: "var(--text-muted)", fontSize: "13.5px", marginTop: "4px" }}>
+                    Course: <strong style={{ color: "var(--text-title)" }}>{selectedUngradedCourse.title}</strong> · {selectedUngradedStudent.email}
+                  </p>
+                </div>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => loadUngradedRecordings(selectedUngradedStudent.id, selectedUngradedCourse.id)}
+                  style={{ fontSize: "11px", padding: "4px 10px" }}
+                >
+                  Refresh
+                </button>
+              </div>
+              {ungradedRecordingsLoading && (
+                <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>Loading recordings…</p>
+              )}
+              {ungradedRecordingsError && (
+                <p style={{ color: "var(--color-danger)", fontSize: "13px" }}>❌ {ungradedRecordingsError}</p>
+              )}
+              {!ungradedRecordingsLoading && !ungradedRecordingsError && ungradedRecordings.length === 0 && (
+                <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+                  No ungraded interview recordings found for this student in this course.
+                </p>
+              )}
               <div className="grid-2" style={{ alignItems: "start" }}>
-                {recordings.map((r) => (
+                {ungradedRecordings.map((r) => (
                   <div key={r.session_id} className="card" style={{ padding: "16px", backgroundColor: "#ffffff" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px" }}>
                       <div>
@@ -907,14 +1615,46 @@ function TeacherPanel() {
                       {r.created_at ? ` · ${new Date(r.created_at).toLocaleDateString()}` : ""}
                     </div>
                     <RecordingPlayer src={r.recording_url} />
-                    <a
-                      href={r.recording_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{ display: "inline-block", marginTop: "8px", fontSize: "12px", color: "var(--brand)" }}
-                    >
-                      Open in new tab ↗
-                    </a>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "8px" }}>
+                      <a
+                        href={r.recording_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ fontSize: "12px", color: "var(--brand)" }}
+                      >
+                        Open in new tab ↗
+                      </a>
+                    </div>
+                    <div style={{ marginTop: "12px", borderTop: "1px solid var(--border-muted, #e5e7eb)", paddingTop: "12px" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                        <span style={{ fontSize: "12px", fontWeight: "600", color: "var(--text-title)" }}>Teacher Score:</span>
+                        {r.teacher_score !== null && r.teacher_score !== undefined ? (
+                          <span className="badge badge-success" style={{ fontSize: "11px", fontWeight: "bold" }}>{r.teacher_score} / 100</span>
+                        ) : (
+                          <span style={{ fontSize: "11px", color: "var(--text-muted)", fontStyle: "italic" }}>Not Graded</span>
+                        )}
+                      </div>
+                      <div style={{ display: "flex", gap: "8px" }}>
+                        <input
+                          type="number"
+                          min="0"
+                          max="100"
+                          placeholder="Score"
+                          className="form-input"
+                          style={{ padding: "4px 8px", fontSize: "12px", width: "80px", margin: 0 }}
+                          value={scoresInput[r.session_id] !== undefined ? scoresInput[r.session_id] : (r.teacher_score || "")}
+                          onChange={(e) => setScoresInput({ ...scoresInput, [r.session_id]: e.target.value })}
+                        />
+                        <button
+                          className="btn btn-primary"
+                          style={{ padding: "4px 12px", fontSize: "12px" }}
+                          disabled={submittingScores[r.session_id]}
+                          onClick={() => handleSaveScore(r.session_id, scoresInput[r.session_id] !== undefined ? scoresInput[r.session_id] : (r.teacher_score || ""))}
+                        >
+                          {submittingScores[r.session_id] ? "Saving…" : "Save Score"}
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 ))}
               </div>

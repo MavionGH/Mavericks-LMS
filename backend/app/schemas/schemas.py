@@ -24,6 +24,7 @@ class UserResponse(BaseModel):
     role: str
     is_approved: bool = True
     avatar: Optional[str] = None
+    certificate_name: Optional[str] = None
     created_at: datetime
 
     class Config:
@@ -104,6 +105,8 @@ class CourseResponse(BaseModel):
     is_approved: bool = False
     created_at: datetime
     chapters: List[ChapterMinResponse] = []
+    student_count: Optional[int] = 0
+    pass_rate: Optional[float] = 0.0
 
     class Config:
         from_attributes = True
@@ -116,6 +119,7 @@ class CourseListResponse(BaseModel):
     thumbnail: Optional[str] = None
     is_published: bool
     chapter_count: int = 0
+    enrollment_status: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -224,10 +228,47 @@ class InterviewAnswerRequest(BaseModel):
     filler_word_count: int = 0
 
 
+class InterviewTTSRequest(BaseModel):
+    # Text for Mav's TTS voice (OpenAI). Optional voice override.
+    text: str
+    voice: Optional[str] = None
+
+
 class InterviewMessage(BaseModel):
     speaker: str  # ai | student
     text: str
     timestamp: Optional[str] = None
+
+
+# ─── REALTIME (speech-to-speech) interview ───
+# The browser connects directly to OpenAI's Realtime API; the backend only mints
+# the ephemeral token, supplies the context, and saves the result at the end.
+class RealtimeStartRequest(BaseModel):
+    # Exactly one of these identifies the assessment scope:
+    #   course_id → course-wide final interview (spans every module)
+    #   chapter_id → single-module interview
+    course_id: Optional[str] = None
+    chapter_id: Optional[str] = None
+
+
+class RealtimeStartResponse(BaseModel):
+    session_id: str
+    # The ephemeral client secret + OpenAI's raw session payload. The frontend
+    # uses `client_secret` to open the WebRTC connection directly to OpenAI.
+    client_secret: str
+    realtime_session: dict
+    # The Realtime model the session was created with — the browser passes it on
+    # the SDP exchange so the call uses the same model.
+    model: str
+    instructions: str
+    course_name: str
+    student_name: str
+
+
+class RealtimeFinishRequest(BaseModel):
+    session_id: str
+    # Full conversation captured by the browser: [{speaker: "ai"|"student", text}].
+    transcript: List[InterviewMessage]
 
 
 class InterviewTurnResponse(BaseModel):
@@ -292,6 +333,8 @@ class CertificateResponse(BaseModel):
     course_id: str
     issue_date: datetime
     verify_code: str
+    course_title: Optional[str] = None
+    pdf_url: Optional[str] = None  # Cloudflare R2 public URL for the stored certificate PDF
 
     class Config:
         from_attributes = True
@@ -308,3 +351,40 @@ class AnalyticsResponse(BaseModel):
     certificates_issued: int
     average_score: float
     pass_rate: float
+
+
+# ─── STUDENT DASHBOARD ───
+class DashboardCourse(BaseModel):
+    id: str
+    title: str
+    progress: int
+    currentChapter: str
+    status: str
+    icon: str
+
+
+class DashboardEvaluation(BaseModel):
+    chapter: str
+    course: str
+    score: int
+    passed: bool
+    date: str
+    technical: int
+    communication: int
+    confidence: int
+    teacher_score: Optional[int] = None
+
+
+class DashboardStats(BaseModel):
+    active_tracks: int
+    modules_completed: int
+    oral_assessments: int
+    earned_credentials: int
+    enrolled_courses: List[DashboardCourse]
+    recent_evaluations: List[DashboardEvaluation]
+
+
+# ─── TEACHER EVALUATION ───
+class TeacherScoreRequest(BaseModel):
+    score: int
+
