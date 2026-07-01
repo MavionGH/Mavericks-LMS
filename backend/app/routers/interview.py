@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, joinedload, load_only
 from app.database import get_db
 from app.models.models import (
     Chapter, Course, Enrollment, Evaluation, EvaluationType,
-    InterviewSession, User, Certificate, QuizAttempt,
+    InterviewSession, User, Certificate,
 )
 from app.schemas.schemas import (
     InterviewStartRequest, CourseInterviewStartRequest, InterviewAnswerRequest,
@@ -734,6 +734,7 @@ def _finalize_session(db: Session, session: InterviewSession, user: User) -> Int
             weak_areas=evaluation.get("weak_areas", []),
             suggested_review=evaluation.get("suggested_review", []),
             attempt_number=prev_attempts + 1,
+            interview_session_id=session.id,
         )
         db.add(ev)
 
@@ -744,8 +745,8 @@ def _finalize_session(db: Session, session: InterviewSession, user: User) -> Int
                 Enrollment.user_id == user.id,
                 Enrollment.course_id == session.course_id
             ).first()
-            if enrollment and enrollment.status != EnrollmentStatus.COMPLETED:
-                enrollment.status = EnrollmentStatus.CAPSTONE_READY
+            if enrollment:
+                enrollment.status = EnrollmentStatus.COMPLETED
 
             # ── Certificate eligibility: student must have passed ALL chapter modules ──
             # A certificate requires:
@@ -759,23 +760,17 @@ def _finalize_session(db: Session, session: InterviewSession, user: User) -> Int
             all_modules_passed = True
             if all_chapters:
                 for chapter in all_chapters:
-                    # Quizzes are the primary progression mechanism; chapter-level
-                    # oral interviews are optional. Accept either as proof of completion.
-                    passed_quiz = db.query(QuizAttempt).filter(
-                        QuizAttempt.user_id == user.id,
-                        QuizAttempt.chapter_id == chapter.id,
-                        QuizAttempt.passed == True,
-                    ).first()
-                    passed_interview = db.query(Evaluation).filter(
+                    # Check if at least one PASSING chapter evaluation exists
+                    passed_eval = db.query(Evaluation).filter(
                         Evaluation.user_id == user.id,
                         Evaluation.chapter_id == chapter.id,
                         Evaluation.passed == True,
                     ).first()
-                    if not passed_quiz and not passed_interview:
+                    if not passed_eval:
                         all_modules_passed = False
                         logger.info(
                             "Certificate NOT issued for user=%s course=%s — "
-                            "chapter '%s' has no passing quiz or evaluation",
+                            "chapter '%s' has no passing evaluation",
                             user.id, session.course_id, chapter.title,
                         )
                         break
@@ -784,11 +779,6 @@ def _finalize_session(db: Session, session: InterviewSession, user: User) -> Int
                 all_modules_passed = True
 
             if all_modules_passed:
-                # Update enrollment status to COMPLETED since both capstone and all modules are complete
-                if enrollment:
-                    enrollment.status = EnrollmentStatus.COMPLETED
-                    from datetime import datetime
-                    enrollment.completed_at = datetime.utcnow()
                 # Check if certificate already exists
                 existing_cert = db.query(Certificate).filter(
                     Certificate.user_id == user.id,
@@ -850,6 +840,7 @@ def _finalize_session(db: Session, session: InterviewSession, user: User) -> Int
         weak_areas=evaluation.get("weak_areas", []),
         suggested_review=evaluation.get("suggested_review", []),
         attempt_number=prev_attempts + 1,
+        interview_session_id=session.id,
     )
     db.add(ev)
 

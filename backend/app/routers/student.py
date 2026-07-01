@@ -19,19 +19,12 @@ def get_student_dashboard(
     enrollments = db.query(Enrollment).filter(Enrollment.user_id == current_user.id).all()
     active_tracks = sum(1 for e in enrollments if e.status != EnrollmentStatus.COMPLETED)
     
-    # Modules completed: count of distinct chapters passed via quiz or oral evaluation
-    from app.models.models import QuizAttempt, Evaluation
-    passed_chapters_count = (
-        db.query(QuizAttempt.chapter_id)
-        .filter(QuizAttempt.user_id == current_user.id, QuizAttempt.passed == True)
-        .union(
-            db.query(Evaluation.chapter_id)
-            .filter(Evaluation.user_id == current_user.id, Evaluation.type == "chapter", Evaluation.passed == True)
-        )
-        .distinct()
-        .count()
-    )
-    modules_completed = passed_chapters_count
+    # Modules completed: count of passed evaluations of type CHAPTER
+    modules_completed = db.query(Evaluation).filter(
+        Evaluation.user_id == current_user.id,
+        Evaluation.type == "chapter",
+        Evaluation.passed == True
+    ).count()
     
     # Oral Assessments: count of all evaluations
     oral_assessments = db.query(Evaluation).filter(
@@ -51,51 +44,19 @@ def get_student_dashboard(
             continue
             
         total_chapters = len(course.chapters)
+        completed_chapters = e.current_chapter_index
         
-        # Calculate how many chapters have been passed for this course
-        course_passed_chapters = 0
-        for chapter in course.chapters:
-            passed_quiz = db.query(QuizAttempt).filter(
-                QuizAttempt.user_id == current_user.id,
-                QuizAttempt.chapter_id == chapter.id,
-                QuizAttempt.passed == True
-            ).first() is not None
-            passed_interview = db.query(Evaluation).filter(
-                Evaluation.user_id == current_user.id,
-                Evaluation.chapter_id == chapter.id,
-                Evaluation.passed == True
-            ).first() is not None
-            if passed_quiz or passed_interview:
-                course_passed_chapters += 1
-
-        # Check if they passed the capstone for this course
-        passed_capstone = db.query(Evaluation).filter(
-            Evaluation.user_id == current_user.id,
-            Evaluation.course_id == course.id,
-            Evaluation.type == "capstone",
-            Evaluation.passed == True
-        ).first() is not None
-
-        if e.status == EnrollmentStatus.COMPLETED:
+        if e.status == EnrollmentStatus.COMPLETED or e.status == EnrollmentStatus.CAPSTONE_READY:
             progress = 100
         else:
-            if total_chapters > 0:
-                modules_part = (66.0 * course_passed_chapters) / total_chapters
-            else:
-                modules_part = 66.0
-            capstone_part = 34.0 if passed_capstone else 0.0
-            progress = int(round(modules_part + capstone_part))
-            if progress > 100:
-                progress = 100
+            progress = int((completed_chapters / total_chapters * 100)) if total_chapters > 0 else 0
             
         current_chapter_title = "Completed"
-        if progress < 100 and e.current_chapter_index < total_chapters:
-            current_chapter_title = course.chapters[e.current_chapter_index].title
+        if progress < 100 and completed_chapters < total_chapters:
+            current_chapter_title = course.chapters[completed_chapters].title
             
         status_str = "Not started"
-        if e.status == EnrollmentStatus.COMPLETED:
-            status_str = "Passed"
-        elif progress == 100:
+        if progress == 100:
             status_str = "Completed"
         elif progress > 0 or e.video_watched or e.article_read:
             status_str = "In progress"
@@ -138,19 +99,23 @@ def get_student_dashboard(
             
         # Get matching interview session to fetch teacher_score
         from app.models.models import InterviewSession
-        session_query = db.query(InterviewSession).filter(
-            InterviewSession.user_id == ev.user_id
-        )
-        if ev.chapter_id:
-            session_query = session_query.filter(InterviewSession.chapter_id == ev.chapter_id)
-        else:
-            session_query = session_query.filter(InterviewSession.chapter_id.is_(None))
-            if getattr(ev, "course_id", None):
-                session_query = session_query.filter(InterviewSession.course_id == ev.course_id)
-                
-        matching_session = session_query.filter(
-            InterviewSession.created_at <= ev.created_at
-        ).order_by(InterviewSession.created_at.desc()).first()
+        matching_session = None
+        if getattr(ev, "interview_session_id", None):
+            matching_session = db.query(InterviewSession).filter(InterviewSession.id == ev.interview_session_id).first()
+        if not matching_session:
+            session_query = db.query(InterviewSession).filter(
+                InterviewSession.user_id == ev.user_id
+            )
+            if ev.chapter_id:
+                session_query = session_query.filter(InterviewSession.chapter_id == ev.chapter_id)
+            else:
+                session_query = session_query.filter(InterviewSession.chapter_id.is_(None))
+                if getattr(ev, "course_id", None):
+                    session_query = session_query.filter(InterviewSession.course_id == ev.course_id)
+                    
+            matching_session = session_query.filter(
+                InterviewSession.created_at <= ev.created_at
+            ).order_by(InterviewSession.created_at.desc()).first()
         
         t_score = matching_session.teacher_score if matching_session else None
         
@@ -221,19 +186,23 @@ def get_course_evaluations(
                 
             # Get matching interview session to fetch teacher_score
             from app.models.models import InterviewSession
-            session_query = db.query(InterviewSession).filter(
-                InterviewSession.user_id == ev.user_id
-            )
-            if ev.chapter_id:
-                session_query = session_query.filter(InterviewSession.chapter_id == ev.chapter_id)
-            else:
-                session_query = session_query.filter(InterviewSession.chapter_id.is_(None))
-                if getattr(ev, "course_id", None):
-                    session_query = session_query.filter(InterviewSession.course_id == ev.course_id)
-                    
-            matching_session = session_query.filter(
-                InterviewSession.created_at <= ev.created_at
-            ).order_by(InterviewSession.created_at.desc()).first()
+            matching_session = None
+            if getattr(ev, "interview_session_id", None):
+                matching_session = db.query(InterviewSession).filter(InterviewSession.id == ev.interview_session_id).first()
+            if not matching_session:
+                session_query = db.query(InterviewSession).filter(
+                    InterviewSession.user_id == ev.user_id
+                )
+                if ev.chapter_id:
+                    session_query = session_query.filter(InterviewSession.chapter_id == ev.chapter_id)
+                else:
+                    session_query = session_query.filter(InterviewSession.chapter_id.is_(None))
+                    if getattr(ev, "course_id", None):
+                        session_query = session_query.filter(InterviewSession.course_id == ev.course_id)
+                        
+                matching_session = session_query.filter(
+                    InterviewSession.created_at <= ev.created_at
+                ).order_by(InterviewSession.created_at.desc()).first()
             
             t_score = matching_session.teacher_score if matching_session else None
 
@@ -254,7 +223,7 @@ def get_course_evaluations(
 
 @router.get("/certificates", response_model=List[CertificateResponse])
 def get_student_certificates(
-    db: Session = Depends(get_db),  
+    db: Session = Depends(get_db),
     current_user: User = Depends(require_student)
 ):
     certs = db.query(Certificate).filter(Certificate.user_id == current_user.id).all()

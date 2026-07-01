@@ -14,7 +14,7 @@ from app.schemas.schemas import (
     CourseCreate, CourseResponse, CourseListResponse,
     ChapterCreate, ChapterResponse, ChapterMinResponse, ChapterDetailResponse
 )
-from app.auth.dependencies import get_current_user, require_teacher, require_admin, get_optional_current_user
+from app.auth.dependencies import get_current_user, require_teacher, require_admin
 from app.services.transcript import fetch_youtube_transcript
 from app.services.storage import upload_video_to_r2
 from app.services.pinecone_store import index_module_content
@@ -87,10 +87,7 @@ def preview_youtube_transcript(
 # ─── PUBLIC LISTING ───
 
 @router.get("/", response_model=List[CourseListResponse])
-def list_courses(
-    db: Session = Depends(get_db),
-    current_user: Optional[User] = Depends(get_optional_current_user),
-):
+def list_courses(db: Session = Depends(get_db)):
     """Public — lists all courses published by an approved teacher."""
     query_results = db.query(
         Course,
@@ -103,16 +100,8 @@ def list_courses(
         Course.id
     ).all()
 
-    # Fetch user's enrollments if logged in
-    enrollments_dict = {}
-    if current_user:
-        from app.models.models import Enrollment
-        user_enrollments = db.query(Enrollment).filter(Enrollment.user_id == current_user.id).all()
-        enrollments_dict = {e.course_id: e.status for e in user_enrollments}
-
     result = []
     for c, count in query_results:
-        enroll_status = enrollments_dict.get(c.id, None)
         result.append(CourseListResponse(
             id=c.id,
             title=c.title,
@@ -120,7 +109,6 @@ def list_courses(
             thumbnail=c.thumbnail,
             is_published=c.is_published,
             chapter_count=count,
-            enrollment_status=enroll_status.value if enroll_status else None
         ))
     return result
 
@@ -182,19 +170,13 @@ def update_course(
 def delete_course(
     course_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_teacher),
+    current_user: User = Depends(require_admin),
 ):
     course = db.query(Course).filter(Course.id == course_id).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
-    _assert_course_owner(course, current_user)
-    try:
-        db.delete(course)
-        db.commit()
-    except Exception as exc:
-        db.rollback()
-        logger.exception("Error deleting course")
-        raise HTTPException(status_code=400, detail=f"Failed to delete course: {exc}")
+    db.delete(course)
+    db.commit()
     return {"message": "Course deleted"}
 
 
@@ -341,13 +323,8 @@ def delete_chapter(
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
     _assert_course_owner(chapter.course, current_user)
-    try:
-        db.delete(chapter)
-        db.commit()
-    except Exception as exc:
-        db.rollback()
-        logger.exception("Error deleting chapter")
-        raise HTTPException(status_code=400, detail=f"Failed to delete chapter: {exc}")
+    db.delete(chapter)
+    db.commit()
     return {"message": "Chapter deleted"}
 
 
