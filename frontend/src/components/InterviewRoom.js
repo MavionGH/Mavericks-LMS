@@ -126,7 +126,6 @@ export default function InterviewRoom({
   const answersRef = useRef(0);               // count of answers the student has given
   const autoEndTriggeredRef = useRef(false);  // guard: auto-finish fires once
   const teardownDoneRef = useRef(false);
-  const avatarVideoRef = useRef(null);
   const [shouldEnd, setShouldEnd] = useState(false); // 5 answers given → wrap up
 
   // ── Whole-session recorder refs (independent of the realtime mic) ──
@@ -163,7 +162,7 @@ export default function InterviewRoom({
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       const ctx = new AudioCtx();
       voiceCtxRef.current = ctx;
-      if (ctx.state === "suspended") ctx.resume().catch(() => { });
+      if (ctx.state === "suspended") ctx.resume().catch(() => {});
       const source = ctx.createMediaStreamSource(stream);
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
