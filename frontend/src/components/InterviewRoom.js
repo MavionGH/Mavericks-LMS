@@ -219,8 +219,6 @@ export default function InterviewRoom({
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [liveTranscript, setLiveTranscript] = useState("");
-  const [questionNum, setQuestionNum] = useState(0);       // 0 → greeting, then Q1, Q2…
   const [status, setStatus] = useState("CONNECTING");
   const [typedAnswer, setTypedAnswer] = useState("");
   const [avatarMouthOpen, setAvatarMouthOpen] = useState(false);
@@ -349,7 +347,6 @@ export default function InterviewRoom({
         if (call.name === "mark_question_answered") {
           turnToolFiredRef.current = true;
           answersRef.current += 1;
-          setQuestionNum(Math.min(answersRef.current, MAX_QUESTIONS));
         }
         // Every tool call must get a response or Gemini stalls generation —
         // acknowledge unconditionally, even for an unexpected function name.
@@ -369,7 +366,6 @@ export default function InterviewRoom({
     const inputText = sc.inputTranscription?.text;
     if (inputText) {
       userTextRef.current += inputText;
-      setLiveTranscript(userTextRef.current);
     }
 
     const outputText = sc.outputTranscription?.text;
@@ -395,14 +391,12 @@ export default function InterviewRoom({
       userTextRef.current = "";
       if (studentText) {
         pushTranscript({ speaker: "student", text: studentText });
-        setLiveTranscript(studentText);
         // Progress is normally driven solely by the mark_question_answered tool
         // call above. But LLM tool-calling isn't 100% reliable — verified live,
         // Mav sometimes moves on without calling it — so if it didn't fire this
         // turn, fall back to classifying the student's own words instead.
         if (!turnToolFiredRef.current && looksLikeAnsweredTurn(studentText)) {
           answersRef.current += 1;
-          setQuestionNum(Math.min(answersRef.current, MAX_QUESTIONS));
         }
       }
       turnToolFiredRef.current = false;
@@ -586,7 +580,6 @@ export default function InterviewRoom({
     const trimmed = (text || "").trim();
     if (!session || !trimmed) return;
     userTextRef.current = trimmed;
-    setLiveTranscript(trimmed);
     try {
       session.sendClientContent({
         turns: [{ role: "user", parts: [{ text: trimmed }] }],
@@ -1147,19 +1140,13 @@ export default function InterviewRoom({
   }
 
   // Captions follow whoever is *actively* talking:
-  //  • Mav's voice playing → show her line
-  //  • student speaking     → show the live transcript / "Listening…" prompt
+  //  • Mav's voice playing → show her line. The student's own words are never
+  //    captioned — voice only.
   let captionText = "";
   let captionSpeaker = "";
   if (aiVoiceActive && currentAIText) {
     captionText = currentAIText;
     captionSpeaker = "AI Assessor";
-  } else if (micActive) {
-    captionText = liveTranscript.trim() ? liveTranscript : "🎙 Listening… speak your answer";
-    captionSpeaker = "You (Speaking)";
-  } else if (liveTranscript.trim()) {
-    captionText = liveTranscript;
-    captionSpeaker = "You";
   }
 
   return (
@@ -1171,9 +1158,6 @@ export default function InterviewRoom({
           {/* Header bar */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
-              <span className="badge badge-accent" style={{ backgroundColor: "rgba(255,255,255,0.1)", borderColor: "rgba(255,255,255,0.2)", color: "#8ab4f8", marginBottom: "6px" }}>
-                LIVE AI INTERVIEW — {questionNum === 0 ? "GREETING" : `Q${questionNum}/${MAX_QUESTIONS}`}
-              </span>
               <h1 style={{ fontSize: "20px", fontWeight: "600", color: "#ffffff", margin: 0 }}>
                 {heading}
               </h1>
