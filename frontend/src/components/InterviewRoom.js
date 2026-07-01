@@ -127,6 +127,7 @@ export default function InterviewRoom({
   const speakWatchdogRef = useRef(null);
   const ttsAudioRef = useRef(null);          // current neural-TTS <audio> playback
   const speakWithBrowserRef = useRef(null);  // ref to browser-TTS fallback (breaks dep cycle)
+  const avatarVideoRef = useRef(null);
   const questionStartRef = useRef(null);
   const pauseCountRef = useRef(0);
   const longPauseMsRef = useRef(0);
@@ -881,6 +882,22 @@ export default function InterviewRoom({
     return () => clearInterval(interval);
   }, [aiVoiceActive]);
 
+  // Play/pause the avatar video based on whether Mav is speaking
+  useEffect(() => {
+    const video = avatarVideoRef.current;
+    if (!video) return;
+    if (aiVoiceActive) {
+      video.play().catch((err) => {
+        tlog("Failed to play avatar video: " + (err?.message || err));
+      });
+    } else {
+      video.pause();
+      try {
+        video.currentTime = 0;
+      } catch { /* noop */ }
+    }
+  }, [aiVoiceActive]);
+
   // Mirror waitingForStudent into a ref so recognition's late `onend` reads the
   // CURRENT value, not the value captured when the (stale) callback was built.
   useEffect(() => {
@@ -1422,20 +1439,34 @@ export default function InterviewRoom({
           {/* Video panels */}
           <div className="meet-grid">
             <div className={`meet-panel ${isAISpeaking ? "speaking" : ""}`}>
-              {/* eslint-disable-next-line @next/next/no-img-element -- two tiny
-                  local avatar frames swapped every 200ms; next/image's optimizer
-                  pipeline would add latency/flicker to the lip-sync animation. */}
+              <video
+                ref={avatarVideoRef}
+                src="/avatar.mp4"
+                loop
+                muted
+                playsInline
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "cover",
+                  userSelect: "none",
+                  display: aiVoiceActive ? "block" : "none",
+                }}
+              />
               <img
-                src={(aiVoiceActive && avatarMouthOpen ? avatarOpened : avatarClosed).src}
+                src={avatarClosed.src}
                 alt="Mav — AI Assessor avatar"
                 draggable={false}
                 style={{
-                  width: 168,
-                  height: 168,
-                  borderRadius: "50%",
+                  position: "absolute",
+                  inset: 0,
+                  width: "100%",
+                  height: "100%",
                   objectFit: "cover",
-                  boxShadow: "var(--shadow-lg)",
                   userSelect: "none",
+                  display: aiVoiceActive ? "none" : "block",
                 }}
               />
               <div className="meet-nametag">
