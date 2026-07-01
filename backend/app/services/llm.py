@@ -625,6 +625,86 @@ def llm_score_interview(
     return _fallback_score(transcript, pause_metrics, pass_threshold, chapter_title)
 
 
+def score_realtime_interview(
+    course_name: str,
+    context: str,
+    transcript: list,
+    pass_threshold: int,
+) -> dict:
+    """Grade a Realtime (speech-to-speech) interview from its transcript.
+
+    The Realtime path is free-flowing — the browser talks directly to OpenAI, so
+    there are no server-side pause/filler metrics and no fixed 5-question pacing.
+    We therefore grade purely on the transcript: count the candidate's spoken
+    turns and let the grading model assess technical depth, communication, and
+    confidence. Returns the same shape as ``llm_score_interview`` so the
+    Evaluation record and dashboards are unchanged.
+    """
+    student_turns = [m for m in (transcript or []) if m.get("speaker") == "student" and m.get("text", "").strip()]
+    num_answers = len(student_turns)
+    if num_answers == 0:
+        return {
+            "technical_score": 0.0,
+            "communication_score": 0.0,
+            "confidence_score": 0.0,
+            "overall_score": 0.0,
+            "passed": False,
+            "strengths": ["None (interview ended before any answers)"],
+            "weak_areas": ["The candidate did not answer any questions."],
+            "suggested_review": [f"Please complete the oral assessment for {course_name}."],
+        }
+
+    llm = get_grading_llm()
+    dialogue = "\n".join(f"{m['speaker'].upper()}: {m['text']}" for m in transcript)
+
+    if llm:
+        from langchain_core.messages import HumanMessage, SystemMessage
+        system = (
+            "You are an expert evaluator for technical oral assessments. "
+            "Score the candidate's spoken interview against the course material. "
+            f"Pass threshold is {pass_threshold}%. "
+            "Return ONLY valid JSON with keys: "
+            "technical_score (0-100), communication_score (0-100), "
+            "confidence_score (0-100), strengths (array of strings), "
+            "weak_areas (array of strings), "
+            "suggested_review (array of strings referencing course topics to re-study). "
+            "Scoring guidelines: "
+            "technical_score = accuracy and depth of answers vs the course material; "
+            "communication_score = clarity, structure, and coherence of speech; "
+            "confidence_score = decisiveness and fluency, penalising heavy hesitation, "
+            "filler words, and 'I don't know' non-answers."
+        )
+        user = (
+            f"Course: {course_name}\n\n"
+            f"Reference material:\n{context[:4000]}\n\n"
+            f"Interview transcript ({num_answers} candidate answers):\n{dialogue}"
+        )
+        try:
+            resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+            result = _extract_json(resp.content)
+            result["technical_score"] = min(max(result.get("technical_score", 0.0), 0.0), 100.0)
+            result["communication_score"] = min(max(result.get("communication_score", 0.0), 0.0), 100.0)
+            result["confidence_score"] = min(max(result.get("confidence_score", 0.0), 0.0), 100.0)
+            result["overall_score"] = round(
+                result["technical_score"] * 0.5
+                + result["communication_score"] * 0.3
+                + result["confidence_score"] * 0.2,
+                1,
+            )
+            result["passed"] = result["overall_score"] >= pass_threshold
+            result.setdefault("strengths", [])
+            result.setdefault("weak_areas", [])
+            result.setdefault("suggested_review", [])
+            return result
+        except Exception:
+            pass
+
+    # No LLM available — reuse the rule-based fallback with synthetic per-answer
+    # metrics (one zero-metric entry per candidate turn).
+    synthetic_metrics = [{"pause_count": 0, "filler_word_count": 0, "response_time_ms": 0} for _ in student_turns]
+    return _fallback_score(transcript, synthetic_metrics, pass_threshold, course_name)
+
+
 def llm_generate_mock_transcript(title: str) -> str:
     """
     Generate a realistic educational video transcript for a topic when YouTube
