@@ -240,6 +240,37 @@ class InterviewMessage(BaseModel):
     timestamp: Optional[str] = None
 
 
+# ─── REALTIME (speech-to-speech) interview ───
+# The browser connects directly to OpenAI's Realtime API; the backend only mints
+# the ephemeral token, supplies the context, and saves the result at the end.
+class RealtimeStartRequest(BaseModel):
+    # Exactly one of these identifies the assessment scope:
+    #   course_id → course-wide final interview (spans every module)
+    #   chapter_id → single-module interview
+    course_id: Optional[str] = None
+    chapter_id: Optional[str] = None
+
+
+class RealtimeStartResponse(BaseModel):
+    session_id: str
+    # The ephemeral client secret + OpenAI's raw session payload. The frontend
+    # uses `client_secret` to open the WebRTC connection directly to OpenAI.
+    client_secret: str
+    realtime_session: dict
+    # The Realtime model the session was created with — the browser passes it on
+    # the SDP exchange so the call uses the same model.
+    model: str
+    instructions: str
+    course_name: str
+    student_name: str
+
+
+class RealtimeFinishRequest(BaseModel):
+    session_id: str
+    # Full conversation captured by the browser: [{speaker: "ai"|"student", text}].
+    transcript: List[InterviewMessage]
+
+
 class InterviewTurnResponse(BaseModel):
     session_id: str
     speaker: str
