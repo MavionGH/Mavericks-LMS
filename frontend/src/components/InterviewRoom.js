@@ -126,6 +126,7 @@ export default function InterviewRoom({
   const answersRef = useRef(0);               // count of answers the student has given
   const autoEndTriggeredRef = useRef(false);  // guard: auto-finish fires once
   const teardownDoneRef = useRef(false);
+  const avatarVideoRef = useRef(null);
   const [shouldEnd, setShouldEnd] = useState(false); // 5 answers given → wrap up
 
   // ── Whole-session recorder refs (independent of the realtime mic) ──
@@ -162,7 +163,7 @@ export default function InterviewRoom({
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       const ctx = new AudioCtx();
       voiceCtxRef.current = ctx;
-      if (ctx.state === "suspended") ctx.resume().catch(() => {});
+      if (ctx.state === "suspended") ctx.resume().catch(() => { });
       const source = ctx.createMediaStreamSource(stream);
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
@@ -603,6 +604,47 @@ export default function InterviewRoom({
     return () => clearInterval(interval);
   }, [aiVoiceActive]);
 
+  // Play/pause the avatar video based on whether Mav is speaking
+  useEffect(() => {
+    const video = avatarVideoRef.current;
+    if (!video) return;
+    if (aiVoiceActive) {
+      video.play().catch((err) => {
+        tlog("Failed to play avatar video: " + (err?.message || err));
+      });
+    } else {
+      video.pause();
+      try {
+        video.currentTime = 0;
+      } catch { /* noop */ }
+    }
+  }, [aiVoiceActive]);
+
+  // Mirror waitingForStudent into a ref so recognition's late `onend` reads the
+  // CURRENT value, not the value captured when the (stale) callback was built.
+  useEffect(() => {
+    waitingForStudentRef.current = waitingForStudent;
+  }, [waitingForStudent]);
+
+  // Prime the mic PERMISSION once up front, then immediately release the device so
+  // the permission prompt is resolved before the first question. startListening()
+  // acquires (and then holds) its own stream for recording when the mic opens.
+  useEffect(() => {
+    let cancelled = false;
+    async function primeMicPermission() {
+      if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) return;
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        stream.getTracks().forEach((t) => t.stop());
+        if (!cancelled) tlog("mic permission primed");
+      } catch {
+        // The recorder will request permission later; non-fatal.
+      }
+    }
+    primeMicPermission();
+    return () => { cancelled = true; };
+  }, []);
+
   // Keep the student's camera on for the duration of the interview.
   useEffect(() => {
     let cancelled = false;
@@ -916,20 +958,34 @@ export default function InterviewRoom({
           {/* Video panels */}
           <div className="meet-grid">
             <div className={`meet-panel ${isAISpeaking ? "speaking" : ""}`}>
-              {/* eslint-disable-next-line @next/next/no-img-element -- two tiny
-                  local avatar frames swapped every 200ms; next/image's optimizer
-                  pipeline would add latency/flicker to the lip-sync animation. */}
+              <video
+                ref={avatarVideoRef}
+                src="/avatar.mp4"
+                loop
+                muted
+                playsInline
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "cover",
+                  userSelect: "none",
+                  display: aiVoiceActive ? "block" : "none",
+                }}
+              />
               <img
-                src={(aiVoiceActive && avatarMouthOpen ? avatarOpened : avatarClosed).src}
+                src={avatarClosed.src}
                 alt="Mav — AI Assessor avatar"
                 draggable={false}
                 style={{
-                  width: 168,
-                  height: 168,
-                  borderRadius: "50%",
+                  position: "absolute",
+                  inset: 0,
+                  width: "100%",
+                  height: "100%",
                   objectFit: "cover",
-                  boxShadow: "var(--shadow-lg)",
                   userSelect: "none",
+                  display: aiVoiceActive ? "none" : "block",
                 }}
               />
               <div className="meet-nametag">
