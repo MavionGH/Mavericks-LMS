@@ -119,6 +119,7 @@ class CourseListResponse(BaseModel):
     thumbnail: Optional[str] = None
     is_published: bool
     chapter_count: int = 0
+    enrollment_status: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -320,7 +321,6 @@ class EvaluationResponse(BaseModel):
     weak_areas: list
     suggested_review: list
     attempt_number: int
-    interview_session_id: Optional[str] = None
     created_at: datetime
 
     class Config:

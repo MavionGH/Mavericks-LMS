@@ -101,9 +101,24 @@ def get_student_detail(
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    enrollments = db.query(Enrollment).filter(Enrollment.user_id == student_id).all()
-    evaluations = db.query(Evaluation).filter(Evaluation.user_id == student_id).all()
-    certificates = db.query(Certificate).filter(Certificate.user_id == student_id).all()
+    enrollments = (
+        db.query(Enrollment)
+        .options(joinedload(Enrollment.course))
+        .filter(Enrollment.user_id == student_id)
+        .all()
+    )
+    evaluations = (
+        db.query(Evaluation)
+        .options(joinedload(Evaluation.chapter), joinedload(Evaluation.course))
+        .filter(Evaluation.user_id == student_id)
+        .all()
+    )
+    certificates = (
+        db.query(Certificate)
+        .options(joinedload(Certificate.course))
+        .filter(Certificate.user_id == student_id)
+        .all()
+    )
 
     return {
         "student": {
@@ -113,15 +128,32 @@ def get_student_detail(
             "joined": student.created_at.isoformat(),
         },
         "enrollments": [
-            {"course_id": e.course_id, "status": e.status.value, "chapter": e.current_chapter_index}
+            {
+                "course_id": e.course_id,
+                "course_title": e.course.title if e.course else "Unknown Course",
+                "status": e.status.value,
+                "chapter": e.current_chapter_index
+            }
             for e in enrollments
         ],
         "evaluations": [
-            {"chapter_id": e.chapter_id, "score": e.overall_score, "passed": e.passed, "type": e.type.value}
+            {
+                "chapter_id": e.chapter_id,
+                "chapter_title": e.chapter.title if e.chapter else "Course Capstone",
+                "course_title": e.course.title if e.course else (e.chapter.course.title if e.chapter and e.chapter.course else "Unknown Course"),
+                "score": e.overall_score,
+                "passed": e.passed,
+                "type": e.type.value
+            }
             for e in evaluations
         ],
         "certificates": [
-            {"course_id": c.course_id, "verify_code": c.verify_code, "issued": c.issue_date.isoformat()}
+            {
+                "course_id": c.course_id,
+                "course_title": c.course.title if c.course else "Unknown Course",
+                "verify_code": c.verify_code,
+                "issued": c.issue_date.isoformat()
+            }
             for c in certificates
         ],
     }

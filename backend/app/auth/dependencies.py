@@ -3,7 +3,8 @@ Shared JWT authentication dependencies for FastAPI.
 All routers import from here to enforce role-based access control.
 """
 import os
-from fastapi import Depends, HTTPException, status
+from typing import Optional
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from jose import jwt, JWTError
@@ -17,6 +18,25 @@ ALGORITHM = os.getenv("ALGORITHM", "HS256")
 TOKEN_EXPIRE_HOURS = int(os.getenv("TOKEN_EXPIRE_HOURS", "24"))
 
 bearer_scheme = HTTPBearer()
+
+
+def get_optional_current_user(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Optional[User]:
+    """Manually extract and validate JWT if present, returning None if not found or invalid."""
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return None
+    token = auth_header.split(" ")[1]
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            return None
+        return db.query(User).filter(User.id == user_id).first()
+    except JWTError:
+        return None
 
 
 def get_current_user(

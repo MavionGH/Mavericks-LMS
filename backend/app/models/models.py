@@ -79,10 +79,12 @@ class Course(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     teacher = relationship("User", foreign_keys=[teacher_id])
-    chapters = relationship("Chapter", back_populates="course", order_by="Chapter.order_index")
-    enrollments = relationship("Enrollment", back_populates="course")
-    certificates = relationship("Certificate", back_populates="course")
+    chapters = relationship("Chapter", back_populates="course", order_by="Chapter.order_index", cascade="all, delete-orphan")
+    enrollments = relationship("Enrollment", back_populates="course", cascade="all, delete-orphan")
+    certificates = relationship("Certificate", back_populates="course", cascade="all, delete-orphan")
     chunk_embeddings = relationship("ChunkEmbedding", back_populates="course", cascade="all, delete-orphan")
+    interview_sessions = relationship("InterviewSession", back_populates="course", cascade="all, delete-orphan")
+    evaluations = relationship("Evaluation", back_populates="course", cascade="all, delete-orphan")
 
     @property
     def student_count(self) -> int:
@@ -110,10 +112,11 @@ class Chapter(Base):
     course_id = Column(String, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False)
 
     course = relationship("Course", back_populates="chapters")
-    evaluations = relationship("Evaluation", back_populates="chapter")
-    quiz_attempts = relationship("QuizAttempt", back_populates="chapter")
-    quiz_question = relationship("QuizQuestion", back_populates="chapter", uselist=False)
+    evaluations = relationship("Evaluation", back_populates="chapter", cascade="all, delete-orphan")
+    quiz_attempts = relationship("QuizAttempt", back_populates="chapter", cascade="all, delete-orphan")
+    quiz_question = relationship("QuizQuestion", back_populates="chapter", uselist=False, cascade="all, delete-orphan")
     chunk_embeddings = relationship("ChunkEmbedding", back_populates="chapter", cascade="all, delete-orphan")
+    interview_sessions = relationship("InterviewSession", back_populates="chapter", cascade="all, delete-orphan")
 
     @property
     def has_transcript(self) -> bool:
@@ -189,8 +192,8 @@ class InterviewSession(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User")
-    chapter = relationship("Chapter")
-    course = relationship("Course")
+    chapter = relationship("Chapter", back_populates="interview_sessions")
+    course = relationship("Course", back_populates="interview_sessions")
 
 
 # ─── EVALUATION (AI Interview) ───
@@ -212,13 +215,11 @@ class Evaluation(Base):
     weak_areas = Column(JSON, default=list)
     suggested_review = Column(JSON, default=list)
     attempt_number = Column(Integer, default=1)
-    interview_session_id = Column(String, ForeignKey("interview_sessions.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="evaluations")
     chapter = relationship("Chapter", back_populates="evaluations")
-    course = relationship("Course")
-    interview_session = relationship("InterviewSession")
+    course = relationship("Course", back_populates="evaluations")
 
 
 # ─── CERTIFICATE ───

@@ -84,7 +84,11 @@ def list_interview_recordings(
 
         evaluation = (
             db.query(Evaluation)
-            .filter(Evaluation.interview_session_id == s.id)
+            .filter(
+                Evaluation.user_id == s.user_id,
+                Evaluation.chapter_id == s.chapter_id,
+            )
+            .order_by(Evaluation.created_at.desc())
             .first()
         )
 

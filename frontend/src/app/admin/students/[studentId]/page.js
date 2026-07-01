@@ -108,8 +108,8 @@ function StudentProfilePage() {
                       {enrollments.map((e, i) => (
                         <div key={i} style={{ padding: "12px 16px", borderBottom: i < enrollments.length - 1 ? "1px solid var(--border-muted)" : "none", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                           <div>
-                            <div style={{ fontSize: "12.5px", fontWeight: "600", color: "var(--text-title)", marginBottom: "2px" }}>Course #{String(e.course_id).slice(-6)}</div>
-                            <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>Chapter {e.chapter + 1}</div>
+                            <div style={{ fontSize: "12.5px", fontWeight: "600", color: "var(--text-title)", marginBottom: "2px" }}>{e.course_title}</div>
+                            <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>Current Chapter index: {e.chapter + 1}</div>
                           </div>
                           <span className={`badge ${e.status === "completed" ? "badge-success" : e.status === "in_progress" ? "" : "badge-warning"}`} style={{ textTransform: "capitalize", fontSize: "10px" }}>
                             {e.status?.replace("_", " ")}
@@ -132,8 +132,12 @@ function StudentProfilePage() {
                       {evaluations.map((e, i) => (
                         <div key={i} style={{ padding: "12px 16px", borderBottom: i < evaluations.length - 1 ? "1px solid var(--border-muted)" : "none", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                           <div>
-                            <div style={{ fontSize: "12px", color: "var(--text-muted)", textTransform: "capitalize", marginBottom: "2px" }}>{e.type?.replace("_", " ") ?? "oral"}</div>
-                            <div style={{ fontSize: "11px", color: "var(--text-subtle)" }}>Chapter #{String(e.chapter_id).slice(-5)}</div>
+                            <div style={{ fontSize: "12.5px", fontWeight: "600", color: "var(--text-title)", marginBottom: "2px" }}>
+                              {e.type === "capstone" ? "Capstone Interview" : e.chapter_title}
+                            </div>
+                            <div style={{ fontSize: "11px", color: "var(--text-muted)", textTransform: "capitalize" }}>
+                              {e.course_title} ({e.type})
+                            </div>
                           </div>
                           <div style={{ textAlign: "right" }}>
                             <div style={{ fontSize: "15px", fontWeight: "700", color: e.passed ? "var(--color-success)" : "var(--color-danger)", fontFamily: "JetBrains Mono" }}>{e.score?.toFixed(1)}%</div>
@@ -153,7 +157,7 @@ function StudentProfilePage() {
                   <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
                     {certificates.map((cert, i) => (
                       <div key={i} style={{ display: "inline-flex", alignItems: "center", gap: "8px", padding: "8px 14px", background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)", borderRadius: "20px", fontSize: "12px", color: "#6366f1", fontWeight: "600" }}>
-                        🎓 Course #{String(cert.course_id).slice(-6)}
+                        🎓 {cert.course_title}
                         <span style={{ color: "var(--text-muted)", fontWeight: "400" }}>· {new Date(cert.issued).toLocaleDateString()}</span>
                       </div>
                     ))}
