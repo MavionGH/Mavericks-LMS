@@ -5,10 +5,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { GoogleGenAI, Modality, Type } from "@google/genai";
-// AI avatar frames (in frontend/local). Swapping between them while the AI
-// speaks makes the avatar look like it's talking.
+// AI avatar closed mouth frame (fallback for when AI is not speaking)
 import avatarClosed from "../../local/closed.png";
-import avatarOpened from "../../local/opened.png";
 
 // ── Gemini Live API (speech-to-speech) ──────────────────────────────────────────
 // The browser opens ONE WebSocket connection straight to Gemini and streams the
@@ -223,7 +221,6 @@ export default function InterviewRoom({
   const [questionNum, setQuestionNum] = useState(0);       // 0 → greeting, then Q1, Q2…
   const [status, setStatus] = useState("CONNECTING");
   const [typedAnswer, setTypedAnswer] = useState("");
-  const [avatarMouthOpen, setAvatarMouthOpen] = useState(false);
   const [aiVoiceActive, setAiVoiceActive] = useState(false);
   const [cameraOn, setCameraOn] = useState(false);
   const [cameraError, setCameraError] = useState("");
@@ -236,6 +233,7 @@ export default function InterviewRoom({
 
   const studentVideoRef = useRef(null);
   const cameraStreamRef = useRef(null);
+  const aiVideoRef = useRef(null);
 
   // ── Realtime (Gemini Live) refs ──
   const sessionRef = useRef(null);            // Gemini Live Session (ai.live.connect())
@@ -837,11 +835,22 @@ export default function InterviewRoom({
     };
   }, [hasStarted, startSession, teardownRealtime]);
 
-  // Animate the avatar's mouth ONLY while Mav's voice is actually playing.
+  // Play/pause the AI avatar video based on voice activity.
   useEffect(() => {
-    if (!aiVoiceActive) return;
-    const interval = setInterval(() => setAvatarMouthOpen((prev) => !prev), 200);
-    return () => clearInterval(interval);
+    const video = aiVideoRef.current;
+    if (!video) return;
+    if (aiVoiceActive) {
+      video.play().catch((err) => {
+        tlog("Failed to play AI avatar video: " + (err?.message || err));
+      });
+    } else {
+      video.pause();
+      try {
+        video.currentTime = 0;
+      } catch (e) {
+        // Ignore if video is not ready
+      }
+    }
   }, [aiVoiceActive]);
 
   // Keep the student's camera on for the duration of the interview.
@@ -1188,20 +1197,35 @@ export default function InterviewRoom({
           {/* Video panels */}
           <div className="meet-grid">
             <div className={`meet-panel ${isAISpeaking ? "speaking" : ""}`}>
-              {/* eslint-disable-next-line @next/next/no-img-element -- two tiny
-                  local avatar frames swapped every 200ms; next/image's optimizer
-                  pipeline would add latency/flicker to the lip-sync animation. */}
+              <video
+                ref={aiVideoRef}
+                src="/avatar.mp4"
+                loop
+                muted
+                playsInline
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "cover",
+                  userSelect: "none",
+                  display: aiVoiceActive ? "block" : "none",
+                }}
+              />
+              {/* eslint-disable-next-line @next/next/no-img-element -- custom static avatar fallback */}
               <img
-                src={(aiVoiceActive && avatarMouthOpen ? avatarOpened : avatarClosed).src}
+                src={avatarClosed.src}
                 alt="Mav — AI Assessor avatar"
                 draggable={false}
                 style={{
-                  width: 168,
-                  height: 168,
-                  borderRadius: "50%",
+                  position: "absolute",
+                  inset: 0,
+                  width: "100%",
+                  height: "100%",
                   objectFit: "cover",
-                  boxShadow: "var(--shadow-lg)",
                   userSelect: "none",
+                  display: aiVoiceActive ? "none" : "block",
                 }}
               />
               <div className="meet-nametag">
