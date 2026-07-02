@@ -140,7 +140,7 @@ export default function LoginPage() {
         className="page-container"
         style={{ display: "grid", placeItems: "center", minHeight: "100vh", padding: "24px", backgroundColor: "var(--bg-canvas)" }}
       >
-        <div className="card" style={{ width: "100%", maxWidth: 400, padding: "40px", backgroundColor: "#ffffff", boxShadow: "0 10px 25px rgba(0,0,0,0.05)", borderRadius: "12px" }}>
+        <div className="card" style={{ width: "100%", maxWidth: 400, padding: "40px", backgroundColor: "var(--bg-surface)", boxShadow: "0 10px 25px rgba(0,0,0,0.05)", borderRadius: "12px" }}>
           <div style={{ textAlign: "center", marginBottom: "32px" }}>
             <div style={{ display: 'flex', justifyContent: 'center', marginBottom: "12px" }}>
               <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--brand)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -209,9 +209,9 @@ export default function LoginPage() {
 
           {/* Divider */}
           <div style={{ display: "flex", alignItems: "center", margin: "24px 0", color: "var(--text-muted)", fontSize: "12px" }}>
-            <div style={{ flex: 1, height: "1px", backgroundColor: "#e5e7eb" }} />
+            <div style={{ flex: 1, height: "1px", backgroundColor: "var(--border-muted)" }} />
             <span style={{ padding: "0 12px", letterSpacing: "0.05em", textTransform: "uppercase" }}>or continue with</span>
-            <div style={{ flex: 1, height: "1px", backgroundColor: "#e5e7eb" }} />
+            <div style={{ flex: 1, height: "1px", backgroundColor: "var(--border-muted)" }} />
           </div>
 
           {/* Google Button Wrapper */}
@@ -242,7 +242,7 @@ export default function LoginPage() {
           animation: "modalFadeIn 0.25s ease-out"
         }}>
           <div style={{
-            backgroundColor: "#ffffff",
+            backgroundColor: "var(--bg-surface)",
             width: "90%",
             maxWidth: "500px",
             padding: "36px",
@@ -270,8 +270,8 @@ export default function LoginPage() {
                   gap: "16px",
                   padding: "20px",
                   borderRadius: "12px",
-                  border: selectedRole === "student" ? "2px solid var(--brand)" : "2px solid #e5e7eb",
-                  background: selectedRole === "student" ? "rgba(0, 112, 243, 0.02)" : "#ffffff",
+                  border: selectedRole === "student" ? "2px solid var(--brand)" : "2px solid var(--border-muted)",
+                  background: selectedRole === "student" ? "rgba(0, 112, 243, 0.02)" : "var(--bg-surface)",
                   textAlign: "left",
                   cursor: "pointer",
                   transition: "all 0.2s ease",
@@ -302,7 +302,7 @@ export default function LoginPage() {
                 {selectedRole === "student" && (
                   <div style={{
                     backgroundColor: "var(--brand)",
-                    color: "#ffffff",
+                    color: "var(--bg-surface)",
                     width: "22px",
                     height: "22px",
                     borderRadius: "50%",
@@ -329,8 +329,8 @@ export default function LoginPage() {
                   gap: "16px",
                   padding: "20px",
                   borderRadius: "12px",
-                  border: selectedRole === "teacher" ? "2px solid var(--color-success, #10b981)" : "2px solid #e5e7eb",
-                  background: selectedRole === "teacher" ? "rgba(16, 185, 129, 0.02)" : "#ffffff",
+                  border: selectedRole === "teacher" ? "2px solid var(--color-success, #10b981)" : "2px solid var(--border-muted)",
+                  background: selectedRole === "teacher" ? "rgba(16, 185, 129, 0.02)" : "var(--bg-surface)",
                   textAlign: "left",
                   cursor: "pointer",
                   transition: "all 0.2s ease",
@@ -363,7 +363,7 @@ export default function LoginPage() {
                 {selectedRole === "teacher" && (
                   <div style={{
                     backgroundColor: "var(--color-success, #10b981)",
-                    color: "#ffffff",
+                    color: "var(--bg-surface)",
                     width: "22px",
                     height: "22px",
                     borderRadius: "50%",
@@ -393,8 +393,8 @@ export default function LoginPage() {
                 borderRadius: "10px",
                 marginBottom: "20px",
                 transition: "all 0.3s ease",
-                backgroundColor: !selectedRole ? "#cbd5e1" : selectedRole === "teacher" ? "var(--color-success, #10b981)" : "var(--brand)",
-                borderColor: !selectedRole ? "#cbd5e1" : selectedRole === "teacher" ? "var(--color-success, #10b981)" : "var(--brand)",
+                backgroundColor: !selectedRole ? "var(--border-subtle)" : selectedRole === "teacher" ? "var(--color-success, #10b981)" : "var(--brand)",
+                borderColor: !selectedRole ? "var(--border-subtle)" : selectedRole === "teacher" ? "var(--color-success, #10b981)" : "var(--brand)",
                 cursor: !selectedRole ? "not-allowed" : "pointer",
                 boxShadow: !selectedRole ? "none" : selectedRole === "teacher" ? "0 4px 14px rgba(16,185,129,0.2)" : "0 4px 14px rgba(0,112,243,0.2)"
               }}

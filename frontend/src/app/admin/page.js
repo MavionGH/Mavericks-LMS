@@ -154,7 +154,7 @@ function AdminPanel() {
               <span style={{
                 fontSize: "11px", fontWeight: "600", padding: "3px 8px",
                 borderRadius: "4px", background: "var(--bg-warning)", color: "var(--color-warning)",
-                border: "1px solid rgba(245,158,11,0.2)", fontFamily: "JetBrains Mono",
+                border: "1px solid var(--border-warning)", fontFamily: "JetBrains Mono",
               }}>
                 ADMIN
               </span>
@@ -347,7 +347,7 @@ function AdminPanel() {
           {activeTab === "approve" && (
             <div>
               {courseActionMsg && (
-                <div style={{ marginBottom: "16px", padding: "12px 16px", borderRadius: "var(--radius-sm)", background: courseActionMsg.includes("...") ? "var(--bg-warning)" : "var(--bg-success)", color: courseActionMsg.includes("...") ? "var(--color-warning)" : "var(--color-success)", fontSize: "13px", fontWeight: "600", border: courseActionMsg.includes("...") ? "1px solid rgba(245,158,11,0.2)" : "1px solid rgba(16,185,129,0.2)", display: "flex", alignItems: "center", gap: "8px" }}>
+                <div style={{ marginBottom: "16px", padding: "12px 16px", borderRadius: "var(--radius-sm)", background: courseActionMsg.includes("...") ? "var(--bg-warning)" : "var(--bg-success)", color: courseActionMsg.includes("...") ? "var(--color-warning)" : "var(--color-success)", fontSize: "13px", fontWeight: "600", border: courseActionMsg.includes("...") ? "1px solid var(--border-warning)" : "1px solid var(--border-success)", display: "flex", alignItems: "center", gap: "8px" }}>
                   {courseActionMsg.includes("...") && (<span className="spinner" style={{ width: 14, height: 14, border: "2px solid var(--color-warning)", borderTopColor: "transparent", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />)}
                   <span>{courseActionMsg}</span>
                 </div>

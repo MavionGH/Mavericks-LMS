@@ -212,7 +212,7 @@ function LearnPage() {
             </h1>
 
             {!isCurrentChapter && (
-              <div className="card" style={{ padding: "16px", marginBottom: "24px", backgroundColor: "#fff8f0", border: "1px solid var(--color-warning)" }}>
+              <div className="card" style={{ padding: "16px", marginBottom: "24px", backgroundColor: "var(--bg-warning)", border: "1px solid var(--color-warning)" }}>
                 <p style={{ fontSize: "13px", color: "var(--text-main)" }}>
                   This is a previously completed module. Your active module is <strong>{currentChapter?.title}</strong>.
                 </p>
@@ -285,7 +285,7 @@ function LearnPage() {
             {/* QUIZ TAB */}
             {activeTab === "quiz" && (
               <div>
-                <div className="card" style={{ padding: "32px", backgroundColor: "#ffffff" }}>
+                <div className="card" style={{ padding: "32px", backgroundColor: "var(--bg-surface)" }}>
                   <h3 style={{ fontSize: "16px", fontWeight: "700", marginBottom: "8px" }}>Concept Check</h3>
                   <p style={{ color: "var(--text-muted)", marginBottom: "24px", fontSize: "13.5px" }}>
                     Complete the quiz to verify your understanding of this module.
@@ -345,7 +345,7 @@ function LearnPage() {
                 {loadingEvals ? (
                   <p style={{ color: "var(--text-muted)" }}>Loading interviews...</p>
                 ) : !evaluations || evaluations.length === 0 ? (
-                  <div className="card" style={{ padding: "32px", textAlign: "center", backgroundColor: "#ffffff" }}>
+                  <div className="card" style={{ padding: "32px", textAlign: "center", backgroundColor: "var(--bg-surface)" }}>
                     <p style={{ color: "var(--text-muted)", fontSize: "14px" }}>No interviews recorded for this track yet.</p>
                   </div>
                 ) : (
@@ -411,7 +411,7 @@ function LearnPage() {
             width: "100%",
             maxWidth: "400px",
             padding: "24px",
-            backgroundColor: "#ffffff",
+            backgroundColor: "var(--bg-surface)",
             boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
             borderRadius: "12px",
             border: "1px solid var(--border-muted)",

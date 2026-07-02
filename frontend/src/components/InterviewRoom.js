@@ -949,10 +949,10 @@ export default function InterviewRoom({
       <>
         <Navbar />
         <div className="page-container" style={{ display: "grid", placeItems: "center", minHeight: "100vh", backgroundColor: "var(--bg-canvas)" }}>
-          <div className="card" style={{ maxWidth: 540, padding: "40px", textAlign: "center", backgroundColor: "#ffffff" }}>
+          <div className="card" style={{ maxWidth: 540, padding: "40px", textAlign: "center", backgroundColor: "var(--bg-surface)" }}>
             <h2 style={{ fontSize: "22px", fontWeight: "700", color: "var(--text-title)", marginBottom: "12px" }}>{heading}</h2>
 
-            <div style={{ backgroundColor: "#f8f9fa", borderRadius: "10px", padding: "16px 20px", marginBottom: "20px", textAlign: "left" }}>
+            <div style={{ backgroundColor: "var(--bg-canvas)", borderRadius: "10px", padding: "16px 20px", marginBottom: "20px", textAlign: "left" }}>
               <p style={{ fontSize: "13px", fontWeight: "700", color: "var(--text-title)", marginBottom: "10px" }}>📋 Required before starting:</p>
               <ul style={{ margin: 0, padding: "0 0 0 18px", fontSize: "13.5px", lineHeight: "2", color: "var(--text-muted)" }}>
                 <li>🖥️ <strong>Screen sharing</strong> — select this tab and tick <em>&ldquo;Share tab audio&rdquo;</em> so Mav&apos;s voice is captured</li>
@@ -968,13 +968,13 @@ export default function InterviewRoom({
 
             {recordingNotice && (
               <div style={{
-                backgroundColor: "#fff3cd",
-                border: "1px solid #ffc107",
+                backgroundColor: "var(--bg-warning)",
+                border: "1px solid var(--border-warning)",
                 borderRadius: "8px",
                 padding: "12px 16px",
                 marginBottom: "16px",
                 fontSize: "13px",
-                color: "#856404",
+                color: "var(--color-warning)",
                 textAlign: "left",
               }}>
                 {recordingNotice}
@@ -1071,21 +1071,21 @@ export default function InterviewRoom({
             </div>
 
             <div className="score-grid">
-              <div className="card score-card" style={{ backgroundColor: "#ffffff" }}>
+              <div className="card score-card" style={{ backgroundColor: "var(--bg-surface)" }}>
                 <div className="score-number">{Math.round(results.technical_score)}%</div>
                 <div className="score-label">Technical Precision</div>
               </div>
-              <div className="card score-card" style={{ backgroundColor: "#ffffff" }}>
+              <div className="card score-card" style={{ backgroundColor: "var(--bg-surface)" }}>
                 <div className="score-number">{Math.round(results.communication_score)}%</div>
                 <div className="score-label">Speech Structure</div>
               </div>
-              <div className="card score-card" style={{ backgroundColor: "#ffffff" }}>
+              <div className="card score-card" style={{ backgroundColor: "var(--bg-surface)" }}>
                 <div className="score-number">{Math.round(results.confidence_score)}%</div>
                 <div className="score-label">Confidence Index</div>
               </div>
             </div>
 
-            <div className="card" style={{ padding: "24px", marginBottom: "24px", backgroundColor: "#ffffff" }}>
+            <div className="card" style={{ padding: "24px", marginBottom: "24px", backgroundColor: "var(--bg-surface)" }}>
               <div className="flex-between" style={{ marginBottom: "12px" }}>
                 <span style={{ fontWeight: "700", fontSize: "15px" }}>Composite Score</span>
                 <span className="mono" style={{ fontSize: "18px", fontWeight: "700", color: results.passed ? "var(--color-success)" : "var(--color-warning)" }}>
@@ -1108,7 +1108,7 @@ export default function InterviewRoom({
             </div>
 
             {!results.passed && results.suggested_review?.length > 0 && (
-              <div className="card" style={{ padding: "24px", marginBottom: "24px", backgroundColor: "#fff8f0", border: "1px solid var(--color-warning)" }}>
+              <div className="card" style={{ padding: "24px", marginBottom: "24px", backgroundColor: "var(--bg-warning)", border: "1px solid var(--color-warning)" }}>
                 <h4 style={{ color: "var(--color-warning)", fontSize: "13px", fontWeight: "700", marginBottom: "12px" }}>Suggested Review</h4>
                 <ul style={{ fontSize: "13.5px", paddingLeft: "16px" }}>
                   {results.suggested_review.map((s, i) => <li key={i}>{s}</li>)}
@@ -1120,13 +1120,13 @@ export default function InterviewRoom({
             )}
 
             <div className="grid-2" style={{ marginBottom: "32px" }}>
-              <div className="card" style={{ padding: "24px", backgroundColor: "#ffffff" }}>
+              <div className="card" style={{ padding: "24px", backgroundColor: "var(--bg-surface)" }}>
                 <h4 style={{ color: "var(--color-success)", fontSize: "13px", fontWeight: "700", marginBottom: "12px", textTransform: "uppercase" }}>Key Strengths</h4>
                 <ul style={{ fontSize: "13.5px", paddingLeft: "16px", lineHeight: "1.7" }}>
                   {(results.strengths || []).map((s, i) => <li key={i}>{s}</li>)}
                 </ul>
               </div>
-              <div className="card" style={{ padding: "24px", backgroundColor: "#ffffff" }}>
+              <div className="card" style={{ padding: "24px", backgroundColor: "var(--bg-surface)" }}>
                 <h4 style={{ color: "var(--color-warning)", fontSize: "13px", fontWeight: "700", marginBottom: "12px", textTransform: "uppercase" }}>Areas to Refine</h4>
                 <ul style={{ fontSize: "13.5px", paddingLeft: "16px", lineHeight: "1.7" }}>
                   {(results.weak_areas || []).map((s, i) => <li key={i}>{s}</li>)}

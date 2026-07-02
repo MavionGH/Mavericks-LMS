@@ -78,7 +78,7 @@ export default function RegisterPage() {
       <>
         <Navbar />
         <div className="page-container" style={{ display: "grid", placeItems: "center", minHeight: "100vh", padding: "24px", backgroundColor: "var(--bg-canvas)" }}>
-          <div className="card" style={{ width: "100%", maxWidth: 460, padding: "40px", backgroundColor: "#ffffff", textAlign: "center" }}>
+          <div className="card" style={{ width: "100%", maxWidth: 460, padding: "40px", backgroundColor: "var(--bg-surface)", textAlign: "center" }}>
             <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--color-warning)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: "20px" }}>
               <circle cx="12" cy="12" r="10" />
               <line x1="12" y1="8" x2="12" y2="12" />
@@ -102,7 +102,7 @@ export default function RegisterPage() {
         className="page-container"
         style={{ display: "grid", placeItems: "center", minHeight: "100vh", padding: "24px", backgroundColor: "var(--bg-canvas)" }}
       >
-        <div className="card" style={{ width: "100%", maxWidth: 460, padding: "40px", backgroundColor: "#ffffff" }}>
+        <div className="card" style={{ width: "100%", maxWidth: 460, padding: "40px", backgroundColor: "var(--bg-surface)" }}>
           <div style={{ textAlign: "center", marginBottom: "28px" }}>
             <div style={{ display: 'flex', justifyContent: 'center', marginBottom: "12px" }}>
               <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--brand)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -148,7 +148,7 @@ export default function RegisterPage() {
                     padding: "12px 16px",
                     borderRadius: "var(--radius-sm)",
                     border: `1px solid ${role === r.value ? "var(--brand)" : "var(--border-muted)"}`,
-                    background: role === r.value ? "var(--brand-muted)" : "#ffffff",
+                    background: role === r.value ? "var(--brand-muted)" : "var(--bg-surface)",
                     cursor: "pointer",
                     transition: "var(--transition-fast)",
                   }}

@@ -44,7 +44,7 @@ export default function CoursesPage() {
                       {c.enrollment_status === "completed" ? (
                         <span style={{
                           fontSize: "9px", fontWeight: "700", padding: "2px 6px",
-                          borderRadius: "4px", backgroundColor: "#d1fae5", color: "#065f46",
+                          borderRadius: "4px", backgroundColor: "var(--bg-success)", color: "var(--color-success)",
                           textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "JetBrains Mono", flexShrink: 0
                         }}>
                           Passed
@@ -52,7 +52,7 @@ export default function CoursesPage() {
                       ) : c.enrollment_status ? (
                         <span style={{
                           fontSize: "9px", fontWeight: "700", padding: "2px 6px",
-                          borderRadius: "4px", backgroundColor: "#eff6ff", color: "#1e40af",
+                          borderRadius: "4px", backgroundColor: "var(--brand-muted)", color: "var(--brand)",
                           textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "JetBrains Mono", flexShrink: 0
                         }}>
                           In Progress

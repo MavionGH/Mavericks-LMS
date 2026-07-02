@@ -12,6 +12,7 @@ function ProfilePage() {
   const [password, setPassword] = useState("");
   const [avatarPreview, setAvatarPreview] = useState(user?.avatar || null);
   const [avatarFile, setAvatarFile] = useState(null);
+  const [avatarRemoved, setAvatarRemoved] = useState(false);
   
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [message, setMessage] = useState(null);
@@ -64,10 +65,18 @@ function ProfilePage() {
     const file = e.target.files[0];
     if (file) {
       setAvatarFile(file);
+      setAvatarRemoved(false);
       const reader = new FileReader();
       reader.onloadend = () => setAvatarPreview(reader.result);
       reader.readAsDataURL(file);
     }
+  };
+
+  const handleRemoveAvatar = () => {
+    setAvatarFile(null);
+    setAvatarPreview(null);
+    setAvatarRemoved(true);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const triggerFileInput = () => fileInputRef.current.click();
@@ -81,13 +90,18 @@ function ProfilePage() {
       formData.append("name", name);
       formData.append("certificate_name", certName);
       if (password) formData.append("password", password);
-      if (avatarFile) formData.append("avatar_file", avatarFile);
+      if (avatarFile) {
+        formData.append("avatar_file", avatarFile);
+      } else if (avatarRemoved) {
+        formData.append("remove_avatar", "true");
+      }
 
       const res = await authFetch("/api/auth/profile", { method: "PUT", body: formData });
       if (res.ok) {
         setMessage("Profile updated successfully!");
         setMsgType("success");
         setPassword("");
+        setAvatarRemoved(false);
         await refreshUser();
       } else {
         const errData = await res.json();
@@ -115,16 +129,16 @@ function ProfilePage() {
 
   const inputStyle = {
     width: "100%", padding: "10px 14px", borderRadius: "8px",
-    border: "1px solid #cbd5e1", fontSize: "14px", outline: "none",
+    border: "1px solid var(--border-subtle)", fontSize: "14px", outline: "none",
     transition: "border-color 0.2s", fontFamily: "inherit",
   };
   const disabledInputStyle = {
-    ...inputStyle, border: "1px solid #e2e8f0",
-    backgroundColor: "#f8fafc", color: "#94a3b8", cursor: "not-allowed",
+    ...inputStyle, border: "1px solid var(--border-muted)",
+    backgroundColor: "var(--bg-canvas)", color: "var(--text-subtle)", cursor: "not-allowed",
   };
   const labelStyle = {
     display: "block", fontSize: "12px", fontWeight: "600",
-    color: "#64748b", marginBottom: "6px", fontFamily: "JetBrains Mono",
+    color: "var(--text-muted)", marginBottom: "6px", fontFamily: "JetBrains Mono",
   };
 
   return (
@@ -137,11 +151,11 @@ function ProfilePage() {
           {user?.role === "student" && (
             <div style={{
               display: "flex",
-              background: "#ffffff",
+              background: "var(--bg-surface)",
               padding: "4px",
               borderRadius: "10px",
-              border: "1px solid #f1f5f9",
-              boxShadow: "0 2px 8px rgba(0,0,0,0.02)",
+              border: "1px solid var(--border-muted)",
+              boxShadow: "var(--shadow-sm)",
               marginBottom: "8px"
             }}>
               <button
@@ -184,9 +198,9 @@ function ProfilePage() {
           {/* Tab 1: Profile Settings Form */}
           {activeTab === "settings" && (
             <div style={{
-              backgroundColor: "#ffffff", borderRadius: "16px",
-              boxShadow: "0 4px 20px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.02)",
-              border: "1px solid #f1f5f9", overflow: "hidden",
+              backgroundColor: "var(--bg-surface)", borderRadius: "16px",
+              boxShadow: "var(--shadow-md)",
+              border: "1px solid var(--border-muted)", overflow: "hidden",
             }}>
               {/* Header Banner */}
               <div style={{
@@ -206,7 +220,7 @@ function ProfilePage() {
                       position: "relative", width: "90px", height: "90px",
                       borderRadius: "50%", cursor: "pointer", overflow: "hidden",
                       border: "3px solid #ffffff", boxShadow: "0 4px 10px rgba(0,0,0,0.1)",
-                      backgroundColor: "#f8fafc", display: "flex",
+                      backgroundColor: "var(--bg-canvas)", display: "flex",
                       alignItems: "center", justifyContent: "center",
                       transition: "transform 0.2s ease",
                     }}
@@ -235,12 +249,25 @@ function ProfilePage() {
                     </div>
                   </div>
                   <input type="file" ref={fileInputRef} onChange={handleAvatarChange} accept="image/*" style={{ display: "none" }} />
-                  <button type="button" onClick={triggerFileInput} style={{
-                    background: "transparent", border: "none", color: "#4f46e5",
-                    fontSize: "12px", fontWeight: "600", marginTop: "8px", cursor: "pointer",
-                  }}>
-                    Change Photo
-                  </button>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "8px" }}>
+                    <button type="button" onClick={triggerFileInput} style={{
+                      background: "transparent", border: "none", color: "var(--brand)",
+                      fontSize: "12px", fontWeight: "600", cursor: "pointer",
+                    }}>
+                      Change Photo
+                    </button>
+                    {avatarPreview && (
+                      <>
+                        <span style={{ color: "var(--border-subtle)", fontSize: "12px" }}>·</span>
+                        <button type="button" onClick={handleRemoveAvatar} style={{
+                          background: "transparent", border: "none", color: "var(--color-danger)",
+                          fontSize: "12px", fontWeight: "600", cursor: "pointer",
+                        }}>
+                          Remove Photo
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
 
                 {/* Alert Message */}
@@ -248,9 +275,9 @@ function ProfilePage() {
                   <div style={{
                     padding: "12px 16px", borderRadius: "8px", fontSize: "13px",
                     fontWeight: "500", marginBottom: "20px",
-                    backgroundColor: msgType === "success" ? "#f0fdf4" : "#fef2f2",
-                    color: msgType === "success" ? "#16a34a" : "#dc2626",
-                    border: `1px solid ${msgType === "success" ? "#bbf7d0" : "#fecaca"}`,
+                    backgroundColor: msgType === "success" ? "var(--bg-success)" : "var(--bg-danger)",
+                    color: msgType === "success" ? "var(--color-success)" : "var(--color-danger)",
+                    border: `1px solid ${msgType === "success" ? "var(--border-success)" : "var(--border-danger)"}`,
                     display: "flex", alignItems: "center", gap: "8px",
                   }}>
                     {msgType === "success" ? (
@@ -274,8 +301,8 @@ function ProfilePage() {
                     <label style={labelStyle}>FULL NAME</label>
                     <input type="text" required value={name} onChange={(e) => setName(e.target.value)}
                       style={inputStyle}
-                      onFocus={(e) => e.target.style.borderColor = "#4f46e5"}
-                      onBlur={(e) => e.target.style.borderColor = "#cbd5e1"}
+                      onFocus={(e) => e.target.style.borderColor = "var(--brand)"}
+                      onBlur={(e) => e.target.style.borderColor = "var(--border-subtle)"}
                     />
                   </div>
 
@@ -285,19 +312,19 @@ function ProfilePage() {
                       <input type="text" placeholder="Defaults to Full Name if blank"
                         value={certName} onChange={(e) => setCertName(e.target.value)}
                         style={inputStyle}
-                        onFocus={(e) => e.target.style.borderColor = "#4f46e5"}
-                        onBlur={(e) => e.target.style.borderColor = "#cbd5e1"}
+                        onFocus={(e) => e.target.style.borderColor = "var(--brand)"}
+                        onBlur={(e) => e.target.style.borderColor = "var(--border-subtle)"}
                       />
                     </div>
                   )}
 
                   <div>
-                    <label style={{ ...labelStyle, color: "#94a3b8" }}>EMAIL ADDRESS (CANNOT BE CHANGED)</label>
+                    <label style={{ ...labelStyle, color: "var(--text-subtle)" }}>EMAIL ADDRESS (CANNOT BE CHANGED)</label>
                     <input type="email" disabled value={user?.email || ""} style={disabledInputStyle} />
                   </div>
 
                   <div>
-                    <label style={{ ...labelStyle, color: "#94a3b8" }}>ACCOUNT ROLE (CANNOT BE CHANGED)</label>
+                    <label style={{ ...labelStyle, color: "var(--text-subtle)" }}>ACCOUNT ROLE (CANNOT BE CHANGED)</label>
                     <input type="text" disabled value={user?.role || ""} style={{ ...disabledInputStyle, textTransform: "capitalize" }} />
                   </div>
 
@@ -305,8 +332,8 @@ function ProfilePage() {
                     <label style={labelStyle}>CHANGE PASSWORD (OPTIONAL)</label>
                     <input type="password" placeholder="••••••••" value={password}
                       onChange={(e) => setPassword(e.target.value)} style={inputStyle}
-                      onFocus={(e) => e.target.style.borderColor = "#4f46e5"}
-                      onBlur={(e) => e.target.style.borderColor = "#cbd5e1"}
+                      onFocus={(e) => e.target.style.borderColor = "var(--brand)"}
+                      onBlur={(e) => e.target.style.borderColor = "var(--border-subtle)"}
                     />
                   </div>
                 </div>
@@ -329,15 +356,15 @@ function ProfilePage() {
             <div
               id="certificates"
               style={{
-                backgroundColor: "#ffffff", borderRadius: "16px",
-                boxShadow: "0 4px 20px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.02)",
-                border: "1px solid #f1f5f9", overflow: "hidden",
+                backgroundColor: "var(--bg-surface)", borderRadius: "16px",
+                boxShadow: "var(--shadow-md)",
+                border: "1px solid var(--border-muted)", overflow: "hidden",
               }}
             >
               {/* Section header */}
               <div style={{
                 padding: "20px 28px",
-                borderBottom: "1px solid #f1f5f9",
+                borderBottom: "1px solid var(--border-muted)",
                 display: "flex",
                 alignItems: "center",
                 gap: "12px",
@@ -379,7 +406,7 @@ function ProfilePage() {
                 ) : certs.length === 0 ? (
                   <div style={{ textAlign: "center", padding: "32px 0" }}>
                     <div style={{ display: "flex", justifyContent: "center", marginBottom: "12px" }}>
-                      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--text-subtle)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
                         <path d="M6 12v5c0 2 2 3 6 3s6-1 6-3v-5"/>
                       </svg>
@@ -408,7 +435,7 @@ function ProfilePage() {
                               onClick={() => setSelectedCert(c)}
                               style={{
                                 padding: "12px 16px",
-                                backgroundColor: isSelected ? "var(--brand-muted)" : "#f8fafc",
+                                backgroundColor: isSelected ? "var(--brand-muted)" : "var(--bg-canvas)",
                                 border: `1px solid ${isSelected ? "var(--brand-border)" : "var(--border-muted)"}`,
                                 borderRadius: "8px",
                                 cursor: "pointer",
@@ -432,11 +459,11 @@ function ProfilePage() {
                     {/* Certificate preview */}
                     {selectedCert && (
                       <div id="printable-certificate" className="certificate" style={{
-                        width: "100%", backgroundColor: "#ffffff",
+                        width: "100%", backgroundColor: "var(--bg-surface)",
                         padding: "36px 32px",
                         border: "6px double var(--brand-border)",
                         borderRadius: "4px",
-                        boxShadow: "0 4px 20px rgba(0,0,0,0.05)",
+                        boxShadow: "var(--shadow-sm)",
                         textAlign: "center",
                       }}>
                         <div style={{ display: "flex", justifyContent: "center", marginBottom: "12px" }}>

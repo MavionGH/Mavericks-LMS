@@ -95,7 +95,7 @@ export default function HomePage() {
         </section>
 
         {/* FEATURES */}
-        <section className="section" style={{ borderTop: "1px solid var(--border-muted)", backgroundColor: "#ffffff" }}>
+        <section className="section" style={{ borderTop: "1px solid var(--border-muted)", backgroundColor: "var(--bg-surface)" }}>
           <div className="container">
             <div className="section-header" style={{ textAlign: "center", marginBottom: "48px" }}>
               <h2>Built for Rigorous Learning Validation</h2>
@@ -125,7 +125,7 @@ export default function HomePage() {
         </section>
 
         {/* FOOTER */}
-        <footer style={{ borderTop: "1px solid var(--border-muted)", padding: "32px 0", backgroundColor: "#ffffff" }}>
+        <footer style={{ borderTop: "1px solid var(--border-muted)", padding: "32px 0", backgroundColor: "var(--bg-surface)" }}>
           <div className="container flex-between">
             <span style={{ color: "var(--text-muted)", fontSize: "12px" }}>© 2026 Maverik Learning. All rights reserved.</span>
             <div style={{ display: "flex", gap: "16px" }}>

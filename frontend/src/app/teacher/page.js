@@ -627,7 +627,7 @@ function TeacherPanel() {
       <>
         <Navbar />
         <div className="page-container" style={{ display: "grid", placeItems: "center", minHeight: "100vh", backgroundColor: "var(--bg-canvas)" }}>
-          <div className="card" style={{ maxWidth: 480, padding: "40px", textAlign: "center", backgroundColor: "#ffffff" }}>
+          <div className="card" style={{ maxWidth: 480, padding: "40px", textAlign: "center", backgroundColor: "var(--bg-surface)" }}>
             <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--color-warning)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: "20px" }}>
               <circle cx="12" cy="12" r="10" />
               <line x1="12" y1="8" x2="12" y2="12" />
@@ -669,7 +669,7 @@ function TeacherPanel() {
               <span style={{
                 fontSize: "11px", fontWeight: "600", padding: "3px 8px",
                 borderRadius: "4px", background: "var(--bg-success)", color: "var(--color-success)",
-                border: "1px solid rgba(16,185,129,0.2)", fontFamily: "JetBrains Mono",
+                border: "1px solid var(--border-success)", fontFamily: "JetBrains Mono",
               }}>
                 TEACHER
               </span>
@@ -744,7 +744,7 @@ function TeacherPanel() {
                     label: "Drafts"
                   },
                 ].map((s, i) => (
-                  <div className="card stat-card" key={i} style={{ backgroundColor: "#ffffff" }}>
+                  <div className="card stat-card" key={i} style={{ backgroundColor: "var(--bg-surface)" }}>
                     <div className="stat-icon" style={{ display: 'flex', alignItems: 'center' }}>{s.icon}</div>
                     <div>
                       <div className="stat-value">{s.value}</div>
@@ -756,7 +756,7 @@ function TeacherPanel() {
 
               {/* Quick Stats */}
               <div className="grid-2">
-                <div className="card" style={{ padding: "24px", backgroundColor: "#ffffff" }}>
+                <div className="card" style={{ padding: "24px", backgroundColor: "var(--bg-surface)" }}>
                   <h3 style={{ fontSize: "14px", fontWeight: "700", color: "var(--text-title)", marginBottom: "16px", textTransform: "uppercase", letterSpacing: "0.08em", fontFamily: "JetBrains Mono" }}>
                     Your Courses
                   </h3>
@@ -774,7 +774,7 @@ function TeacherPanel() {
                     </div>
                   ))}
                 </div>
-                <div className="card" style={{ padding: "24px", backgroundColor: "#ffffff" }}>
+                <div className="card" style={{ padding: "24px", backgroundColor: "var(--bg-surface)" }}>
                   <h3 style={{ fontSize: "14px", fontWeight: "700", color: "var(--text-title)", marginBottom: "16px", textTransform: "uppercase", letterSpacing: "0.08em", fontFamily: "JetBrains Mono" }}>
                     AI Interview Flow
                   </h3>
@@ -808,7 +808,7 @@ function TeacherPanel() {
                         loadCourseStudents(c.id);
                       }}
                     >
-                      <td style={{ fontWeight: "700", color: "#000000" }}>
+                      <td style={{ fontWeight: "700", color: "var(--text-title)" }}>
                         {c.title}
                       </td>
                       <td className="mono">{c.chapters?.length || 0}</td>
@@ -984,7 +984,7 @@ function TeacherPanel() {
               )}
               <div className="grid-2" style={{ alignItems: "start" }}>
                 {courseRecordings.map((r) => (
-                  <div key={r.session_id} className="card" style={{ padding: "16px", backgroundColor: "#ffffff" }}>
+                  <div key={r.session_id} className="card" style={{ padding: "16px", backgroundColor: "var(--bg-surface)" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px" }}>
                       <div>
                         <div style={{ fontWeight: "700", fontSize: "14px", color: "var(--text-title)" }}>{r.student?.name}</div>
@@ -1051,7 +1051,7 @@ function TeacherPanel() {
           {/* Add Modules */}
           {activeTab === "modules" && (
             <div className="grid-2" style={{ alignItems: "start" }}>
-              <div className="card" style={{ padding: "24px", backgroundColor: "#ffffff" }}>
+              <div className="card" style={{ padding: "24px", backgroundColor: "var(--bg-surface)" }}>
                 <h3 style={{ fontSize: "14px", fontWeight: "700", marginBottom: "20px", textTransform: "uppercase", fontFamily: "JetBrains Mono" }}>
                   Add Module (Chapter)
                 </h3>
@@ -1120,7 +1120,7 @@ function TeacherPanel() {
                     )}
 
                     {uploadedFileName && !uploading && (
-                      <div style={{ marginTop: "12px", padding: "10px", backgroundColor: "#f9fafb", border: "1px solid var(--border-muted)", borderRadius: "var(--radius-sm)" }}>
+                      <div style={{ marginTop: "12px", padding: "10px", backgroundColor: "var(--bg-canvas)", border: "1px solid var(--border-muted)", borderRadius: "var(--radius-sm)" }}>
                         <div style={{ fontSize: "12px", fontWeight: "600", color: "var(--text-main)" }}>
                           ✓ File: {uploadedFileName}
                         </div>
@@ -1183,7 +1183,7 @@ function TeacherPanel() {
                                 <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "6px" }}>
                                   ⬆️ Uploading video… {transcribeProgress}%
                                 </div>
-                                <div style={{ width: "100%", height: "5px", backgroundColor: "#e5e7eb", borderRadius: "3px", overflow: "hidden" }}>
+                                <div style={{ width: "100%", height: "5px", backgroundColor: "var(--border-muted)", borderRadius: "3px", overflow: "hidden" }}>
                                   <div style={{ height: "100%", width: `${transcribeProgress}%`, background: "linear-gradient(90deg, #6366f1, #8b5cf6)", transition: "width 0.15s ease", borderRadius: "3px" }} />
                                 </div>
                               </>
@@ -1260,7 +1260,7 @@ function TeacherPanel() {
                   </button>
                 </form>
               </div>
-              <div className="card" style={{ padding: "24px", backgroundColor: "#ffffff" }}>
+              <div className="card" style={{ padding: "24px", backgroundColor: "var(--bg-surface)" }}>
                 <div style={{ display: "flex", alignItems: "center", marginBottom: "16px" }}>
                   <h3 style={{ fontSize: "14px", fontWeight: "700", textTransform: "uppercase", fontFamily: "JetBrains Mono", flex: 1, margin: 0 }}>
                     Modules in {selectedCourse?.title || "—"}
@@ -1287,7 +1287,7 @@ function TeacherPanel() {
                               ✓ Transcript ready ({wordCount.toLocaleString()} words)
                             </span>
                           ) : (
-                            <span style={{ color: "#f59e0b" }}>
+                            <span style={{ color: "var(--color-warning)" }}>
                               ⏳ Transcript pending — click Refresh after a moment
                             </span>
                           )}
@@ -1313,7 +1313,7 @@ function TeacherPanel() {
 
           {/* Create Course */}
           {activeTab === "create" && (
-            <div className="card" style={{ maxWidth: 680, margin: "0 auto", backgroundColor: "#ffffff" }}>
+            <div className="card" style={{ maxWidth: 680, margin: "0 auto", backgroundColor: "var(--bg-surface)" }}>
               <h3 style={{ fontSize: "14px", fontWeight: "700", color: "var(--text-title)", marginBottom: "20px", textTransform: "uppercase", letterSpacing: "0.08em", fontFamily: "JetBrains Mono" }}>
                 Create New Course
               </h3>
@@ -1438,7 +1438,7 @@ function TeacherPanel() {
                             loadUngradedStudents(c.id);
                           }}
                         >
-                          <td style={{ fontWeight: "700", color: "#000000" }}>
+                          <td style={{ fontWeight: "700", color: "var(--text-title)" }}>
                             {c.title}
                           </td>
                           <td className="mono">{c.student_count ?? 0}</td>
@@ -1597,7 +1597,7 @@ function TeacherPanel() {
               )}
               <div className="grid-2" style={{ alignItems: "start" }}>
                 {ungradedRecordings.map((r) => (
-                  <div key={r.session_id} className="card" style={{ padding: "16px", backgroundColor: "#ffffff" }}>
+                  <div key={r.session_id} className="card" style={{ padding: "16px", backgroundColor: "var(--bg-surface)" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px" }}>
                       <div>
                         <div style={{ fontWeight: "700", fontSize: "14px", color: "var(--text-title)" }}>{r.student?.name}</div>
