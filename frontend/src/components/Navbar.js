@@ -2,6 +2,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
+import { useTheme } from "@/context/ThemeContext";
 import { useState, useRef, useEffect } from "react";
 
 const ROLE_BADGE = {
@@ -14,20 +15,14 @@ const NAV_LINKS_BY_ROLE = {
   student: [
     { href: "/courses",   label: "Courses"   },
   ],
-  teacher: [
-    { href: "/courses",  label: "Courses"    },
-    { href: "/teacher",  label: "My Courses" },
-  ],
-  admin: [
-    { href: "/courses", label: "Courses"     },
-    { href: "/admin",   label: "Admin Panel" },
-    { href: "/teacher", label: "Content"     },
-  ],
+  teacher: [],
+  admin: [],
 };
 
 export default function Navbar() {
   const pathname = usePathname();
   const { user, logout } = useAuth();
+  const { theme, toggleTheme } = useTheme();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const drawerRef = useRef(null);
   const triggerRef = useRef(null);
@@ -93,7 +88,7 @@ export default function Navbar() {
             <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
             <path d="M6 12v5c0 2 2 3 6 3s6-1 6-3v-5"/>
           </svg>
-          <span style={{ fontWeight: "700", letterSpacing: "-0.02em", color: "var(--text-title)" }}>Mavericks</span>
+          <span style={{ fontWeight: "700", letterSpacing: "-0.02em", color: "var(--text-title)" }}>MLP</span>
         </Link>
 
         <div className="navbar-links">
@@ -109,6 +104,39 @@ export default function Navbar() {
         </div>
 
         <div className="navbar-actions">
+          <button
+            type="button"
+            onClick={toggleTheme}
+            aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: "36px",
+              height: "36px",
+              background: "transparent",
+              border: "none",
+              borderRadius: "8px",
+              cursor: "pointer",
+              color: "var(--text-muted)",
+              transition: "background 0.15s ease",
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.background = "var(--brand-muted)"}
+            onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
+          >
+            {theme === "dark" ? (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="4" />
+                <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+              </svg>
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+              </svg>
+            )}
+          </button>
+
           {user ? (
             <>
               {/* Profile trigger: Hello [name] + avatar */}
@@ -146,7 +174,7 @@ export default function Navbar() {
                   height: "36px",
                   borderRadius: "50%",
                   overflow: "hidden",
-                  border: drawerOpen ? "2px solid var(--brand)" : "2px solid #e2e8f0",
+                  border: drawerOpen ? "2px solid var(--brand)" : "2px solid var(--border-muted)",
                   transition: "border-color 0.2s ease",
                   flexShrink: 0,
                 }}>
@@ -199,10 +227,10 @@ export default function Navbar() {
               top: "64px",
               right: "16px",
               width: "260px",
-              background: "#ffffff",
+              background: "var(--bg-surface)",
               borderRadius: "12px",
-              boxShadow: "0 8px 32px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.06)",
-              border: "1px solid #f1f5f9",
+              boxShadow: "var(--shadow-lg)",
+              border: "1px solid var(--border-muted)",
               zIndex: 150,
               overflow: "hidden",
               transform: drawerOpen ? "translateY(0) scale(1)" : "translateY(-8px) scale(0.97)",
@@ -215,14 +243,14 @@ export default function Navbar() {
             {/* User info header */}
             <div style={{
               padding: "20px 20px 16px",
-              borderBottom: "1px solid #f1f5f9",
-              background: "linear-gradient(135deg, #f8faff 0%, #f0f4ff 100%)",
+              borderBottom: "1px solid var(--border-muted)",
+              background: "linear-gradient(135deg, var(--bg-surface-hover) 0%, var(--brand-muted) 100%)",
             }}>
               <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
                 <div style={{
                   width: "48px", height: "48px",
                   borderRadius: "50%", overflow: "hidden",
-                  border: "2px solid #ffffff",
+                  border: "2px solid var(--bg-surface)",
                   boxShadow: "0 2px 8px rgba(79,70,229,0.2)",
                   flexShrink: 0,
                 }}>
@@ -283,7 +311,7 @@ export default function Navbar() {
                 />
               )}
 
-              <div style={{ height: "1px", background: "#f1f5f9", margin: "8px 0" }} />
+              <div style={{ height: "1px", background: "var(--border-muted)", margin: "8px 0" }} />
 
               <button
                 id="profile-drawer-signout"
@@ -305,7 +333,7 @@ export default function Navbar() {
                   transition: "background 0.12s ease",
                   borderRadius: 0,
                 }}
-                onMouseEnter={(e) => e.currentTarget.style.background = "#fff5f5"}
+                onMouseEnter={(e) => e.currentTarget.style.background = "var(--bg-danger)"}
                 onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -343,7 +371,7 @@ function DrawerItem({ href, icon, label, onClick }) {
         textDecoration: "none",
         transition: "background 0.12s ease",
       }}
-      onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "#f8f9fa"; }}
+      onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-surface-hover)"; }}
       onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "transparent"; }}
     >
       <span style={{ color: isActive ? "var(--brand)" : "var(--text-muted)", flexShrink: 0 }}>

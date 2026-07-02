@@ -382,7 +382,7 @@ function QuizPage() {
             </div>
 
             {/* Score card */}
-            <div className="card" style={{ padding: "32px", textAlign: "center", marginBottom: "24px", backgroundColor: "#ffffff" }}>
+            <div className="card" style={{ padding: "32px", textAlign: "center", marginBottom: "24px", backgroundColor: "var(--bg-surface)" }}>
               <div className="mono" style={{ fontSize: "36px", fontWeight: "700", color: result.passed ? "var(--color-success)" : "var(--color-danger)", marginBottom: "8px" }}>
                 {result.score}%
               </div>
@@ -437,7 +437,7 @@ function QuizPage() {
                   <div
                     key={r.id}
                     className="card"
-                    style={{ padding: "16px 20px", backgroundColor: "#ffffff", borderLeft: `4px solid ${r.correct ? "var(--color-success)" : "var(--color-danger)"}` }}
+                    style={{ padding: "16px 20px", backgroundColor: "var(--bg-surface)", borderLeft: `4px solid ${r.correct ? "var(--color-success)" : "var(--color-danger)"}` }}
                   >
                     <div style={{ fontWeight: "700", fontSize: "14.5px", color: "var(--text-title)", marginBottom: "8px" }}>
                       {r.id}. {q?.question}
@@ -557,7 +557,7 @@ function QuizPage() {
           </div>
 
           {/* Timer + question card */}
-          <div className="card" style={{ padding: "32px", marginBottom: "24px", backgroundColor: "#ffffff" }}>
+          <div className="card" style={{ padding: "32px", marginBottom: "24px", backgroundColor: "var(--bg-surface)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "20px" }}>
               <h2 style={{ fontSize: "16px", fontWeight: "700", color: "var(--text-title)", lineHeight: "1.4", flex: 1, paddingRight: "16px" }}>
                 {q.question}
@@ -606,7 +606,7 @@ function QuizPage() {
                       borderRadius: "var(--radius-sm)",
                       cursor: violated ? "not-allowed" : "pointer",
                       border: `1px solid ${selected ? "var(--brand)" : "var(--border-muted)"}`,
-                      backgroundColor: selected ? "var(--brand-muted)" : "#ffffff",
+                      backgroundColor: selected ? "var(--brand-muted)" : "var(--bg-surface)",
                       opacity: violated ? 0.65 : 1,
                       fontSize: "14px",
                       transition: "var(--transition-fast)",

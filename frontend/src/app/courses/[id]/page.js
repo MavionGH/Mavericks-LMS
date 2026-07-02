@@ -105,7 +105,7 @@ export default function CourseDetailPage() {
       <Navbar />
       <div className="page-container" style={{ backgroundColor: "var(--bg-canvas)" }}>
         <div className="container" style={{ padding: "48px 32px" }}>
-          <div className="card" style={{ padding: "40px", marginBottom: "32px", display: "flex", gap: "32px", backgroundColor: "#ffffff" }}>
+          <div className="card" style={{ padding: "40px", marginBottom: "32px", display: "flex", gap: "32px", backgroundColor: "var(--bg-surface)" }}>
             <div className="mono" style={{ fontSize: "28px", fontWeight: "700", width: "80px", height: "80px", borderRadius: "var(--radius-md)", backgroundColor: "var(--brand-muted)", display: "grid", placeItems: "center", color: "var(--brand)" }}>
               {course.title?.slice(0, 2).toUpperCase()}
             </div>
@@ -146,7 +146,7 @@ export default function CourseDetailPage() {
             {chapters.map((ch, i) => {
               const unlocked = isEnrolled && i <= currentIndex;
               return (
-                <div className="card" key={ch.id} style={{ padding: "20px 24px", display: "flex", alignItems: "center", gap: "24px", backgroundColor: "#ffffff" }}>
+                <div className="card" key={ch.id} style={{ padding: "20px 24px", display: "flex", alignItems: "center", gap: "24px", backgroundColor: "var(--bg-surface)" }}>
                   <div className="mono" style={{ width: "36px", height: "36px", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-muted)", display: "grid", placeItems: "center", fontSize: "12px" }}>
                     {String(i + 1).padStart(2, "0")}
                   </div>
@@ -174,7 +174,7 @@ export default function CourseDetailPage() {
 
             {/* Course-wide final AI interview — optional, drawn from every module */}
             {isEnrolled && chapters.length > 0 && (
-              <div className="card" style={{ padding: "20px 24px", display: "flex", alignItems: "center", gap: "24px", backgroundColor: "#ffffff", border: "1px dashed var(--brand)" }}>
+              <div className="card" style={{ padding: "20px 24px", display: "flex", alignItems: "center", gap: "24px", backgroundColor: "var(--bg-surface)", border: "1px dashed var(--brand)" }}>
                 <div className="mono" style={{ width: "36px", height: "36px", borderRadius: "var(--radius-sm)", border: "1px solid var(--brand)", display: "grid", placeItems: "center", fontSize: "16px", color: "var(--brand)" }}>
                   🎙
                 </div>

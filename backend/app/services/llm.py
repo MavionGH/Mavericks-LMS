@@ -1,6 +1,13 @@
 """LLM wrapper — OpenAI (gpt-4o-mini for dialog/quiz, gpt-4o for grading),
-then rule-based scoring as a graceful fallback."""
+then rule-based scoring as a graceful fallback.
+
+score_realtime_interview() is the one exception: it grades the newer Gemini
+Realtime interview and uses a cheap Gemini text model instead (see
+gemini_config.py) — the older graph-based interview's grading below still
+runs on OpenAI via get_grading_llm().
+"""
 import json
+import logging
 import math
 import random
 import re
@@ -11,6 +18,10 @@ from app.services.openai_config import (
     OPENAI_MODEL,
     is_reasoning_model,
 )
+from app.services.gemini_config import GEMINI_API_KEY, GEMINI_GRADING_MODEL
+from app.services.realtime import INTERVIEW_QUESTION_COUNT
+
+logger = logging.getLogger(__name__)
 
 # ─── Keywords used in rule-based fallback for classification ───
 _GREETING_PATTERNS = re.compile(
@@ -91,6 +102,29 @@ def get_grading_llm():
     _grading_resolved = True
     _grading_llm = None
     return _grading_llm
+
+
+_gemini_grading_client = None
+_gemini_grading_resolved = False
+
+
+def _get_gemini_grading_client():
+    """Return a cached raw Gemini SDK client used ONLY to grade the Realtime
+    interview's transcript (score_realtime_interview below) — a plain
+    generateContent call, unrelated to the Live API session the interview
+    itself runs on."""
+    global _gemini_grading_client, _gemini_grading_resolved
+    if _gemini_grading_resolved:
+        return _gemini_grading_client
+    _gemini_grading_resolved = True
+    if not GEMINI_API_KEY:
+        return None
+    try:
+        from google import genai
+        _gemini_grading_client = genai.Client(api_key=GEMINI_API_KEY)
+    except Exception:
+        _gemini_grading_client = None
+    return _gemini_grading_client
 
 
 def _extract_json(text: str) -> dict:
@@ -625,20 +659,41 @@ def llm_score_interview(
     return _fallback_score(transcript, pause_metrics, pass_threshold, chapter_title)
 
 
+def _coerce_score(value, default: float = 0.0) -> float:
+    """Best-effort float coercion for a grading model's score field — tolerates
+    a stray string like "85" or "85%" instead of silently discarding the whole
+    result to the rule-based fallback over a type mismatch."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip().rstrip("%"))
+        except ValueError:
+            return default
+    return default
+
+
 def score_realtime_interview(
     course_name: str,
     context: str,
     transcript: list,
     pass_threshold: int,
+    total_questions: int = INTERVIEW_QUESTION_COUNT,
 ) -> dict:
     """Grade a Realtime (speech-to-speech) interview from its transcript.
 
-    The Realtime path is free-flowing — the browser talks directly to OpenAI, so
-    there are no server-side pause/filler metrics and no fixed 5-question pacing.
-    We therefore grade purely on the transcript: count the candidate's spoken
-    turns and let the grading model assess technical depth, communication, and
-    confidence. Returns the same shape as ``llm_score_interview`` so the
-    Evaluation record and dashboards are unchanged.
+    The Realtime path is free-flowing — the browser talks directly to Gemini,
+    so there are no server-side pause/filler metrics. We therefore grade purely
+    on the transcript: count the candidate's spoken turns and let the grading
+    model assess technical depth, communication, and confidence, then scale the
+    result by how much of the ``total_questions``-question interview the
+    candidate actually completed — mirroring ``llm_score_interview``'s
+    completion_ratio — so an interview that ended early (e.g. only 2 of 5
+    questions genuinely answered) can't max out 100 just because those 2
+    answers happened to be good. Returns the same shape as
+    ``llm_score_interview`` so the Evaluation record and dashboards are
+    unchanged. Uses a cheap Gemini text model (GEMINI_GRADING_MODEL) — separate
+    from the OpenAI grading model the older graph-based interview still uses.
     """
     student_turns = [m for m in (transcript or []) if m.get("speaker") == "student" and m.get("text", "").strip()]
     num_answers = len(student_turns)
@@ -654,11 +709,14 @@ def score_realtime_interview(
             "suggested_review": [f"Please complete the oral assessment for {course_name}."],
         }
 
-    llm = get_grading_llm()
+    # Cap at 1.0 — extra chitchat/follow-up turns beyond total_questions should
+    # never boost the score above what a full, complete interview would earn.
+    completion_ratio = min(num_answers / max(total_questions, 1), 1.0)
+
+    client = _get_gemini_grading_client()
     dialogue = "\n".join(f"{m['speaker'].upper()}: {m['text']}" for m in transcript)
 
-    if llm:
-        from langchain_core.messages import HumanMessage, SystemMessage
+    if client:
         system = (
             "You are an expert evaluator for technical oral assessments. "
             "Score the candidate's spoken interview against the course material. "
@@ -672,7 +730,12 @@ def score_realtime_interview(
             "technical_score = accuracy and depth of answers vs the course material; "
             "communication_score = clarity, structure, and coherence of speech; "
             "confidence_score = decisiveness and fluency, penalising heavy hesitation, "
-            "filler words, and 'I don't know' non-answers."
+            "filler words, and 'I don't know' non-answers. "
+            "Be strict and critical — reserve 90-100 for genuinely thorough, precise, "
+            "well-explained answers. A brief or partially correct answer should score "
+            "well below 90, even if not wrong. Grade ONLY the quality of what the "
+            f"candidate actually said in the {num_answers} answer(s) below; do not "
+            "try to compensate for the interview being short."
         )
         user = (
             f"Course: {course_name}\n\n"
@@ -680,11 +743,16 @@ def score_realtime_interview(
             f"Interview transcript ({num_answers} candidate answers):\n{dialogue}"
         )
         try:
-            resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
-            result = _extract_json(resp.content)
-            result["technical_score"] = min(max(result.get("technical_score", 0.0), 0.0), 100.0)
-            result["communication_score"] = min(max(result.get("communication_score", 0.0), 0.0), 100.0)
-            result["confidence_score"] = min(max(result.get("confidence_score", 0.0), 0.0), 100.0)
+            from google.genai import types as genai_types
+            resp = client.models.generate_content(
+                model=GEMINI_GRADING_MODEL,
+                contents=user,
+                config=genai_types.GenerateContentConfig(system_instruction=system, temperature=0.3),
+            )
+            result = _extract_json(resp.text)
+            result["technical_score"] = min(max(_coerce_score(result.get("technical_score")), 0.0), 100.0) * completion_ratio
+            result["communication_score"] = min(max(_coerce_score(result.get("communication_score")), 0.0), 100.0) * completion_ratio
+            result["confidence_score"] = min(max(_coerce_score(result.get("confidence_score")), 0.0), 100.0) * completion_ratio
             result["overall_score"] = round(
                 result["technical_score"] * 0.5
                 + result["communication_score"] * 0.3
@@ -697,7 +765,7 @@ def score_realtime_interview(
             result.setdefault("suggested_review", [])
             return result
         except Exception:
-            pass
+            logger.exception("Gemini realtime grading failed — falling back to rule-based scoring")
 
     # No LLM available — reuse the rule-based fallback with synthetic per-answer
     # metrics (one zero-metric entry per candidate turn).

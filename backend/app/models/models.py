@@ -79,10 +79,12 @@ class Course(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     teacher = relationship("User", foreign_keys=[teacher_id])
-    chapters = relationship("Chapter", back_populates="course", order_by="Chapter.order_index")
-    enrollments = relationship("Enrollment", back_populates="course")
-    certificates = relationship("Certificate", back_populates="course")
+    chapters = relationship("Chapter", back_populates="course", order_by="Chapter.order_index", cascade="all, delete-orphan")
+    enrollments = relationship("Enrollment", back_populates="course", cascade="all, delete-orphan")
+    certificates = relationship("Certificate", back_populates="course", cascade="all, delete-orphan")
     chunk_embeddings = relationship("ChunkEmbedding", back_populates="course", cascade="all, delete-orphan")
+    interview_sessions = relationship("InterviewSession", back_populates="course", cascade="all, delete-orphan")
+    evaluations = relationship("Evaluation", back_populates="course", cascade="all, delete-orphan")
 
     @property
     def student_count(self) -> int:
@@ -110,10 +112,11 @@ class Chapter(Base):
     course_id = Column(String, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False)
 
     course = relationship("Course", back_populates="chapters")
-    evaluations = relationship("Evaluation", back_populates="chapter")
-    quiz_attempts = relationship("QuizAttempt", back_populates="chapter")
-    quiz_question = relationship("QuizQuestion", back_populates="chapter", uselist=False)
+    evaluations = relationship("Evaluation", back_populates="chapter", cascade="all, delete-orphan")
+    quiz_attempts = relationship("QuizAttempt", back_populates="chapter", cascade="all, delete-orphan")
+    quiz_question = relationship("QuizQuestion", back_populates="chapter", uselist=False, cascade="all, delete-orphan")
     chunk_embeddings = relationship("ChunkEmbedding", back_populates="chapter", cascade="all, delete-orphan")
+    interview_sessions = relationship("InterviewSession", back_populates="chapter", cascade="all, delete-orphan")
 
     @property
     def has_transcript(self) -> bool:
@@ -126,8 +129,8 @@ class Enrollment(Base):
     __tablename__ = "enrollments"
 
     id = Column(String, primary_key=True, default=generate_uuid)
-    user_id = Column(String, ForeignKey("users.id"), nullable=False)
-    course_id = Column(String, ForeignKey("courses.id"), nullable=False)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    course_id = Column(String, ForeignKey("courses.id"), nullable=False, index=True)
     current_chapter_index = Column(Integer, default=0)
     video_watched = Column(Boolean, default=False)
     article_read = Column(Boolean, default=False)
@@ -156,8 +159,8 @@ class QuizAttempt(Base):
     __tablename__ = "quiz_attempts"
 
     id = Column(String, primary_key=True, default=generate_uuid)
-    user_id = Column(String, ForeignKey("users.id"), nullable=False)
-    chapter_id = Column(String, ForeignKey("chapters.id"), nullable=False)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    chapter_id = Column(String, ForeignKey("chapters.id"), nullable=False, index=True)
     questions = Column(JSON, nullable=False)
     score = Column(Integer, nullable=False)
     passed = Column(Boolean, nullable=False)
@@ -172,11 +175,11 @@ class InterviewSession(Base):
     __tablename__ = "interview_sessions"
 
     id = Column(String, primary_key=True, default=generate_uuid)
-    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
     # chapter_id is set for a per-module interview; course_id is set for the
     # course-wide final interview (which spans every module). Exactly one is used.
-    chapter_id = Column(String, ForeignKey("chapters.id"), nullable=True)
-    course_id = Column(String, ForeignKey("courses.id"), nullable=True)
+    chapter_id = Column(String, ForeignKey("chapters.id"), nullable=True, index=True)
+    course_id = Column(String, ForeignKey("courses.id"), nullable=True, index=True)
     status = Column(String, default="active")  # active | completed
     transcript = Column(JSON, default=list)
     pause_metrics = Column(JSON, default=list)
@@ -189,8 +192,8 @@ class InterviewSession(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User")
-    chapter = relationship("Chapter")
-    course = relationship("Course")
+    chapter = relationship("Chapter", back_populates="interview_sessions")
+    course = relationship("Course", back_populates="interview_sessions")
 
 
 # ─── EVALUATION (AI Interview) ───
@@ -198,9 +201,9 @@ class Evaluation(Base):
     __tablename__ = "evaluations"
 
     id = Column(String, primary_key=True, default=generate_uuid)
-    user_id = Column(String, ForeignKey("users.id"), nullable=False)
-    chapter_id = Column(String, ForeignKey("chapters.id"), nullable=True)
-    course_id = Column(String, ForeignKey("courses.id"), nullable=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    chapter_id = Column(String, ForeignKey("chapters.id"), nullable=True, index=True)
+    course_id = Column(String, ForeignKey("courses.id"), nullable=True, index=True)
     type = Column(Enum(EvaluationType), nullable=False)
     transcript = Column(JSON, nullable=True)
     technical_score = Column(Float, default=0)
@@ -212,13 +215,11 @@ class Evaluation(Base):
     weak_areas = Column(JSON, default=list)
     suggested_review = Column(JSON, default=list)
     attempt_number = Column(Integer, default=1)
-    interview_session_id = Column(String, ForeignKey("interview_sessions.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="evaluations")
     chapter = relationship("Chapter", back_populates="evaluations")
-    course = relationship("Course")
-    interview_session = relationship("InterviewSession")
+    course = relationship("Course", back_populates="evaluations")
 
 
 # ─── CERTIFICATE ───
@@ -226,8 +227,8 @@ class Certificate(Base):
     __tablename__ = "certificates"
 
     id = Column(String, primary_key=True, default=generate_uuid)
-    user_id = Column(String, ForeignKey("users.id"), nullable=False)
-    course_id = Column(String, ForeignKey("courses.id"), nullable=False)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    course_id = Column(String, ForeignKey("courses.id"), nullable=False, index=True)
     issue_date = Column(DateTime, default=datetime.utcnow)
     verify_code = Column(String, unique=True, default=generate_uuid)
     # Optional: Cloudflare R2 public URL for a rendered/stored certificate PDF

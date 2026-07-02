@@ -62,7 +62,7 @@ function CertificatesPage() {
               <p style={{ color: "var(--text-muted)", fontSize: "14px", fontFamily: "JetBrains Mono" }}>Retrieving credentials...</p>
             </div>
           ) : certs.length === 0 ? (
-            <div className="card" style={{ padding: "48px 32px", textAlign: "center", maxWidth: 640, margin: "0 auto 40px", backgroundColor: "#ffffff" }}>
+            <div className="card" style={{ padding: "48px 32px", textAlign: "center", maxWidth: 640, margin: "0 auto 40px", backgroundColor: "var(--bg-surface)" }}>
               <div style={{ display: 'flex', justifyContent: 'center', marginBottom: "16px" }}>
                 <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
@@ -90,7 +90,7 @@ function CertificatesPage() {
                       onClick={() => setSelectedCert(c)}
                       style={{
                         padding: "16px",
-                        backgroundColor: isSelected ? "var(--brand-muted)" : "#ffffff",
+                        backgroundColor: isSelected ? "var(--brand-muted)" : "var(--bg-surface)",
                         border: `1px solid ${isSelected ? "var(--brand-border)" : "var(--border-muted)"}`,
                         borderRadius: "8px",
                         cursor: "pointer",
@@ -124,7 +124,7 @@ function CertificatesPage() {
                 <div id="printable-certificate" className="certificate" style={{ 
                   width: "100%", 
                   maxWidth: "760px", 
-                  backgroundColor: "#ffffff",
+                  backgroundColor: "var(--bg-surface)",
                   padding: "48px",
                   border: "8px double var(--brand-border)",
                   borderRadius: "4px",
@@ -179,7 +179,7 @@ function CertificatesPage() {
           )}
 
           {/* Catalog CTA */}
-          <div className="card" style={{ padding: "32px", textAlign: "center", maxWidth: 640, margin: "0 auto", backgroundColor: "#ffffff" }}>
+          <div className="card" style={{ padding: "32px", textAlign: "center", maxWidth: 640, margin: "0 auto", backgroundColor: "var(--bg-surface)" }}>
             <div style={{ display: 'flex', justifyContent: 'center', marginBottom: "12px" }}>
               <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--brand)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>

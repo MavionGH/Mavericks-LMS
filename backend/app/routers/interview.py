@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, joinedload, load_only
 from app.database import get_db
 from app.models.models import (
     Chapter, Course, Enrollment, Evaluation, EvaluationType,
-    InterviewSession, User, Certificate,
+    InterviewSession, User, Certificate, QuizAttempt,
 )
 from app.schemas.schemas import (
     InterviewStartRequest, CourseInterviewStartRequest, InterviewAnswerRequest,
@@ -27,7 +27,6 @@ from app.services.interview_graph import start_interview, process_answer, MAX_QU
 from app.services.realtime import (
     build_interview_instructions, create_realtime_session, extract_client_secret,
 )
-from app.services.openai_config import OPENAI_REALTIME_MODEL
 from app.services.llm import score_realtime_interview
 from app.services.stt import transcribe_audio
 from app.services.tts import synthesize_speech, MEDIA_TYPE
@@ -335,7 +334,7 @@ def start_course_interview(
 
 
 # ─── REALTIME (speech-to-speech) interview ───
-# The browser connects DIRECTLY to OpenAI's Realtime API over WebRTC. These two
+# The browser connects DIRECTLY to Gemini's Live API over WebSocket. These two
 # endpoints are all the backend does: /realtime/start authenticates the student,
 # builds the interview context (name + course name + raw module text, NO vector
 # search) and mints a short-lived ephemeral token; /realtime/finish receives the
@@ -446,7 +445,8 @@ def start_realtime_interview(
         session_id=session.id,
         client_secret=client_secret,
         realtime_session=rt_session,
-        model=OPENAI_REALTIME_MODEL,
+        model=rt_session.get("model", ""),
+        voice=rt_session.get("voice", ""),
         instructions=instructions,
         course_name=scope_name,
         student_name=current_user.name,
@@ -734,7 +734,6 @@ def _finalize_session(db: Session, session: InterviewSession, user: User) -> Int
             weak_areas=evaluation.get("weak_areas", []),
             suggested_review=evaluation.get("suggested_review", []),
             attempt_number=prev_attempts + 1,
-            interview_session_id=session.id,
         )
         db.add(ev)
 
@@ -745,8 +744,8 @@ def _finalize_session(db: Session, session: InterviewSession, user: User) -> Int
                 Enrollment.user_id == user.id,
                 Enrollment.course_id == session.course_id
             ).first()
-            if enrollment:
-                enrollment.status = EnrollmentStatus.COMPLETED
+            if enrollment and enrollment.status != EnrollmentStatus.COMPLETED:
+                enrollment.status = EnrollmentStatus.CAPSTONE_READY
 
             # ── Certificate eligibility: student must have passed ALL chapter modules ──
             # A certificate requires:
@@ -760,17 +759,23 @@ def _finalize_session(db: Session, session: InterviewSession, user: User) -> Int
             all_modules_passed = True
             if all_chapters:
                 for chapter in all_chapters:
-                    # Check if at least one PASSING chapter evaluation exists
-                    passed_eval = db.query(Evaluation).filter(
+                    # Quizzes are the primary progression mechanism; chapter-level
+                    # oral interviews are optional. Accept either as proof of completion.
+                    passed_quiz = db.query(QuizAttempt).filter(
+                        QuizAttempt.user_id == user.id,
+                        QuizAttempt.chapter_id == chapter.id,
+                        QuizAttempt.passed == True,
+                    ).first()
+                    passed_interview = db.query(Evaluation).filter(
                         Evaluation.user_id == user.id,
                         Evaluation.chapter_id == chapter.id,
                         Evaluation.passed == True,
                     ).first()
-                    if not passed_eval:
+                    if not passed_quiz and not passed_interview:
                         all_modules_passed = False
                         logger.info(
                             "Certificate NOT issued for user=%s course=%s — "
-                            "chapter '%s' has no passing evaluation",
+                            "chapter '%s' has no passing quiz or evaluation",
                             user.id, session.course_id, chapter.title,
                         )
                         break
@@ -779,6 +784,11 @@ def _finalize_session(db: Session, session: InterviewSession, user: User) -> Int
                 all_modules_passed = True
 
             if all_modules_passed:
+                # Update enrollment status to COMPLETED since both capstone and all modules are complete
+                if enrollment:
+                    enrollment.status = EnrollmentStatus.COMPLETED
+                    from datetime import datetime
+                    enrollment.completed_at = datetime.utcnow()
                 # Check if certificate already exists
                 existing_cert = db.query(Certificate).filter(
                     Certificate.user_id == user.id,
@@ -840,7 +850,6 @@ def _finalize_session(db: Session, session: InterviewSession, user: User) -> Int
         weak_areas=evaluation.get("weak_areas", []),
         suggested_review=evaluation.get("suggested_review", []),
         attempt_number=prev_attempts + 1,
-        interview_session_id=session.id,
     )
     db.add(ev)
 
