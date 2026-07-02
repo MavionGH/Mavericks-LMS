@@ -161,42 +161,49 @@ function LearnPage() {
       <Navbar />
       <div className="page-container">
         <div className="layout-with-sidebar">
-          {/* Syllabus Accordion Header (Mobile only) */}
-          <button
-            type="button"
-            className="syllabus-toggle-btn"
-            onClick={() => setSyllabusExpanded(!syllabusExpanded)}
-            style={{
-              width: "100%",
-              padding: "16px",
-              backgroundColor: "var(--bg-surface)",
-              borderBottom: "1px solid var(--border-muted)",
-              display: "none",
-              alignItems: "center",
-              justifyContent: "space-between",
-              cursor: "pointer",
-              fontWeight: "600",
-              color: "var(--text-title)",
-              borderLeft: "none",
-              borderRight: "none",
-              borderTop: "none",
-              minHeight: "44px",
-            }}
-          >
-            <span>Course Syllabus & Modules ({currentIndex + 1} of {chapters.length})</span>
-            <svg
-              width="18" height="18" viewBox="0 0 24 24" fill="none"
-              stroke="var(--text-muted)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-              style={{
-                transform: syllabusExpanded ? "rotate(180deg)" : "rotate(0deg)",
-                transition: "transform 0.2s ease",
-              }}
+          {/* Mobile sub-header bar (sticky just below navbar) */}
+          <div className="classroom-mobile-bar">
+            <button
+              type="button"
+              className="classroom-syllabus-toggle"
+              onClick={() => setSyllabusExpanded(true)}
+              aria-label="Open Course Syllabus"
             >
-              <polyline points="6 9 12 15 18 9" />
-            </svg>
-          </button>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: "6px" }}>
+                <line x1="3" y1="12" x2="21" y2="12" />
+                <line x1="3" y1="6" x2="21" y2="6" />
+                <line x1="3" y1="18" x2="21" y2="18" />
+              </svg>
+              Syllabus
+            </button>
+            <span className="classroom-mobile-progress">
+              {currentIndex + 1} / {chapters.length} Modules
+            </span>
+          </div>
+
+          {syllabusExpanded && (
+            <div 
+              className="sidebar-backdrop" 
+              onClick={() => setSyllabusExpanded(false)}
+            />
+          )}
 
           <aside className={`sidebar ${syllabusExpanded ? "expanded" : ""}`}>
+            {/* Sidebar Mobile Header */}
+            <div className="sidebar-header-mobile">
+              <span className="sidebar-title-mobile">Course Syllabus</span>
+              <button 
+                type="button"
+                onClick={() => setSyllabusExpanded(false)}
+                aria-label="Close Course Syllabus"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+
             <div className="sidebar-title">{course?.title || "Course"}</div>
             {chapters.map((ch, i) => {
               const unlocked = i <= currentIndex;
