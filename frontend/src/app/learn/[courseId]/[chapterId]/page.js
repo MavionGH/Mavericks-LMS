@@ -23,6 +23,7 @@ function LearnPage() {
   const [evaluations, setEvaluations] = useState(null);
   const [loadingEvals, setLoadingEvals] = useState(false);
   const [selectedEval, setSelectedEval] = useState(null);
+  const [syllabusExpanded, setSyllabusExpanded] = useState(false);
 
   useEffect(() => {
     if (activeTab === "interviews" && evaluations === null) {
@@ -160,7 +161,42 @@ function LearnPage() {
       <Navbar />
       <div className="page-container">
         <div className="layout-with-sidebar">
-          <aside className="sidebar">
+          {/* Syllabus Accordion Header (Mobile only) */}
+          <button
+            type="button"
+            className="syllabus-toggle-btn"
+            onClick={() => setSyllabusExpanded(!syllabusExpanded)}
+            style={{
+              width: "100%",
+              padding: "16px",
+              backgroundColor: "var(--bg-surface)",
+              borderBottom: "1px solid var(--border-muted)",
+              display: "none",
+              alignItems: "center",
+              justifyContent: "space-between",
+              cursor: "pointer",
+              fontWeight: "600",
+              color: "var(--text-title)",
+              borderLeft: "none",
+              borderRight: "none",
+              borderTop: "none",
+              minHeight: "44px",
+            }}
+          >
+            <span>Course Syllabus & Modules ({currentIndex + 1} of {chapters.length})</span>
+            <svg
+              width="18" height="18" viewBox="0 0 24 24" fill="none"
+              stroke="var(--text-muted)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+              style={{
+                transform: syllabusExpanded ? "rotate(180deg)" : "rotate(0deg)",
+                transition: "transform 0.2s ease",
+              }}
+            >
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
+
+          <aside className={`sidebar ${syllabusExpanded ? "expanded" : ""}`}>
             <div className="sidebar-title">{course?.title || "Course"}</div>
             {chapters.map((ch, i) => {
               const unlocked = i <= currentIndex;

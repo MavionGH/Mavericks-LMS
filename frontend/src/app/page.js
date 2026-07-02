@@ -75,14 +75,14 @@ export default function HomePage() {
               <p>
                 Verify true comprehension. Learn through curated modules, pass conceptual check-points, and prove your capabilities via real-time voice-to-voice AI interviews.
               </p>
-              <div style={{ display: "flex", gap: "12px" }}>
+              <div className="hero-buttons">
                 <Link href="/courses" className="btn btn-primary btn-lg">Explore Catalog</Link>
                 <Link href="/register" className="btn btn-secondary btn-lg">Create account</Link>
               </div>
             </div>
             
-            <div style={{ display: "flex", justifyContent: "center", alignItems: "center" }}>
-              <svg width="320" height="320" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <div className="hero-illustration">
+              <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <circle cx="100" cy="100" r="80" fill="var(--brand-muted)" />
                 <path d="M100 50L150 75L100 100L50 75L100 50Z" fill="var(--brand)" />
                 <path d="M70 95V125C70 135 100 145 100 145C100 145 130 135 130 125V95" stroke="var(--brand)" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
@@ -126,7 +126,7 @@ export default function HomePage() {
 
         {/* FOOTER */}
         <footer style={{ borderTop: "1px solid var(--border-muted)", padding: "32px 0", backgroundColor: "var(--bg-surface)" }}>
-          <div className="container flex-between">
+          <div className="container footer-container">
             <span style={{ color: "var(--text-muted)", fontSize: "12px" }}>© 2026 Maverik Learning. All rights reserved.</span>
             <div style={{ display: "flex", gap: "16px" }}>
               <Link href="/courses" style={{ color: "var(--text-muted)", fontSize: "12px", textDecoration: "none" }}>Platform Catalog</Link>
