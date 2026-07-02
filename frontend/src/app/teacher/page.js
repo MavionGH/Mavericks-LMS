@@ -658,23 +658,24 @@ function TeacherPanel() {
     <>
       <Navbar />
       <div className="page-container" style={{ backgroundColor: "var(--bg-canvas)" }}>
-        <div className="container" style={{ padding: "48px 32px" }}>
+        <div className="container admin-container">
 
           {/* Header */}
           <div style={{ marginBottom: "32px" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "4px" }}>
-              <h1 style={{ fontSize: "28px", fontWeight: "700", color: "var(--text-title)", letterSpacing: "-0.02em" }}>
+            <div className="admin-header-flex">
+              <h1 style={{ fontSize: "28px", fontWeight: "700", color: "var(--text-title)", letterSpacing: "-0.02em", margin: 0 }}>
                 Teacher Studio
               </h1>
               <span style={{
                 fontSize: "11px", fontWeight: "600", padding: "3px 8px",
                 borderRadius: "4px", background: "var(--bg-success)", color: "var(--color-success)",
                 border: "1px solid var(--border-success)", fontFamily: "JetBrains Mono",
+                display: "inline-block", width: "fit-content",
               }}>
                 TEACHER
               </span>
             </div>
-            <p style={{ color: "var(--text-muted)", fontSize: "14px" }}>
+            <p style={{ color: "var(--text-muted)", fontSize: "14px", margin: "4px 0 0" }}>
               Welcome, <strong style={{ color: "var(--text-title)" }}>{user?.name}</strong>. Manage your courses and track student progress.
             </p>
           </div>
@@ -756,7 +757,7 @@ function TeacherPanel() {
 
               {/* Quick Stats */}
               <div className="grid-2">
-                <div className="card" style={{ padding: "24px", backgroundColor: "var(--bg-surface)" }}>
+                <div className="card" style={{ backgroundColor: "var(--bg-surface)" }}>
                   <h3 style={{ fontSize: "14px", fontWeight: "700", color: "var(--text-title)", marginBottom: "16px", textTransform: "uppercase", letterSpacing: "0.08em", fontFamily: "JetBrains Mono" }}>
                     Your Courses
                   </h3>
@@ -774,7 +775,7 @@ function TeacherPanel() {
                     </div>
                   ))}
                 </div>
-                <div className="card" style={{ padding: "24px", backgroundColor: "var(--bg-surface)" }}>
+                <div className="card" style={{ backgroundColor: "var(--bg-surface)" }}>
                   <h3 style={{ fontSize: "14px", fontWeight: "700", color: "var(--text-title)", marginBottom: "16px", textTransform: "uppercase", letterSpacing: "0.08em", fontFamily: "JetBrains Mono" }}>
                     AI Interview Flow
                   </h3>
@@ -819,7 +820,7 @@ function TeacherPanel() {
                           {c.is_published ? "Live" : "Draft"}
                         </span>
                       </td>
-                      <td style={{ display: "flex", gap: "8px" }} onClick={(e) => e.stopPropagation()}>
+                      <td style={{ display: "flex", gap: "8px", flexWrap: "wrap" }} onClick={(e) => e.stopPropagation()}>
                         <button
                           className="btn btn-primary btn-sm"
                           onClick={() => {
@@ -853,7 +854,7 @@ function TeacherPanel() {
           {/* My Courses - Level 2 (Enrolled Students List) */}
           {activeTab === "courses" && selectedCourseForStudents && !selectedStudentForInterviews && (
             <div>
-              <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "20px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "20px", flexWrap: "wrap" }}>
                 <button
                   className="btn btn-secondary"
                   onClick={() => setSelectedCourseForStudents(null)}
@@ -861,7 +862,7 @@ function TeacherPanel() {
                 >
                   ← Back to Courses
                 </button>
-                <div style={{ flex: 1 }}>
+                <div style={{ flex: 1, minWidth: "200px" }}>
                   <h3 style={{ fontSize: "14px", fontWeight: "700", textTransform: "uppercase", fontFamily: "JetBrains Mono", margin: 0 }}>
                     Students Enrolled in {selectedCourseForStudents.title}
                   </h3>
@@ -947,7 +948,7 @@ function TeacherPanel() {
           {/* My Courses - Level 3 (Student Interviews List) */}
           {activeTab === "courses" && selectedCourseForStudents && selectedStudentForInterviews && (
             <div>
-              <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "20px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "20px", flexWrap: "wrap" }}>
                 <button
                   className="btn btn-secondary"
                   onClick={() => setSelectedStudentForInterviews(null)}
@@ -955,7 +956,7 @@ function TeacherPanel() {
                 >
                   ← Back to Students
                 </button>
-                <div style={{ flex: 1 }}>
+                <div style={{ flex: 1, minWidth: "200px" }}>
                   <h3 style={{ fontSize: "14px", fontWeight: "700", textTransform: "uppercase", fontFamily: "JetBrains Mono", margin: 0 }}>
                     Interviews for {selectedStudentForInterviews.name}
                   </h3>
@@ -1051,7 +1052,7 @@ function TeacherPanel() {
           {/* Add Modules */}
           {activeTab === "modules" && (
             <div className="grid-2" style={{ alignItems: "start" }}>
-              <div className="card" style={{ padding: "24px", backgroundColor: "var(--bg-surface)" }}>
+              <div className="card" style={{ backgroundColor: "var(--bg-surface)" }}>
                 <h3 style={{ fontSize: "14px", fontWeight: "700", marginBottom: "20px", textTransform: "uppercase", fontFamily: "JetBrains Mono" }}>
                   Add Module (Chapter)
                 </h3>
@@ -1260,9 +1261,9 @@ function TeacherPanel() {
                   </button>
                 </form>
               </div>
-              <div className="card" style={{ padding: "24px", backgroundColor: "var(--bg-surface)" }}>
-                <div style={{ display: "flex", alignItems: "center", marginBottom: "16px" }}>
-                  <h3 style={{ fontSize: "14px", fontWeight: "700", textTransform: "uppercase", fontFamily: "JetBrains Mono", flex: 1, margin: 0 }}>
+              <div className="card" style={{ backgroundColor: "var(--bg-surface)" }}>
+                <div style={{ display: "flex", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "10px" }}>
+                  <h3 style={{ fontSize: "14px", fontWeight: "700", textTransform: "uppercase", fontFamily: "JetBrains Mono", flex: 1, margin: 0, minWidth: "150px" }}>
                     Modules in {selectedCourse?.title || "—"}
                   </h3>
                   <button
@@ -1394,8 +1395,8 @@ function TeacherPanel() {
           {/* Ungraded Interviews - Level 1 (Courses List) */}
           {activeTab === "recordings" && !selectedUngradedCourse && (
             <div>
-              <div style={{ display: "flex", alignItems: "center", marginBottom: "20px" }}>
-                <div style={{ flex: 1 }}>
+              <div style={{ display: "flex", alignItems: "center", marginBottom: "20px", flexWrap: "wrap", gap: "10px" }}>
+                <div style={{ flex: 1, minWidth: "200px" }}>
                   <h3 style={{ fontSize: "14px", fontWeight: "700", textTransform: "uppercase", fontFamily: "JetBrains Mono", margin: 0 }}>
                     Ungraded Interviews By Course
                   </h3>
@@ -1465,7 +1466,7 @@ function TeacherPanel() {
           {/* Ungraded Interviews - Level 2 (Enrolled Students List) */}
           {activeTab === "recordings" && selectedUngradedCourse && !selectedUngradedStudent && (
             <div>
-              <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "20px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "20px", flexWrap: "wrap" }}>
                 <button
                   className="btn btn-secondary"
                   onClick={() => setSelectedUngradedCourse(null)}
@@ -1473,7 +1474,7 @@ function TeacherPanel() {
                 >
                   ← Back to Courses
                 </button>
-                <div style={{ flex: 1 }}>
+                <div style={{ flex: 1, minWidth: "200px" }}>
                   <h3 style={{ fontSize: "14px", fontWeight: "700", textTransform: "uppercase", fontFamily: "JetBrains Mono", margin: 0 }}>
                     Students Pending Evaluation in {selectedUngradedCourse.title}
                   </h3>
@@ -1560,7 +1561,7 @@ function TeacherPanel() {
           {/* Ungraded Interviews - Level 3 (Student Interviews List) */}
           {activeTab === "recordings" && selectedUngradedCourse && selectedUngradedStudent && (
             <div>
-              <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "20px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "20px", flexWrap: "wrap" }}>
                 <button
                   className="btn btn-secondary"
                   onClick={() => setSelectedUngradedStudent(null)}
@@ -1568,7 +1569,7 @@ function TeacherPanel() {
                 >
                   ← Back to Students
                 </button>
-                <div style={{ flex: 1 }}>
+                <div style={{ flex: 1, minWidth: "200px" }}>
                   <h3 style={{ fontSize: "14px", fontWeight: "700", textTransform: "uppercase", fontFamily: "JetBrains Mono", margin: 0 }}>
                     Ungraded Interviews for {selectedUngradedStudent.name}
                   </h3>

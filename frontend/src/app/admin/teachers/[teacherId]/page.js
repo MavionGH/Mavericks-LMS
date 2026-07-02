@@ -45,7 +45,7 @@ function TeacherCoursesPage() {
     <>
       <Navbar />
       <div className="page-container" style={{ backgroundColor: "var(--bg-canvas)" }}>
-        <div className="container" style={{ padding: "48px 32px" }}>
+        <div className="container admin-container">
 
           {/* Back button — lands on Teachers tab */}
           <button
@@ -77,21 +77,21 @@ function TeacherCoursesPage() {
           ) : (
             <>
               {/* Teacher header card */}
-              <div className="card" style={{ padding: "28px 32px", marginBottom: "32px", display: "flex", alignItems: "center", gap: "20px" }}>
+              <div className="card admin-identity-card" style={{ marginBottom: "32px" }}>
                 <div style={{ width: 56, height: 56, borderRadius: "50%", background: "linear-gradient(135deg, var(--brand), #8b5cf6)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "22px", fontWeight: "700", color: "#fff", flexShrink: 0 }}>
                   {teacher?.name?.[0]?.toUpperCase() ?? "T"}
                 </div>
-                <div style={{ flex: 1 }}>
+                <div className="admin-identity-info">
                   <h1 style={{ fontSize: "22px", fontWeight: "700", color: "var(--text-title)", margin: 0, marginBottom: "4px" }}>{teacher?.name}</h1>
                   <p style={{ color: "var(--text-muted)", fontSize: "13px", margin: 0 }}>{teacher?.email}</p>
                 </div>
-                <div style={{ display: "flex", gap: "24px", textAlign: "center" }}>
+                <div className="admin-identity-stats">
                   {[
                     { label: "Total", value: courses.length, color: "var(--brand)" },
                     { label: "Published", value: published.length, color: "var(--color-success)" },
                     { label: "Drafts", value: drafts.length, color: "var(--color-warning)" },
                   ].map((s) => (
-                    <div key={s.label}>
+                    <div key={s.label} style={{ minWidth: "60px" }}>
                       <div style={{ fontSize: "24px", fontWeight: "700", color: s.color, fontFamily: "JetBrains Mono" }}>{s.value}</div>
                       <div style={{ fontSize: "11px", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{s.label}</div>
                     </div>

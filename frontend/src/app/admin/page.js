@@ -143,23 +143,24 @@ function AdminPanel() {
     <>
       <Navbar />
       <div className="page-container">
-        <div className="container" style={{ padding: "48px 32px" }}>
+        <div className="container admin-container">
 
           {/* Header */}
           <div style={{ marginBottom: "32px" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "4px" }}>
-              <h1 style={{ fontSize: "28px", fontWeight: "700", color: "var(--text-title)", letterSpacing: "-0.02em" }}>
+            <div className="admin-header-flex">
+              <h1 style={{ fontSize: "28px", fontWeight: "700", color: "var(--text-title)", letterSpacing: "-0.02em", margin: 0 }}>
                 Operations Console
               </h1>
               <span style={{
                 fontSize: "11px", fontWeight: "600", padding: "3px 8px",
                 borderRadius: "4px", background: "var(--bg-warning)", color: "var(--color-warning)",
                 border: "1px solid var(--border-warning)", fontFamily: "JetBrains Mono",
+                display: "inline-block", width: "fit-content",
               }}>
                 ADMIN
               </span>
             </div>
-            <p style={{ color: "var(--text-muted)", fontSize: "14px" }}>
+            <p style={{ color: "var(--text-muted)", fontSize: "14px", margin: "4px 0 0" }}>
               Logged in as <strong style={{ color: "var(--text-title)" }}>{user?.name}</strong> — full platform administration.
             </p>
           </div>
@@ -189,7 +190,7 @@ function AdminPanel() {
               </div>
 
               <div className="grid-2">
-                <div className="card" style={{ padding: "24px" }}>
+                <div className="card">
                   <h3 style={{ fontSize: "14px", fontWeight: "600", color: "var(--text-title)", marginBottom: "16px", textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "JetBrains Mono" }}>
                     Evaluation Performance
                   </h3>
@@ -214,7 +215,7 @@ function AdminPanel() {
                     </div>
                   </div>
                 </div>
-                <div className="card" style={{ padding: "24px" }}>
+                <div className="card">
                   <h3 style={{ fontSize: "14px", fontWeight: "600", color: "var(--text-title)", marginBottom: "16px", textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "JetBrains Mono" }}>
                     Platform Summary
                   </h3>
@@ -232,7 +233,7 @@ function AdminPanel() {
           {/* ── Teachers (browse) ── */}
           {activeTab === "teachers" && (
             <div>
-              <div style={{ marginBottom: "16px", position: "relative", maxWidth: 360 }}>
+              <div style={{ marginBottom: "16px", position: "relative", maxWidth: 360, width: "100%" }}>
                 <svg style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }} width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                 <input type="text" placeholder="Search by name or email…" value={teacherSearch} onChange={(e) => setTeacherSearch(e.target.value)} style={{ width: "100%", padding: "9px 12px 9px 36px", background: "var(--bg-card)", border: "1px solid var(--border-muted)", borderRadius: "var(--radius-sm)", color: "var(--text-title)", fontSize: "13px", outline: "none", boxSizing: "border-box" }} />
                 {teacherSearch && <button onClick={() => setTeacherSearch("")} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "18px", lineHeight: 1, padding: 0 }}>×</button>}
@@ -300,7 +301,7 @@ function AdminPanel() {
           {/* ── Students ── */}
           {activeTab === "students" && (
             <div>
-              <div style={{ marginBottom: "16px", position: "relative", maxWidth: 360 }}>
+              <div style={{ marginBottom: "16px", position: "relative", maxWidth: 360, width: "100%" }}>
                 <svg style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }} width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                 <input type="text" placeholder="Search by name or email…" value={studentSearch} onChange={(e) => setStudentSearch(e.target.value)} style={{ width: "100%", padding: "9px 12px 9px 36px", background: "var(--bg-card)", border: "1px solid var(--border-muted)", borderRadius: "var(--radius-sm)", color: "var(--text-title)", fontSize: "13px", outline: "none", boxSizing: "border-box" }} />
                 {studentSearch && <button onClick={() => setStudentSearch("")} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "18px", lineHeight: 1, padding: 0 }}>×</button>}
@@ -352,7 +353,7 @@ function AdminPanel() {
                   <span>{courseActionMsg}</span>
                 </div>
               )}
-              <div style={{ marginBottom: "16px", position: "relative", maxWidth: 360 }}>
+              <div style={{ marginBottom: "16px", position: "relative", maxWidth: 360, width: "100%" }}>
                 <svg style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }} width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                 <input type="text" placeholder="Search by name or email…" value={approveSearch} onChange={(e) => setApproveSearch(e.target.value)} style={{ width: "100%", padding: "9px 12px 9px 36px", background: "var(--bg-card)", border: "1px solid var(--border-muted)", borderRadius: "var(--radius-sm)", color: "var(--text-title)", fontSize: "13px", outline: "none", boxSizing: "border-box" }} />
                 {approveSearch && <button onClick={() => setApproveSearch("")} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "18px", lineHeight: 1, padding: 0 }}>×</button>}

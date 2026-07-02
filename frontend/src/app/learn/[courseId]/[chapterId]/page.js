@@ -23,6 +23,7 @@ function LearnPage() {
   const [evaluations, setEvaluations] = useState(null);
   const [loadingEvals, setLoadingEvals] = useState(false);
   const [selectedEval, setSelectedEval] = useState(null);
+  const [syllabusExpanded, setSyllabusExpanded] = useState(false);
 
   useEffect(() => {
     if (activeTab === "interviews" && evaluations === null) {
@@ -160,7 +161,49 @@ function LearnPage() {
       <Navbar />
       <div className="page-container">
         <div className="layout-with-sidebar">
-          <aside className="sidebar">
+          {/* Mobile sub-header bar (sticky just below navbar) */}
+          <div className="classroom-mobile-bar">
+            <button
+              type="button"
+              className="classroom-syllabus-toggle"
+              onClick={() => setSyllabusExpanded(true)}
+              aria-label="Open Course Syllabus"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: "6px" }}>
+                <line x1="3" y1="12" x2="21" y2="12" />
+                <line x1="3" y1="6" x2="21" y2="6" />
+                <line x1="3" y1="18" x2="21" y2="18" />
+              </svg>
+              Syllabus
+            </button>
+            <span className="classroom-mobile-progress">
+              {currentIndex + 1} / {chapters.length} Modules
+            </span>
+          </div>
+
+          {syllabusExpanded && (
+            <div 
+              className="sidebar-backdrop" 
+              onClick={() => setSyllabusExpanded(false)}
+            />
+          )}
+
+          <aside className={`sidebar ${syllabusExpanded ? "expanded" : ""}`}>
+            {/* Sidebar Mobile Header */}
+            <div className="sidebar-header-mobile">
+              <span className="sidebar-title-mobile">Course Syllabus</span>
+              <button 
+                type="button"
+                onClick={() => setSyllabusExpanded(false)}
+                aria-label="Close Course Syllabus"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+
             <div className="sidebar-title">{course?.title || "Course"}</div>
             {chapters.map((ch, i) => {
               const unlocked = i <= currentIndex;

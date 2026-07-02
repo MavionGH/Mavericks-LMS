@@ -24,8 +24,10 @@ export default function Navbar() {
   const { user, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const drawerRef = useRef(null);
   const triggerRef = useRef(null);
+  const mobileDrawerRef = useRef(null);
 
   const links = user ? (NAV_LINKS_BY_ROLE[user.role] || []) : [
     { href: "/courses", label: "Courses" },
@@ -34,7 +36,7 @@ export default function Navbar() {
   const badge = user ? ROLE_BADGE[user.role] : null;
   const firstName = user?.name?.split(" ")[0] || user?.name || "User";
 
-  // Close drawer when clicking outside
+  // Close drawers when clicking outside
   useEffect(() => {
     function handleClickOutside(e) {
       if (
@@ -50,10 +52,47 @@ export default function Navbar() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [drawerOpen]);
 
-  // Close drawer on route change
+  // Close drawers on route change
   useEffect(() => {
     setDrawerOpen(false);
+    setMobileMenuOpen(false);
   }, [pathname]);
+
+  // Focus trap for mobile drawer
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+    const drawer = mobileDrawerRef.current;
+    if (!drawer) return;
+
+    const focusableElements = drawer.querySelectorAll(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    );
+    const firstElement = focusableElements[0];
+    const lastElement = focusableElements[focusableElements.length - 1];
+
+    function handleKeyDown(e) {
+      if (e.key !== "Tab") return;
+
+      if (e.shiftKey) {
+        if (document.activeElement === firstElement) {
+          lastElement.focus();
+          e.preventDefault();
+        }
+      } else {
+        if (document.activeElement === lastElement) {
+          firstElement.focus();
+          e.preventDefault();
+        }
+      }
+    }
+
+    if (firstElement) {
+      setTimeout(() => firstElement.focus(), 50);
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [mobileMenuOpen]);
 
   const avatarContent = user?.avatar ? (
     <img
@@ -83,7 +122,7 @@ export default function Navbar() {
   return (
     <>
       <nav className="navbar">
-        <Link href={logoHref} className="navbar-brand">
+        <Link href={logoHref} className="navbar-brand" style={{ minWidth: "44px", minHeight: "44px", display: "inline-flex", alignItems: "center" }}>
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--brand)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: "8px" }}>
             <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
             <path d="M6 12v5c0 2 2 3 6 3s6-1 6-3v-5"/>
@@ -97,6 +136,7 @@ export default function Navbar() {
               key={l.href}
               href={l.href}
               className={pathname === l.href ? "active" : ""}
+              style={{ minHeight: "44px", display: "inline-flex", alignItems: "center", padding: "0 8px" }}
             >
               {l.label}
             </Link>
@@ -113,8 +153,8 @@ export default function Navbar() {
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              width: "36px",
-              height: "36px",
+              width: "44px",
+              height: "44px",
               background: "transparent",
               border: "none",
               borderRadius: "8px",
@@ -154,6 +194,7 @@ export default function Navbar() {
                   padding: "4px 8px",
                   borderRadius: "8px",
                   transition: "background 0.15s ease",
+                  minHeight: "44px",
                 }}
                 onMouseEnter={(e) => e.currentTarget.style.background = "var(--brand-muted)"}
                 onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
@@ -196,14 +237,39 @@ export default function Navbar() {
             </>
           ) : (
             <>
-              <Link href="/login"    className="btn btn-secondary btn-sm">Sign in</Link>
-              <Link href="/register" className="btn btn-primary btn-sm">Create account</Link>
+              <Link href="/login"    className="btn btn-secondary btn-sm" style={{ display: "inline-flex", alignItems: "center", minHeight: "44px", padding: "0 16px" }}>Sign in</Link>
+              <Link href="/register" className="btn btn-primary btn-sm" style={{ display: "inline-flex", alignItems: "center", minHeight: "44px", padding: "0 16px" }}>Create account</Link>
             </>
           )}
         </div>
+
+        {/* Hamburger Icon button for mobile (< 768px) */}
+        <button
+          type="button"
+          onClick={() => setMobileMenuOpen(true)}
+          className="navbar-hamburger-btn"
+          aria-label="Open navigation menu"
+          style={{
+            alignItems: "center",
+            justifyContent: "center",
+            width: "44px",
+            height: "44px",
+            background: "transparent",
+            border: "none",
+            borderRadius: "8px",
+            cursor: "pointer",
+            color: "var(--text-title)",
+          }}
+        >
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="3" y1="12" x2="21" y2="12" />
+            <line x1="3" y1="6" x2="21" y2="6" />
+            <line x1="3" y1="18" x2="21" y2="18" />
+          </svg>
+        </button>
       </nav>
 
-      {/* Profile slide-out drawer */}
+      {/* Profile slide-out drawer (Desktop only or fallback) */}
       {user && (
         <>
           {/* Backdrop */}
@@ -283,7 +349,7 @@ export default function Navbar() {
               </div>
             </div>
 
-             {/* Menu items */}
+            {/* Menu items */}
             <div style={{ padding: "8px 0" }}>
               <DrawerItem
                 href="/profile"
@@ -332,6 +398,7 @@ export default function Navbar() {
                   textAlign: "left",
                   transition: "background 0.12s ease",
                   borderRadius: 0,
+                  minHeight: "44px",
                 }}
                 onMouseEnter={(e) => e.currentTarget.style.background = "var(--bg-danger)"}
                 onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
@@ -343,6 +410,280 @@ export default function Navbar() {
                 </svg>
                 Sign Out
               </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Mobile Drawer (visible on < 768px via CSS) */}
+      {mobileMenuOpen && (
+        <>
+          {/* Dark Backdrop */}
+          <div
+            className="mobile-drawer-backdrop"
+            onClick={() => setMobileMenuOpen(false)}
+            style={{
+              position: "fixed",
+              inset: 0,
+              backgroundColor: "rgba(15, 23, 42, 0.6)",
+              backdropFilter: "blur(4px)",
+              zIndex: 9999,
+            }}
+          />
+
+          {/* Drawer Panel */}
+          <div
+            ref={mobileDrawerRef}
+            className="mobile-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Navigation menu"
+            style={{
+              position: "fixed",
+              top: 0,
+              right: 0,
+              bottom: 0,
+              width: "280px",
+              backgroundColor: "var(--bg-surface)",
+              borderLeft: "1px solid var(--border-muted)",
+              boxShadow: "var(--shadow-lg)",
+              zIndex: 10000,
+              display: "flex",
+              flexDirection: "column",
+              padding: "20px",
+              boxSizing: "border-box",
+            }}
+          >
+            {/* Header with Close Button */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "24px" }}>
+              <span style={{ fontWeight: "700", color: "var(--text-title)" }}>Menu</span>
+              <button
+                onClick={() => setMobileMenuOpen(false)}
+                aria-label="Close menu"
+                style={{
+                  width: "44px",
+                  height: "44px",
+                  background: "transparent",
+                  border: "none",
+                  borderRadius: "50%",
+                  cursor: "pointer",
+                  color: "var(--text-muted)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = "var(--bg-surface-hover)"}
+                onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
+              >
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+
+            {/* User Info Header (if logged in) */}
+            {user && (
+              <div style={{
+                padding: "16px",
+                borderRadius: "8px",
+                backgroundColor: "var(--bg-canvas)",
+                marginBottom: "20px",
+                display: "flex",
+                alignItems: "center",
+                gap: "12px",
+              }}>
+                <div style={{
+                  width: "40px",
+                  height: "40px",
+                  borderRadius: "50%",
+                  overflow: "hidden",
+                  border: "2px solid var(--border-muted)",
+                }}>
+                  {avatarContent}
+                </div>
+                <div style={{ overflow: "hidden" }}>
+                  <div style={{ fontSize: "14px", fontWeight: "700", color: "var(--text-title)", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
+                    {user.name}
+                  </div>
+                  {badge && (
+                    <span style={{
+                      display: "inline-block",
+                      marginTop: "2px",
+                      fontSize: "10px",
+                      fontWeight: "600",
+                      padding: "1px 5px",
+                      borderRadius: "3px",
+                      background: badge.bg,
+                      color: badge.color,
+                      fontFamily: "JetBrains Mono, monospace",
+                    }}>
+                      {badge.label}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Nav Links */}
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px", flexGrow: 1 }}>
+              {links.map((l) => (
+                <Link
+                  key={l.href}
+                  href={l.href}
+                  onClick={() => setMobileMenuOpen(false)}
+                  style={{
+                    padding: "12px 16px",
+                    borderRadius: "8px",
+                    textDecoration: "none",
+                    color: pathname === l.href ? "var(--brand)" : "var(--text-main)",
+                    backgroundColor: pathname === l.href ? "var(--brand-muted)" : "transparent",
+                    fontWeight: "600",
+                    fontSize: "15px",
+                    display: "block",
+                    minHeight: "44px",
+                  }}
+                >
+                  {l.label}
+                </Link>
+              ))}
+
+              {user && (
+                <>
+                  <Link
+                    href={logoHref}
+                    onClick={() => setMobileMenuOpen(false)}
+                    style={{
+                      padding: "12px 16px",
+                      borderRadius: "8px",
+                      textDecoration: "none",
+                      color: pathname === logoHref ? "var(--brand)" : "var(--text-main)",
+                      backgroundColor: pathname === logoHref ? "var(--brand-muted)" : "transparent",
+                      fontWeight: "600",
+                      fontSize: "15px",
+                      display: "block",
+                      minHeight: "44px",
+                    }}
+                  >
+                    Dashboard Workspace
+                  </Link>
+                  <Link
+                    href="/profile"
+                    onClick={() => setMobileMenuOpen(false)}
+                    style={{
+                      padding: "12px 16px",
+                      borderRadius: "8px",
+                      textDecoration: "none",
+                      color: pathname === "/profile" ? "var(--brand)" : "var(--text-main)",
+                      backgroundColor: pathname === "/profile" ? "var(--brand-muted)" : "transparent",
+                      fontWeight: "600",
+                      fontSize: "15px",
+                      display: "block",
+                      minHeight: "44px",
+                    }}
+                  >
+                    Profile Settings
+                  </Link>
+                  {user.role === "student" && (
+                    <Link
+                      href="/certificates"
+                      onClick={() => setMobileMenuOpen(false)}
+                      style={{
+                        padding: "12px 16px",
+                        borderRadius: "8px",
+                        textDecoration: "none",
+                        color: pathname === "/certificates" ? "var(--brand)" : "var(--text-main)",
+                        backgroundColor: pathname === "/certificates" ? "var(--brand-muted)" : "transparent",
+                        fontWeight: "600",
+                        fontSize: "15px",
+                        display: "block",
+                        minHeight: "44px",
+                      }}
+                    >
+                      My Certificates
+                    </Link>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* Theme Toggle & Logout */}
+            <div style={{ borderTop: "1px solid var(--border-muted)", paddingTop: "16px", marginTop: "16px" }}>
+              <button
+                type="button"
+                onClick={toggleTheme}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "12px",
+                  width: "100%",
+                  padding: "12px 16px",
+                  background: "transparent",
+                  border: "none",
+                  borderRadius: "8px",
+                  cursor: "pointer",
+                  color: "var(--text-main)",
+                  fontWeight: "600",
+                  fontSize: "15px",
+                  minHeight: "44px",
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = "var(--bg-surface-hover)"}
+                onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
+              >
+                {theme === "dark" ? (
+                  <>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="12" r="4" />
+                      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+                    </svg>
+                    Light Mode
+                  </>
+                ) : (
+                  <>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+                    </svg>
+                    Dark Mode
+                  </>
+                )}
+              </button>
+
+              {user ? (
+                <button
+                  onClick={() => { setMobileMenuOpen(false); logout(); }}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "12px",
+                    width: "100%",
+                    padding: "12px 16px",
+                    background: "transparent",
+                    border: "none",
+                    cursor: "pointer",
+                    fontSize: "15px",
+                    color: "var(--color-danger)",
+                    fontWeight: "600",
+                    textAlign: "left",
+                    borderRadius: "8px",
+                    marginTop: "8px",
+                    minHeight: "44px",
+                  }}
+                  onMouseEnter={(e) => e.currentTarget.style.background = "var(--bg-danger)"}
+                  onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                    <polyline points="16 17 21 12 16 7" />
+                    <line x1="21" y1="12" x2="9" y2="12" />
+                  </svg>
+                  Sign Out
+                </button>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: "12px" }}>
+                  <Link href="/login" onClick={() => setMobileMenuOpen(false)} className="btn btn-secondary btn-sm" style={{ width: "100%", justifyContent: "center", minHeight: "44px", display: "flex", alignItems: "center" }}>Sign in</Link>
+                  <Link href="/register" onClick={() => setMobileMenuOpen(false)} className="btn btn-primary btn-sm" style={{ width: "100%", justifyContent: "center", minHeight: "44px", display: "flex", alignItems: "center" }}>Create account</Link>
+                </div>
+              )}
             </div>
           </div>
         </>
@@ -370,6 +711,7 @@ function DrawerItem({ href, icon, label, onClick }) {
         background: isActive ? "var(--brand-muted)" : "transparent",
         textDecoration: "none",
         transition: "background 0.12s ease",
+        minHeight: "44px",
       }}
       onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-surface-hover)"; }}
       onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "transparent"; }}
