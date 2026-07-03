@@ -125,6 +125,97 @@ def get_student_dashboard(
     )
 
 
+@router.get("/evaluations", response_model=List[DashboardEvaluation])
+def get_all_student_evaluations(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_student)
+):
+    from app.models.models import InterviewSession
+    from collections import defaultdict
+
+    # Fetch all evaluations for the student chronologically (asc)
+    evals = db.query(Evaluation).filter(
+        Evaluation.user_id == current_user.id
+    ).order_by(Evaluation.created_at.asc()).all()
+
+    # Fetch all completed interview sessions with recordings chronologically (asc)
+    sessions = db.query(InterviewSession).filter(
+        InterviewSession.user_id == current_user.id,
+        InterviewSession.recording_url.isnot(None)
+    ).order_by(InterviewSession.created_at.asc()).all()
+
+    # Group evals and sessions by scope
+    evals_by_scope = defaultdict(list)
+    for ev in evals:
+        if ev.chapter_id:
+            evals_by_scope[f"chapter_{ev.chapter_id}"].append(ev)
+        elif ev.course_id:
+            evals_by_scope[f"course_{ev.course_id}"].append(ev)
+
+    sessions_by_scope = defaultdict(list)
+    for s in sessions:
+        if s.chapter_id:
+            sessions_by_scope[f"chapter_{s.chapter_id}"].append(s)
+        elif s.course_id:
+            sessions_by_scope[f"course_{s.course_id}"].append(s)
+
+    # Match evaluations to recordings
+    eval_recording_map = {}
+    for scope, scope_evals in evals_by_scope.items():
+        scope_sessions = sessions_by_scope.get(scope, [])
+        for i, ev in enumerate(scope_evals):
+            recording_url = None
+            if i < len(scope_sessions):
+                recording_url = scope_sessions[i].recording_url
+            elif scope_sessions:
+                recording_url = scope_sessions[-1].recording_url
+            eval_recording_map[ev.id] = recording_url
+
+    course_evaluations: List[DashboardEvaluation] = []
+    
+    for ev in evals:
+        course_title = "Unknown Course"
+        chapter_title = "Course Capstone"
+        
+        if ev.chapter_id:
+            chapter = db.query(Chapter).filter(Chapter.id == ev.chapter_id).first()
+            if chapter:
+                chapter_title = chapter.title
+                course = db.query(Course).filter(Course.id == chapter.course_id).first()
+                if course:
+                    course_title = course.title
+        elif ev.course_id:
+            course = db.query(Course).filter(Course.id == ev.course_id).first()
+            if course:
+                course_title = course.title
+        else:
+            # Fallback/guess from interview sessions
+            session = db.query(InterviewSession).filter(
+                InterviewSession.user_id == ev.user_id,
+                InterviewSession.chapter_id.is_(None),
+                InterviewSession.course_id.isnot(None),
+                InterviewSession.created_at <= ev.created_at
+            ).order_by(InterviewSession.created_at.desc()).first()
+            if session and session.course:
+                course_title = session.course.title
+
+        recording_url = eval_recording_map.get(ev.id)
+
+        course_evaluations.append(DashboardEvaluation(
+            chapter=chapter_title,
+            course=course_title,
+            score=int(ev.overall_score),
+            passed=ev.passed,
+            date=ev.created_at.strftime("%Y-%m-%d"),
+            technical=int(ev.technical_score),
+            communication=int(ev.communication_score),
+            confidence=int(ev.confidence_score),
+            recording_url=recording_url
+        ))
+        
+    return course_evaluations[::-1]
+
+
 @router.get("/courses/{course_id}/evaluations", response_model=List[DashboardEvaluation])
 def get_course_evaluations(
     course_id: str,

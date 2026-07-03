@@ -377,6 +377,7 @@ class DashboardEvaluation(BaseModel):
     technical: int
     communication: int
     confidence: int
+    recording_url: Optional[str] = None
 
 
 class DashboardStats(BaseModel):
