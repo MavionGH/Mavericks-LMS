@@ -15,7 +15,7 @@ from app.database import get_db
 from app.models.models import (
     Chapter, Course, Evaluation, InterviewSession, User, UserRole, Enrollment,
 )
-from app.schemas.schemas import TeacherScoreRequest, CourseResponse
+from app.schemas.schemas import CourseResponse
 from app.auth.dependencies import require_teacher
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,6 @@ def _owned_course_ids(db: Session, current_user: User) -> set:
 def list_interview_recordings(
     student_id: Optional[str] = None,
     course_id: Optional[str] = None,
-    ungraded: Optional[bool] = False,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_teacher),
 ):
@@ -61,9 +60,7 @@ def list_interview_recordings(
 
     if student_id:
         query = query.filter(InterviewSession.user_id == student_id)
-        
-    if ungraded:
-        query = query.filter(InterviewSession.teacher_score.is_(None))
+
 
     sessions = query.order_by(InterviewSession.created_at.desc()).all()
 
@@ -107,146 +104,11 @@ def list_interview_recordings(
             "scope": "module" if s.chapter_id else "course",
             "overall_score": round(evaluation.overall_score) if evaluation else None,
             "passed": evaluation.passed if evaluation else None,
-            "teacher_score": s.teacher_score,
+
         })
 
     return results
 
-
-@router.get("/ungraded-courses", response_model=List[CourseResponse])
-def list_ungraded_courses(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_teacher),
-):
-    """
-    List published courses by this teacher (or all for admins)
-    that have at least one ungraded interview session.
-    """
-    course_query = db.query(Course).options(
-        joinedload(Course.chapters),
-        joinedload(Course.enrollments)
-    ).filter(Course.is_published == True)
-    
-    if current_user.role != UserRole.ADMIN:
-        course_query = course_query.filter(Course.teacher_id == current_user.id)
-        
-    courses = course_query.all()
-    
-    ungraded_sessions = (
-        db.query(InterviewSession)
-        .options(joinedload(InterviewSession.chapter))
-        .filter(
-            InterviewSession.recording_url.isnot(None),
-            InterviewSession.teacher_score.is_(None)
-        )
-        .all()
-    )
-    
-    validated_courses = []
-    for c in courses:
-        ungraded_student_ids = set()
-        for s in ungraded_sessions:
-            if s.course_id == c.id:
-                ungraded_student_ids.add(s.user_id)
-            elif s.chapter and s.chapter.course_id == c.id:
-                ungraded_student_ids.add(s.user_id)
-        if ungraded_student_ids:
-            res_val = CourseResponse.model_validate(c)
-            res_val.student_count = len(ungraded_student_ids)
-            validated_courses.append(res_val)
-            
-    return validated_courses
-
-
-@router.get("/ungraded-students")
-def list_ungraded_students(
-    course_id: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_teacher),
-):
-    """
-    List students enrolled in course_id who have ungraded interviews for this course.
-    """
-    owned = _owned_course_ids(db, current_user)
-    if course_id not in owned:
-        raise HTTPException(status_code=403, detail="Not authorized to access this course")
-        
-    ungraded_sessions = (
-        db.query(InterviewSession)
-        .options(joinedload(InterviewSession.chapter))
-        .filter(
-            InterviewSession.recording_url.isnot(None),
-            InterviewSession.teacher_score.is_(None)
-        )
-        .all()
-    )
-    
-    student_ids = set()
-    for s in ungraded_sessions:
-        if s.course_id == course_id:
-            student_ids.add(s.user_id)
-        elif s.chapter and s.chapter.course_id == course_id:
-            student_ids.add(s.user_id)
-            
-    if not student_ids:
-        return []
-        
-    course = db.query(Course).filter(Course.id == course_id).first()
-    if not course:
-        raise HTTPException(status_code=404, detail="Course not found")
-        
-    students = db.query(User).filter(User.id.in_(list(student_ids))).all()
-    
-    results = []
-    for s in students:
-        results.append({
-            "id": s.id,
-            "name": s.name,
-            "email": s.email,
-            "courses": [{"id": course.id, "title": course.title}]
-        })
-    return results
-
-
-@router.post("/recordings/{session_id}/score")
-def evaluate_interview(
-    session_id: str,
-    data: TeacherScoreRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_teacher),
-):
-    """Save or update the teacher-assigned evaluation score for a student's interview."""
-    session = (
-        db.query(InterviewSession)
-        .options(
-            joinedload(InterviewSession.chapter).joinedload(Chapter.course),
-            joinedload(InterviewSession.course),
-        )
-        .filter(InterviewSession.id == session_id)
-        .first()
-    )
-    if not session:
-        raise HTTPException(status_code=404, detail="Interview session not found")
-
-    # Resolve course to check ownership
-    if session.chapter and session.chapter.course:
-        course = session.chapter.course
-    else:
-        course = session.course
-
-    if not course:
-        raise HTTPException(status_code=400, detail="Associated course not found")
-
-    owned = _owned_course_ids(db, current_user)
-    if course.id not in owned:
-        raise HTTPException(status_code=403, detail="Not authorized to evaluate this course's interviews")
-
-    if data.score < 0 or data.score > 100:
-        raise HTTPException(status_code=400, detail="Score must be between 0 and 100")
-
-    session.teacher_score = data.score
-    db.commit()
-    return {"message": "Score updated successfully", "teacher_score": session.teacher_score}
 
 
 @router.get("/students")

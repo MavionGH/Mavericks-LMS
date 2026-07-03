@@ -59,10 +59,13 @@ export default function LoginPage() {
     const initGoogleSignIn = () => {
       if (typeof window !== "undefined" && window.google) {
         try {
-          google.accounts.id.initialize({
-            client_id: process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || "1234567890-placeholder.apps.googleusercontent.com",
-            callback: (resp) => googleCallbackRef.current(resp),
-          });
+          if (!window.__googleInitialized) {
+            google.accounts.id.initialize({
+              client_id: process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || "1234567890-placeholder.apps.googleusercontent.com",
+              callback: (resp) => googleCallbackRef.current(resp),
+            });
+            window.__googleInitialized = true;
+          }
           google.accounts.id.renderButton(
             document.getElementById("google-signin-button"),
             { 

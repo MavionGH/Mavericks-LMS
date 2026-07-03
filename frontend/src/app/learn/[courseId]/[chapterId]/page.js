@@ -246,7 +246,7 @@ function LearnPage() {
             </div>
           </aside>
 
-          <main className="content-area" style={{ padding: "40px 48px", maxWidth: "900px" }}>
+          <main className="content-area">
             <span className="badge badge-accent" style={{ marginBottom: "8px" }}>
               MODULE {String((viewingChapter.order_index ?? 0) + 1).padStart(2, "0")}
             </span>
@@ -396,7 +396,7 @@ function LearnPage() {
                     <table>
                       <thead>
                         <tr>
-                          <th>Track Course</th><th>AI Score</th><th>Teacher Score</th><th>Status</th><th>Date</th>
+                          <th>Track Course</th><th>AI Score</th><th>Status</th><th>Date</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -421,7 +421,6 @@ function LearnPage() {
                                 {e.score}%
                               </button>
                             </td>
-                            <td className="mono">{e.teacher_score !== null && e.teacher_score !== undefined ? `${e.teacher_score}%` : "—"}</td>
                             <td><span className={`badge ${e.passed ? "badge-success" : "badge-danger"}`}>{e.passed ? "PASSED" : "FAILED"}</span></td>
                             <td style={{ color: "var(--text-muted)" }}>{e.date}</td>
                           </tr>
