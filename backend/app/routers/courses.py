@@ -94,13 +94,16 @@ def list_courses(
     """Public — lists all courses published by an approved teacher."""
     query_results = db.query(
         Course,
-        func.count(Chapter.id).label("chapter_count")
+        func.count(Chapter.id).label("chapter_count"),
+        User.name.label("teacher_name")
     ).outerjoin(
         Chapter, Course.id == Chapter.course_id
+    ).outerjoin(
+        User, Course.teacher_id == User.id
     ).filter(
         Course.is_published == True,
     ).group_by(
-        Course.id
+        Course.id, User.name
     ).all()
 
     # Fetch user's enrollments if logged in
@@ -111,7 +114,7 @@ def list_courses(
         enrollments_dict = {e.course_id: e.status for e in user_enrollments}
 
     result = []
-    for c, count in query_results:
+    for c, count, teacher_name in query_results:
         enroll_status = enrollments_dict.get(c.id, None)
         result.append(CourseListResponse(
             id=c.id,
@@ -120,6 +123,7 @@ def list_courses(
             thumbnail=c.thumbnail,
             is_published=c.is_published,
             chapter_count=count,
+            teacher_name=teacher_name,
             enrollment_status=enroll_status.value if enroll_status else None
         ))
     return result
