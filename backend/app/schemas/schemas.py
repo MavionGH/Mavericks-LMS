@@ -374,7 +374,6 @@ class DashboardEvaluation(BaseModel):
     technical: int
     communication: int
     confidence: int
-    teacher_score: Optional[int] = None
 
 
 class DashboardStats(BaseModel):
@@ -384,8 +383,4 @@ class DashboardStats(BaseModel):
     earned_credentials: int
     enrolled_courses: List[DashboardCourse]
 
-
-# ─── TEACHER EVALUATION ───
-class TeacherScoreRequest(BaseModel):
-    score: int
 

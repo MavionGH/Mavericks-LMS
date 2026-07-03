@@ -7,16 +7,16 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 
 export default function LoginPage() {
-  const [email, setEmail]       = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError]       = useState("");
-  const [loading, setLoading]   = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
   // Google OAuth specific states
   const [googleCredential, setGoogleCredential] = useState("");
-  const [showRoleModal, setShowRoleModal]       = useState(false);
-  const [roleLoading, setRoleLoading]           = useState(false);
-  const [selectedRole, setSelectedRole]         = useState(null); // 'student' | 'teacher'
+  const [showRoleModal, setShowRoleModal] = useState(false);
+  const [roleLoading, setRoleLoading] = useState(false);
+  const [selectedRole, setSelectedRole] = useState(null); // 'student' | 'teacher'
 
   const { login, loginWithGoogle, user, loading: authLoading } = useAuth();
   const router = useRouter();
@@ -59,15 +59,18 @@ export default function LoginPage() {
     const initGoogleSignIn = () => {
       if (typeof window !== "undefined" && window.google) {
         try {
-          google.accounts.id.initialize({
-            client_id: process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || "1234567890-placeholder.apps.googleusercontent.com",
-            callback: (resp) => googleCallbackRef.current(resp),
-          });
+          if (!window.__googleInitialized) {
+            google.accounts.id.initialize({
+              client_id: process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || "1234567890-placeholder.apps.googleusercontent.com",
+              callback: (resp) => googleCallbackRef.current(resp),
+            });
+            window.__googleInitialized = true;
+          }
           google.accounts.id.renderButton(
             document.getElementById("google-signin-button"),
-            { 
-              theme: "outline", 
-              size: "large", 
+            {
+              theme: "outline",
+              size: "large",
               width: "100%",
               text: "signin_with",
               shape: "rectangular"
@@ -132,8 +135,8 @@ export default function LoginPage() {
   return (
     <>
       <Navbar />
-      <Script 
-        src="https://accounts.google.com/gsi/client" 
+      <Script
+        src="https://accounts.google.com/gsi/client"
         strategy="afterInteractive"
       />
       <div
@@ -144,8 +147,8 @@ export default function LoginPage() {
           <div style={{ textAlign: "center", marginBottom: "32px" }}>
             <div style={{ display: 'flex', justifyContent: 'center', marginBottom: "12px" }}>
               <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--brand)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
-                <path d="M6 12v5c0 2 2 3 6 3s6-1 6-3v-5"/>
+                <path d="M22 10v6M2 10l10-5 10 5-10 5z" />
+                <path d="M6 12v5c0 2 2 3 6 3s6-1 6-3v-5" />
               </svg>
             </div>
             <h1 style={{ fontSize: "22px", fontWeight: "700", color: "var(--text-title)", marginBottom: "6px", letterSpacing: "-0.01em" }}>
@@ -260,7 +263,7 @@ export default function LoginPage() {
 
             <div style={{ display: "flex", flexDirection: "column", gap: "16px", marginBottom: "28px" }}>
               {/* Student Role Card */}
-              <button 
+              <button
                 onClick={() => setSelectedRole("student")}
                 disabled={roleLoading}
                 className={`role-card-btn ${selectedRole === "student" ? "active-student" : ""}`}
@@ -319,7 +322,7 @@ export default function LoginPage() {
               </button>
 
               {/* Teacher Role Card */}
-              <button 
+              <button
                 onClick={() => setSelectedRole("teacher")}
                 disabled={roleLoading}
                 className={`role-card-btn ${selectedRole === "teacher" ? "active-teacher" : ""}`}
@@ -410,7 +413,7 @@ export default function LoginPage() {
             </button>
 
             <div>
-              <button 
+              <button
                 onClick={() => { setShowRoleModal(false); setSelectedRole(null); }}
                 disabled={roleLoading}
                 style={{

@@ -163,24 +163,6 @@ def get_course_evaluations(
             if course:
                 course_title = course.title
                 
-            # Get matching interview session to fetch teacher_score
-            from app.models.models import InterviewSession
-            session_query = db.query(InterviewSession).filter(
-                InterviewSession.user_id == ev.user_id
-            )
-            if ev.chapter_id:
-                session_query = session_query.filter(InterviewSession.chapter_id == ev.chapter_id)
-            else:
-                session_query = session_query.filter(InterviewSession.chapter_id.is_(None))
-                if getattr(ev, "course_id", None):
-                    session_query = session_query.filter(InterviewSession.course_id == ev.course_id)
-                    
-            matching_session = session_query.filter(
-                InterviewSession.created_at <= ev.created_at
-            ).order_by(InterviewSession.created_at.desc()).first()
-            
-            t_score = matching_session.teacher_score if matching_session else None
-
             course_evaluations.append(DashboardEvaluation(
                 chapter=chapter_title,
                 course=course_title,
@@ -189,8 +171,7 @@ def get_course_evaluations(
                 date=ev.created_at.strftime("%Y-%m-%d"),
                 technical=int(ev.technical_score),
                 communication=int(ev.communication_score),
-                confidence=int(ev.confidence_score),
-                teacher_score=int(t_score) if t_score is not None else None
+                confidence=int(ev.confidence_score)
             ))
             
     return course_evaluations

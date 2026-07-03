@@ -387,3 +387,96 @@ def list_all_courses(
         }
         for c in courses
     ]
+
+
+@router.get("/students/{student_id}/interviews")
+def list_student_interviews(
+    student_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Admin retrieves all finished interviews/sessions for a student, paired with correct evaluations."""
+    from app.models.models import InterviewSession, Evaluation
+    from collections import defaultdict
+
+    # Fetch all finished sessions (with recordings)
+    sessions = (
+        db.query(InterviewSession)
+        .options(
+            joinedload(InterviewSession.chapter),
+            joinedload(InterviewSession.course),
+        )
+        .filter(
+            InterviewSession.user_id == student_id,
+            InterviewSession.recording_url.isnot(None)
+        )
+        .order_by(InterviewSession.created_at.asc())
+        .all()
+    )
+
+    # Fetch all evaluations for the student
+    evals = (
+        db.query(Evaluation)
+        .filter(Evaluation.user_id == student_id)
+        .order_by(Evaluation.created_at.asc())
+        .all()
+    )
+
+    # Group evaluations by chapter_id or course_id (capstone)
+    evals_by_scope = defaultdict(list)
+    for ev in evals:
+        if ev.chapter_id:
+            evals_by_scope[f"chapter_{ev.chapter_id}"].append(ev)
+        elif ev.course_id:
+            evals_by_scope[f"course_{ev.course_id}"].append(ev)
+
+    # Group sessions to assign the correct evaluation by chronological index
+    sessions_by_scope = defaultdict(list)
+    for s in sessions:
+        if s.chapter_id:
+            sessions_by_scope[f"chapter_{s.chapter_id}"].append(s)
+        else:
+            course_id_actual = s.course_id if s.course_id else (s.chapter.course_id if s.chapter else None)
+            if course_id_actual:
+                sessions_by_scope[f"course_{course_id_actual}"].append(s)
+
+    # Create a map from session ID to evaluation
+    session_eval_map = {}
+    for scope, scope_sessions in sessions_by_scope.items():
+        scope_evals = evals_by_scope.get(scope, [])
+        for idx, s in enumerate(scope_sessions):
+            # Match by chronological index
+            if idx < len(scope_evals):
+                session_eval_map[s.id] = scope_evals[idx]
+            elif len(scope_evals) > 0:
+                # Fallback to the latest evaluation if there's an index mismatch
+                session_eval_map[s.id] = scope_evals[-1]
+
+    # Re-sort sessions by newest first for display
+    sessions_sorted = sorted(sessions, key=lambda s: s.created_at, reverse=True)
+
+    results = []
+    for s in sessions_sorted:
+        chapter_title = s.chapter.title if s.chapter else "Course Capstone"
+        course_title = s.course.title if s.course else (s.chapter.course.title if s.chapter and s.chapter.course else "Unknown")
+        course_id_actual = s.course_id if s.course_id else (s.chapter.course_id if s.chapter else None)
+
+        ev = session_eval_map.get(s.id)
+
+        results.append({
+            "id": s.id,
+            "chapter_id": s.chapter_id,
+            "chapter_title": chapter_title,
+            "course_id": course_id_actual,
+            "course_title": course_title,
+            "recording_url": s.recording_url,
+            "created_at": s.created_at.isoformat(),
+            "evaluation": {
+                "score": ev.overall_score if ev else None,
+                "passed": ev.passed if ev else None,
+            } if ev else None
+        })
+
+    return results
+
+

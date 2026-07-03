@@ -188,7 +188,6 @@ class InterviewSession(Base):
     # Public R2 URL of the full screen+audio recording of the interview, uploaded
     # by the browser when the session ends. Null until the upload completes.
     recording_url = Column(String(500), nullable=True)
-    teacher_score = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User")

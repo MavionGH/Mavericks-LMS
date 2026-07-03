@@ -25,6 +25,48 @@ function LearnPage() {
   const [selectedEval, setSelectedEval] = useState(null);
   const [syllabusExpanded, setSyllabusExpanded] = useState(false);
 
+  const [hasPlayedVideo, setHasPlayedVideo] = useState(false);
+  const [videoPlayError, setVideoPlayError] = useState("");
+  const [videoSaving, setVideoSaving] = useState(false);
+  const [videoSuccessMsg, setVideoSuccessMsg] = useState("");
+  const [articleSaving, setArticleSaving] = useState(false);
+  const [articleSuccessMsg, setArticleSuccessMsg] = useState("");
+
+  useEffect(() => {
+    // Reset play detection state when the chapter changes
+    setHasPlayedVideo(false);
+    setVideoPlayError("");
+  }, [params.chapterId]);
+
+  useEffect(() => {
+    const handleMessage = (event) => {
+      if (event.origin.includes("youtube.com")) {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.event === "onStateChange" && data.info === 1) {
+            setHasPlayedVideo(true);
+          }
+        } catch (e) {}
+      }
+    };
+
+    const handleBlur = () => {
+      setTimeout(() => {
+        if (document.activeElement && document.activeElement.tagName === "IFRAME") {
+          setHasPlayedVideo(true);
+        }
+      }, 150);
+    };
+
+    window.addEventListener("message", handleMessage);
+    window.addEventListener("blur", handleBlur);
+
+    return () => {
+      window.removeEventListener("message", handleMessage);
+      window.removeEventListener("blur", handleBlur);
+    };
+  }, []);
+
   useEffect(() => {
     if (activeTab === "interviews" && evaluations === null) {
       setLoadingEvals(true);
@@ -109,14 +151,44 @@ function LearnPage() {
 
   const markVideoWatched = async () => {
     if (!enrollment) return;
-    const res = await authFetch(`/api/enrollment/progress/${enrollment.id}/video-watched`, { method: "PUT" });
-    if (res.ok) setEnrollment((e) => ({ ...e, video_watched: true }));
+    if (!hasPlayedVideo) {
+      setVideoPlayError("Watch the video first");
+      setTimeout(() => {
+        setVideoPlayError("");
+      }, 3000);
+      return;
+    }
+    setVideoPlayError("");
+    setVideoSaving(true);
+    try {
+      const res = await authFetch(`/api/enrollment/progress/${enrollment.id}/video-watched`, { method: "PUT" });
+      if (res.ok) {
+        setEnrollment((e) => ({ ...e, video_watched: true }));
+        setVideoSuccessMsg("Saved successfully!");
+        setTimeout(() => setVideoSuccessMsg(""), 3000);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setVideoSaving(false);
+    }
   };
 
   const markArticleRead = async () => {
     if (!enrollment) return;
-    const res = await authFetch(`/api/enrollment/progress/${enrollment.id}/article-read`, { method: "PUT" });
-    if (res.ok) setEnrollment((e) => ({ ...e, article_read: true }));
+    setArticleSaving(true);
+    try {
+      const res = await authFetch(`/api/enrollment/progress/${enrollment.id}/article-read`, { method: "PUT" });
+      if (res.ok) {
+        setEnrollment((e) => ({ ...e, article_read: true }));
+        setArticleSuccessMsg("Saved successfully!");
+        setTimeout(() => setArticleSuccessMsg(""), 3000);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setArticleSaving(false);
+    }
   };
 
   if (loading) {
@@ -246,7 +318,7 @@ function LearnPage() {
             </div>
           </aside>
 
-          <main className="content-area" style={{ padding: "40px 48px", maxWidth: "900px" }}>
+          <main className="content-area">
             <span className="badge badge-accent" style={{ marginBottom: "8px" }}>
               MODULE {String((viewingChapter.order_index ?? 0) + 1).padStart(2, "0")}
             </span>
@@ -281,6 +353,7 @@ function LearnPage() {
                     <video
                       src={viewingChapter.youtube_url}
                       controls
+                      onPlay={() => setHasPlayedVideo(true)}
                       style={{ width: "100%", height: "100%", objectFit: "contain" }}
                     />
                   ) : embedUrl ? (
@@ -299,9 +372,25 @@ function LearnPage() {
                 </div>
                 {isCurrentChapter && (
                   !videoWatched ? (
-                    <button className="btn btn-secondary" onClick={markVideoWatched} style={{ marginTop: "16px" }}>
-                      Mark video as watched
-                    </button>
+                    <div style={{ marginTop: "16px" }}>
+                      <button 
+                        className="btn btn-secondary" 
+                        onClick={markVideoWatched}
+                        disabled={videoSaving}
+                      >
+                        {videoSaving ? "Saving..." : "Mark video as watched"}
+                      </button>
+                      {videoPlayError && (
+                        <p style={{ color: "var(--color-danger)", fontSize: "13px", marginTop: "8px", fontWeight: "600" }}>
+                          ⚠️ {videoPlayError}
+                        </p>
+                      )}
+                      {videoSuccessMsg && (
+                        <p style={{ color: "var(--color-success)", fontSize: "13px", marginTop: "8px", fontWeight: "600" }}>
+                          ✓ {videoSuccessMsg}
+                        </p>
+                      )}
+                    </div>
                   ) : (
                     <div className="badge badge-success" style={{ marginTop: "16px" }}>✓ Video completed</div>
                   )
@@ -316,7 +405,20 @@ function LearnPage() {
                 {isCurrentChapter && (
                   <div style={{ marginTop: "24px" }}>
                     {!articleRead ? (
-                      <button className="btn btn-secondary" onClick={markArticleRead}>Complete documentation</button>
+                      <div>
+                        <button 
+                          className="btn btn-secondary" 
+                          onClick={markArticleRead}
+                          disabled={articleSaving}
+                        >
+                          {articleSaving ? "Saving..." : "Complete documentation"}
+                        </button>
+                        {articleSuccessMsg && (
+                          <p style={{ color: "var(--color-success)", fontSize: "13px", marginTop: "8px", fontWeight: "600" }}>
+                            ✓ {articleSuccessMsg}
+                          </p>
+                        )}
+                      </div>
                     ) : (
                       <div className="badge badge-success">✓ Documentation completed</div>
                     )}
@@ -396,7 +498,7 @@ function LearnPage() {
                     <table>
                       <thead>
                         <tr>
-                          <th>Track Course</th><th>AI Score</th><th>Teacher Score</th><th>Status</th><th>Date</th>
+                          <th>Track Course</th><th>AI Score</th><th>Status</th><th>Date</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -421,7 +523,6 @@ function LearnPage() {
                                 {e.score}%
                               </button>
                             </td>
-                            <td className="mono">{e.teacher_score !== null && e.teacher_score !== undefined ? `${e.teacher_score}%` : "—"}</td>
                             <td><span className={`badge ${e.passed ? "badge-success" : "badge-danger"}`}>{e.passed ? "PASSED" : "FAILED"}</span></td>
                             <td style={{ color: "var(--text-muted)" }}>{e.date}</td>
                           </tr>
