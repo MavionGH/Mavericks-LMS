@@ -88,6 +88,8 @@ function TeacherPanel() {
 
   // Student interview recordings (screen + voice, stored in R2)
   const [recordings, setRecordings] = useState([]);
+  const [publishingCourses, setPublishingCourses] = useState({});
+  const [publishSuccessMsg, setPublishSuccessMsg] = useState({});
   const [recordingsLoading, setRecordingsLoading] = useState(false);
   const [recordingsError, setRecordingsError] = useState("");
 
@@ -564,8 +566,25 @@ function TeacherPanel() {
   };
 
   const handlePublish = async (courseId, isPublished) => {
-    await authFetch(`/api/courses/${courseId}/publish`, { method: "PUT" });
-    loadCourses();
+    setPublishingCourses((prev) => ({ ...prev, [courseId]: true }));
+    setPublishSuccessMsg((prev) => ({ ...prev, [courseId]: "" }));
+    try {
+      const res = await authFetch(`/api/courses/${courseId}/publish`, { method: "PUT" });
+      if (res.ok) {
+        setPublishSuccessMsg((prev) => ({ ...prev, [courseId]: isPublished ? "Unpublished successfully!" : "Published successfully!" }));
+        setTimeout(() => {
+          setPublishSuccessMsg((prev) => ({ ...prev, [courseId]: "" }));
+        }, 3000);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.detail || "Action failed.");
+      }
+    } catch (e) {
+      alert("Error: " + e.message);
+    } finally {
+      setPublishingCourses((prev) => ({ ...prev, [courseId]: false }));
+      loadCourses();
+    }
   };
 
   const handleDeleteCourse = async (courseId) => {
@@ -817,26 +836,41 @@ function TeacherPanel() {
                           {c.is_published ? "Live" : "Draft"}
                         </span>
                       </td>
-                      <td style={{ display: "flex", gap: "8px", flexWrap: "wrap" }} onClick={(e) => e.stopPropagation()}>
-                        <button
-                          className="btn btn-primary btn-sm"
-                          onClick={() => {
-                            setSelectedCourseForStudents(c);
-                            loadCourseStudents(c.id);
-                          }}
-                        >
-                          View Students
-                        </button>
-                        <button className="btn btn-secondary btn-sm" onClick={() => { setSelectedCourseId(c.id); setActiveTab("modules"); }}>Add Modules</button>
-                        <button className="btn btn-secondary btn-sm" onClick={() => handlePublish(c.id, c.is_published)}>
-                          {c.is_published ? "Unpublish" : "Publish"}
-                        </button>
-                        <button
-                          className="btn btn-danger btn-sm"
-                          onClick={() => handleDeleteCourse(c.id)}
-                        >
-                          Delete
-                        </button>
+                      <td style={{ display: "flex", gap: "8px", flexWrap: "wrap", flexDirection: "column", alignItems: "flex-start" }} onClick={(e) => e.stopPropagation()}>
+                        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                          <button
+                            className="btn btn-primary btn-sm"
+                            onClick={() => {
+                              setSelectedCourseForStudents(c);
+                              loadCourseStudents(c.id);
+                            }}
+                          >
+                            View Students
+                          </button>
+                          <button className="btn btn-secondary btn-sm" onClick={() => { setSelectedCourseId(c.id); setActiveTab("modules"); }}>Add Modules</button>
+                          <button
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => handlePublish(c.id, c.is_published)}
+                            disabled={publishingCourses[c.id]}
+                          >
+                            {publishingCourses[c.id] ? (
+                              c.is_published ? "Unpublishing..." : "Publishing..."
+                            ) : (
+                              c.is_published ? "Unpublish" : "Publish"
+                            )}
+                          </button>
+                          <button
+                            className="btn btn-danger btn-sm"
+                            onClick={() => handleDeleteCourse(c.id)}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                        {publishSuccessMsg[c.id] && (
+                          <div style={{ color: "var(--color-success)", fontSize: "11px", fontWeight: "600", marginTop: "4px" }}>
+                            ✓ {publishSuccessMsg[c.id]}
+                          </div>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -1250,17 +1284,7 @@ function TeacherPanel() {
                       <div style={{ fontWeight: "700", fontSize: "14px" }}>{String(i + 1).padStart(2, "0")} — {ch.title}</div>
                       <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px", wordBreak: "break-all" }}>{ch.youtube_url}</div>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "4px" }}>
-                        <div style={{ fontSize: "11px" }}>
-                          {hasTranscript ? (
-                            <span style={{ color: "var(--color-success)" }}>
-                              ✓ Transcript ready ({wordCount.toLocaleString()} words)
-                            </span>
-                          ) : (
-                            <span style={{ color: "var(--color-warning)" }}>
-                              ⏳ Transcript pending — click Refresh after a moment
-                            </span>
-                          )}
-                        </div>
+
                         <button
                           type="button"
                           className="btn btn-danger btn-sm"
