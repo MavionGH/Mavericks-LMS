@@ -40,17 +40,17 @@ function CertificatesPage() {
   return (
     <>
       <Navbar />
-      <div className="page-container no-print" style={{ backgroundColor: "var(--bg-canvas)", minHeight: "calc(100vh - 64px)" }}>
+      <div className="page-container" style={{ backgroundColor: "var(--bg-canvas)", minHeight: "calc(100vh - 64px)" }}>
         <div className="container" style={{ padding: "48px 32px" }}>
           
-          <div className="section-header" style={{ textAlign: "center", marginBottom: "40px" }}>
+          <div className="section-header no-print" style={{ textAlign: "center", marginBottom: "40px" }}>
             <span className="badge badge-accent" style={{ marginBottom: "8px" }}>VERIFIED CREDENTIALS</span>
             <h2>Issued Certificates</h2>
             <p>Cryptographically verifiable documents certifying module and oral track completions.</p>
           </div>
 
           {loading ? (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "200px", gap: "12px" }}>
+            <div className="no-print" style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "200px", gap: "12px" }}>
               <div style={{
                 width: 32,
                 height: 32,
@@ -62,7 +62,7 @@ function CertificatesPage() {
               <p style={{ color: "var(--text-muted)", fontSize: "14px", fontFamily: "JetBrains Mono" }}>Retrieving credentials...</p>
             </div>
           ) : certs.length === 0 ? (
-            <div className="card" style={{ padding: "48px 32px", textAlign: "center", maxWidth: 640, margin: "0 auto 40px", backgroundColor: "var(--bg-surface)" }}>
+            <div className="card no-print" style={{ padding: "48px 32px", textAlign: "center", maxWidth: 640, margin: "0 auto 40px", backgroundColor: "var(--bg-surface)" }}>
               <div style={{ display: 'flex', justifyContent: 'center', marginBottom: "16px" }}>
                 <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
@@ -78,7 +78,7 @@ function CertificatesPage() {
           ) : (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 2.5fr", gap: "32px", alignItems: "start", marginBottom: "48px" }}>
               {/* Left pane: Certificates list */}
-              <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+              <div className="no-print" style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                 <h3 style={{ fontSize: "12px", fontWeight: "700", color: "var(--text-title)", textTransform: "uppercase", letterSpacing: "0.08em", fontFamily: "JetBrains Mono", marginBottom: "4px" }}>
                   Earned ({certs.length})
                 </h3>
@@ -98,12 +98,12 @@ function CertificatesPage() {
                       }}
                       onMouseEnter={(e) => {
                         if (!isSelected) {
-                          e.currentTarget.style.borderColor = "var(--brand)";
+                           e.currentTarget.style.borderColor = "var(--brand)";
                         }
                       }}
                       onMouseLeave={(e) => {
                         if (!isSelected) {
-                          e.currentTarget.style.borderColor = "var(--border-muted)";
+                           e.currentTarget.style.borderColor = "var(--border-muted)";
                         }
                       }}
                     >
@@ -164,7 +164,7 @@ function CertificatesPage() {
                   </div>
                 </div>
 
-                <div>
+                <div className="no-print">
                   <button onClick={handlePrint} className="btn btn-primary" style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <polyline points="6 9 6 2 18 2 18 9" />
@@ -179,7 +179,7 @@ function CertificatesPage() {
           )}
 
           {/* Catalog CTA */}
-          <div className="card" style={{ padding: "32px", textAlign: "center", maxWidth: 640, margin: "0 auto", backgroundColor: "var(--bg-surface)" }}>
+          <div className="card no-print" style={{ padding: "32px", textAlign: "center", maxWidth: 640, margin: "0 auto", backgroundColor: "var(--bg-surface)" }}>
             <div style={{ display: 'flex', justifyContent: 'center', marginBottom: "12px" }}>
               <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--brand)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
@@ -198,26 +198,56 @@ function CertificatesPage() {
       {/* CSS for print media layout */}
       <style jsx global>{`
         @media print {
-          body {
+          @page {
+            size: A4 landscape;
+            margin: 0;
+          }
+          html, body {
+            margin: 0 !important;
+            padding: 0 !important;
+            width: 297mm !important;
+            height: 210mm !important;
             background: #ffffff !important;
             color: #000000 !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
           }
-          .no-print {
-            display: none !important;
-          }
-          .navbar {
+          .no-print, .navbar, header, footer, button, .btn, nav {
             display: none !important;
           }
           #printable-certificate {
-            border: 8px double #000000 !important;
+            display: flex !important;
+            flex-direction: column !important;
+            justify-content: center !important;
+            align-items: center !important;
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            width: 297mm !important;
+            height: 210mm !important;
+            box-sizing: border-box !important;
+            margin: 0 !important;
+            padding: 35mm 20mm !important;
+            border: 12px double var(--brand, #4f46e5) !important;
+            background: #ffffff !important;
             box-shadow: none !important;
-            position: absolute;
-            left: 50%;
-            top: 50%;
-            transform: translate(-50%, -50%);
-            width: 100% !important;
-            max-width: 100% !important;
-            padding: 40px !important;
+            border-radius: 0 !important;
+            z-index: 9999999 !important;
+          }
+          #printable-certificate * {
+            color: #1e293b !important;
+          }
+          #printable-certificate h2, 
+          #printable-certificate h3,
+          #printable-certificate .cert-name,
+          #printable-certificate strong {
+            color: #0f172a !important;
+          }
+          #printable-certificate .cert-subtitle {
+            color: #4f46e5 !important;
+          }
+          #printable-certificate span {
+            color: #64748b !important;
           }
         }
       `}</style>

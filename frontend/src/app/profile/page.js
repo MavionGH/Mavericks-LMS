@@ -149,7 +149,7 @@ function ProfilePage() {
           
           {/* Segmented Tab Swapper for Students */}
           {user?.role === "student" && (
-            <div style={{
+            <div className="no-print" style={{
               display: "flex",
               background: "var(--bg-surface)",
               padding: "4px",
@@ -362,7 +362,7 @@ function ProfilePage() {
               }}
             >
               {/* Section header */}
-              <div style={{
+              <div className="no-print" style={{
                 padding: "20px 28px",
                 borderBottom: "1px solid var(--border-muted)",
                 display: "flex",
@@ -423,7 +423,7 @@ function ProfilePage() {
                   <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
                     {/* Certificate list */}
                     {certs.length > 1 && (
-                      <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <div className="no-print" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                         <p style={{ fontSize: "11px", fontWeight: "700", color: "var(--text-muted)", fontFamily: "JetBrains Mono", textTransform: "uppercase", marginBottom: "4px" }}>
                           Earned ({certs.length})
                         </p>
@@ -508,7 +508,7 @@ function ProfilePage() {
 
                     {/* Actions */}
                     {selectedCert && (
-                      <div style={{ display: "flex", gap: "12px", justifyContent: "center" }}>
+                      <div className="no-print" style={{ display: "flex", gap: "12px", justifyContent: "center" }}>
                         <button onClick={handlePrint} className="btn btn-primary btn-sm" style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}>
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <polyline points="6 9 6 2 18 2 18 9" />
@@ -540,21 +540,57 @@ function ProfilePage() {
       {/* Print styles */}
       <style jsx global>{`
         @media print {
-          body { background: #ffffff !important; color: #000000 !important; }
-          .navbar, .no-print { display: none !important; }
-          #printable-certificate {
-            border: 8px double #000000 !important;
-            box-shadow: none !important;
-            position: fixed;
-            left: 50%; top: 50%;
-            transform: translate(-50%, -50%);
-            width: 100% !important; max-width: 100% !important;
-            padding: 40px !important;
+          @page {
+            size: A4 landscape;
+            margin: 0;
           }
-          *:not(#printable-certificate):not(#printable-certificate *) {
+          html, body {
+            margin: 0 !important;
+            padding: 0 !important;
+            width: 297mm !important;
+            height: 210mm !important;
+            background: #ffffff !important;
+            color: #000000 !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+          }
+          .no-print, .navbar, header, footer, button, .btn, nav {
             display: none !important;
           }
-          #printable-certificate { display: block !important; }
+          #printable-certificate {
+            display: flex !important;
+            flex-direction: column !important;
+            justify-content: center !important;
+            align-items: center !important;
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            width: 297mm !important;
+            height: 210mm !important;
+            box-sizing: border-box !important;
+            margin: 0 !important;
+            padding: 35mm 20mm !important;
+            border: 12px double var(--brand, #4f46e5) !important;
+            background: #ffffff !important;
+            box-shadow: none !important;
+            border-radius: 0 !important;
+            z-index: 9999999 !important;
+          }
+          #printable-certificate * {
+            color: #1e293b !important;
+          }
+          #printable-certificate h2, 
+          #printable-certificate h3,
+          #printable-certificate .cert-name,
+          #printable-certificate strong {
+            color: #0f172a !important;
+          }
+          #printable-certificate .cert-subtitle {
+            color: #4f46e5 !important;
+          }
+          #printable-certificate span {
+            color: #64748b !important;
+          }
         }
         @keyframes spin {
           from { transform: rotate(0deg); }
