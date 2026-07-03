@@ -745,6 +745,40 @@ def _grade_transcript_gemini(system: str, user: str) -> dict | None:
         return None
 
 
+# Minimum word count for a student turn to be treated as a genuine answer
+# when computing the completion ratio. Turns shorter than this (e.g. "hi",
+# "yes", "okay") are greetings/acknowledgements and must not inflate the ratio.
+_MIN_ANSWER_WORDS = 4
+
+# Matches turns that are ONLY a greeting/filler word — excluded from answer
+# count regardless of word-count (e.g. "hello there how are you" is 5 words
+# but is not an interview answer).
+_GREETING_ONLY_RE = re.compile(
+    r"^\s*(hi+|hello+|hey+|good\s+(morning|afternoon|evening|day)|howdy|"
+    r"sup|yo|greetings|how are you|how do you do|"
+    r"thanks?|thank you|bye|goodbye|ok(ay)?|sure|ready|yes|no|"
+    r"i('m| am) ready|let'?s (go|begin|start))\s*[!.,]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _is_genuine_answer(text: str) -> bool:
+    """Return True when a student transcript turn looks like a real answer attempt.
+
+    Excludes greetings, single-word acknowledgements, and very short utterances
+    so they don't inflate the completion ratio used for score scaling.
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    words = t.split()
+    if len(words) < _MIN_ANSWER_WORDS:
+        return False
+    if _GREETING_ONLY_RE.match(t):
+        return False
+    return True
+
+
 def score_realtime_interview(
     course_name: str,
     context: str,
@@ -756,23 +790,26 @@ def score_realtime_interview(
 
     The Realtime path is free-flowing — the browser talks directly to Gemini,
     so there are no server-side pause/filler metrics. We therefore grade purely
-    on the transcript: count the candidate's spoken turns and let the grading
-    model assess technical depth, communication, and confidence, then scale the
-    result by how much of the ``total_questions``-question interview the
-    candidate actually completed — mirroring ``llm_score_interview``'s
-    completion_ratio — so an interview that ended early (e.g. only 2 of 5
-    questions genuinely answered) can't max out 100 just because those 2
-    answers happened to be good. Returns the same shape as
-    ``llm_score_interview`` so the Evaluation record and dashboards are
-    unchanged.
+    on the transcript: count the candidate's genuine answer turns (filtering out
+    short greetings/chitchat) and let the grading model assess technical depth,
+    communication, and confidence, then scale the result by how much of the
+    ``total_questions``-question interview the candidate actually completed
+    — mirroring ``llm_score_interview``'s completion_ratio — so an interview
+    that ended early can't max out 100 just because the few answers were good.
+    Returns the same shape as ``llm_score_interview`` so the Evaluation record
+    and dashboards are unchanged.
 
     Grading is attempted in order: Gemini first (primary grader),
     then OpenAI if Gemini is unavailable or fails. If neither model is
     reachable, an honest zero-score result is returned (no fabricated scores).
     """
-    student_turns = [m for m in (transcript or []) if m.get("speaker") == "student" and m.get("text", "").strip()]
-    num_answers = len(student_turns)
-    if num_answers == 0:
+    all_student_turns = [m for m in (transcript or []) if m.get("speaker") == "student" and m.get("text", "").strip()]
+    # Count only substantive answer turns — greetings/chitchat must not inflate
+    # the completion ratio and make a partial interview appear complete.
+    genuine_answers = [t for t in all_student_turns if _is_genuine_answer(t.get("text", ""))]
+    num_answers = len(genuine_answers)
+
+    if not all_student_turns:
         return {
             "technical_score": 0.0,
             "communication_score": 0.0,
@@ -784,43 +821,52 @@ def score_realtime_interview(
             "suggested_review": [f"Please complete the oral assessment for {course_name}."],
         }
 
-    # Cap at 1.0 — extra chitchat/follow-up turns beyond total_questions should
-    # never boost the score above what a full, complete interview would earn.
+    # Cap at 1.0 — extra follow-up turns beyond total_questions should never
+    # boost the score above what a complete interview would earn.
     completion_ratio = min(num_answers / max(total_questions, 1), 1.0)
 
     dialogue = "\n".join(f"{m['speaker'].upper()}: {m['text']}" for m in transcript)
 
+    unanswered = max(total_questions - num_answers, 0)
+    unanswered_note = (
+        f" The candidate answered {num_answers} of {total_questions} questions; "
+        f"the remaining {unanswered} question(s) were not answered and must be "
+        "reflected in lower scores — do NOT compensate or inflate scores for them."
+        if unanswered > 0 else
+        f" The candidate answered all {total_questions} questions."
+    )
+
     system = (
         "You are an expert evaluator for technical oral assessments. "
-        "Score the candidate's spoken interview against the course material. "
+        "Score the candidate's spoken interview HONESTLY and STRICTLY against the "
+        "course material — your scores must reflect the actual quality of what was said, "
+        "not how much the candidate tried or how long they spoke. "
         "Return ONLY valid JSON with keys: "
         "technical_score (0-100), communication_score (0-100), "
         "confidence_score (0-100), strengths (array of strings), "
         "weak_areas (array of strings), "
         "suggested_review (array of strings referencing course topics to re-study). "
         "Each score MUST be between 0 and 100 inclusive — never exceed 100. "
-        "Be honest, accurate, objective, and unbiased. "
-        "Scoring guidelines: "
-        "technical_score = accuracy and depth of answers vs the course material; "
-        "communication_score = clarity, structure, and coherence of speech; "
-        "confidence_score = decisiveness and fluency, penalising heavy hesitation, "
-        "filler words, and 'I don't know' non-answers. "
-        "Judge every score strictly on the "
-        "actual substance of what the candidate said, never on the length, "
-        "fluency, or volume of an answer by itself — a long, confident-sounding "
-        "answer that is technically wrong or vague must score low on technical_score "
-        "regardless of how well it is delivered. "
-        "Be strict and critical — reserve 90-100 for genuinely thorough, precise, "
-        "well-explained answers. A brief, vague, or partially correct answer should "
-        "score well below 90, even if not technically wrong. Grade ONLY the quality "
-        f"of what the candidate actually said in the {num_answers} answer(s) below; "
-        "do not try to compensate for the interview being short, and do not reward "
-        "rambling or padded answers that lack real content."
+        "Scoring guidelines (apply these strictly and without bias): "
+        "technical_score = accuracy and depth of answers vs the course material — "
+        "an answer that is factually wrong, vague, or only tangentially related "
+        "MUST score below 50 regardless of how confidently it was delivered; "
+        "communication_score = clarity, structure, and coherence of speech — "
+        "rambling, disorganised, or filler-heavy answers score low; "
+        "confidence_score = decisiveness and fluency — penalise heavy hesitation, "
+        "filler words (um, uh, like, you know), and outright 'I don't know' non-answers. "
+        "Reserve 90-100 for genuinely thorough, precise, well-explained answers. "
+        "A brief, vague, or partially correct answer should score well below 90 "
+        "even if not technically wrong. "
+        "Do NOT reward length — a concise, accurate answer beats a long, padded one."
+        + unanswered_note
     )
     user = (
         f"Course: {course_name}\n\n"
         f"Reference material:\n{context[:4000]}\n\n"
-        f"Interview transcript ({num_answers} candidate answers):\n{dialogue}"
+        f"Full interview transcript "
+        f"({num_answers} genuine answer(s) out of {total_questions} questions):\n"
+        f"{dialogue}"
     )
 
     # Gemini first, then OpenAI fallback

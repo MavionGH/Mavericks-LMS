@@ -41,6 +41,18 @@ const AI_VOICE_HOLD_MS = 600;
 // student's answers) so a free-flowing realtime session can never run long.
 const MAX_QUESTIONS = 5;
 
+// Once Mav has finished speaking, Gemini Live never speaks again on its own —
+// so if the student says nothing at all, the interview would sit in silence
+// forever. After this long with no sound from either side we send Mav a hidden
+// system note (clientContent — never transcribed as student speech) telling
+// her to re-engage.
+const SILENCE_NUDGE_MS = 5000;
+// On the first nudge for a question Mav gently checks in and repeats the
+// question; from this many consecutive unanswered nudges onward she is told to
+// treat the question as skipped and move on, so a fully silent student can
+// never stall the interview indefinitely.
+const MAX_SILENCE_NUDGES = 2;
+
 // Mav calls this tool exactly once per genuine answer or explicit skip — never
 // for a repeat/clarify request or off-topic chitchat (see the system
 // instructions built server-side in realtime.py). It's the ONLY signal we use
@@ -268,6 +280,8 @@ export default function InterviewRoom({
   const turnToolFiredRef = useRef(false);     // did mark_question_answered fire this turn?
   const autoEndTriggeredRef = useRef(false);  // guard: auto-finish fires once
   const teardownDoneRef = useRef(false);
+  const silenceTimerRef = useRef(null);       // pending silence-nudge timeout
+  const silenceNudgeCountRef = useRef(0);     // consecutive nudges on the current question
   const [shouldEnd, setShouldEnd] = useState(false); // 5 answers given → wrap up
 
   // ── Whole-session recorder refs (independent of the realtime mic) ──
@@ -362,6 +376,8 @@ export default function InterviewRoom({
         if (call.name === "mark_question_answered") {
           turnToolFiredRef.current = true;
           answersRef.current += 1;
+          // New question coming up — the silence-nudge escalation starts over.
+          silenceNudgeCountRef.current = 0;
         }
         // Every tool call must get a response or Gemini stalls generation —
         // acknowledge unconditionally, even for an unexpected function name.
@@ -405,6 +421,8 @@ export default function InterviewRoom({
       const studentText = userTextRef.current.trim();
       userTextRef.current = "";
       if (studentText) {
+        // The student spoke (or typed) — cancel the silence-nudge escalation.
+        silenceNudgeCountRef.current = 0;
         pushTranscript({ speaker: "student", text: studentText });
         // Progress is normally driven solely by the mark_question_answered tool
         // call above. But LLM tool-calling isn't 100% reliable — verified live,
@@ -457,6 +475,7 @@ export default function InterviewRoom({
   const teardownRealtime = useCallback(() => {
     if (teardownDoneRef.current) return;
     teardownDoneRef.current = true;
+    if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
     if (voiceIntervalRef.current) { clearInterval(voiceIntervalRef.current); voiceIntervalRef.current = null; }
     if (micProcessorRef.current) { try { micProcessorRef.current.disconnect(); } catch { /* noop */ } micProcessorRef.current = null; }
     if (micCtxRef.current) { try { micCtxRef.current.close(); } catch { /* noop */ } micCtxRef.current = null; }
@@ -604,6 +623,34 @@ export default function InterviewRoom({
       tlog("sendTypedAnswer failed: " + (e?.message || e));
     }
     setStatus("AI PROCESSING");
+  }, []);
+
+  // Send a hidden system note to Mav when the student has said nothing for
+  // SILENCE_NUDGE_MS ms after her last spoken turn. Sent as clientContent (not
+  // audio) so it never leaks into input transcription or counts as student speech.
+  // After MAX_SILENCE_NUDGES consecutive nudges on the same question, Mav is told
+  // to treat the question as skipped so the interview can still progress.
+  const sendSilenceNudge = useCallback(() => {
+    const session = sessionRef.current;
+    if (!session || teardownDoneRef.current) return;
+    const count = silenceNudgeCountRef.current + 1;
+    silenceNudgeCountRef.current = count;
+    const nudgeText = count >= MAX_SILENCE_NUDGES
+      ? "[SYSTEM: The student has not responded after multiple prompts. " +
+        "Please acknowledge warmly, silently call mark_question_answered to count " +
+        "this question as skipped, then ask the next question or say goodbye if " +
+        "all questions have been answered.]"
+      : "[SYSTEM: The student has not spoken yet. Gently check if they are still " +
+        "there and re-ask the current question.]";
+    try {
+      session.sendClientContent({
+        turns: [{ role: "user", parts: [{ text: nudgeText }] }],
+        turnComplete: true,
+      });
+      setStatus("AI PROCESSING");
+    } catch (e) {
+      tlog("sendSilenceNudge failed: " + (e?.message || e));
+    }
   }, []);
 
   // Toggle the local mic on/off (mute). Realtime streams continuously, so muting
@@ -959,6 +1006,28 @@ export default function InterviewRoom({
     autoEndTriggeredRef.current = true;
     handleEndCall();
   }, [shouldEnd, aiVoiceActive, isFinished, handleEndCall]);
+
+  // Arm a silence-nudge timer whenever the ball is in the student's court. If
+  // the student speaks, status flips to "LISTENING" which cancels this effect
+  // automatically. If Mav starts speaking, aiVoiceActive flips to true which
+  // also cancels it. The timer itself calls sendSilenceNudge, which prompts Mav
+  // to re-engage or (after MAX_SILENCE_NUDGES) to skip and move on.
+  useEffect(() => {
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+    if (status !== "WAITING FOR YOU" || aiVoiceActive || isFinished || !sessionId) return;
+    const timer = setTimeout(() => {
+      silenceTimerRef.current = null;
+      sendSilenceNudge();
+    }, SILENCE_NUDGE_MS);
+    silenceTimerRef.current = timer;
+    return () => {
+      clearTimeout(timer);
+      if (silenceTimerRef.current === timer) silenceTimerRef.current = null;
+    };
+  }, [status, aiVoiceActive, isFinished, sessionId, sendSilenceNudge]);
 
   // ── Consent gate (screen share + camera + mic are mandatory) ────────────────────
   if (!hasStarted) {
