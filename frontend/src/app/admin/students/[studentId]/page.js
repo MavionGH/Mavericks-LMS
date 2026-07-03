@@ -5,6 +5,14 @@ import { useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
 import { useParams, useRouter } from "next/navigation";
 
+// Player for interview recordings.
+// MediaRecorder (WebM) files lack a duration header, so the browser reports
+// duration = Infinity (or a bogus small value) and the seek bar is non-functional.
+// Fix: on metadata load, if duration is missing/broken, seek to a huge timestamp so
+// the browser scans to the end and learns the real duration, then seek back to 0.
+// We use the `seeked` event (fires once when the seek actually lands) NOT `timeupdate`
+// (which fires continuously during normal playback and would snap the bar back on
+// every tick). A guard ref prevents re-running once already fixed.
 function RecordingPlayer({ src }) {
   const ref = useRef(null);
   const fixedRef = useRef(false);
@@ -12,14 +20,20 @@ function RecordingPlayer({ src }) {
   const handleLoadedMetadata = () => {
     const v = ref.current;
     if (!v || fixedRef.current) return;
-    if (v.duration === Infinity || Number.isNaN(v.duration)) {
+    // Infinity = no duration header; NaN = file unreadable.
+    const dur = v.duration;
+    if (dur === Infinity || Number.isNaN(dur)) {
       fixedRef.current = true;
-      const onUpdate = () => {
-        v.removeEventListener("timeupdate", onUpdate);
-        v.currentTime = 0; // snap back to the start now that duration is known
+
+      // `seeked` fires exactly once when the browser finishes the seek operation,
+      // meaning the full file has been parsed and the real duration is now known.
+      const onSeeked = () => {
+        v.removeEventListener("seeked", onSeeked);
+        v.currentTime = 0; // snap back to the start
       };
-      v.addEventListener("timeupdate", onUpdate);
-      v.currentTime = 1e101; // jump past the end → browser resolves the duration
+      v.addEventListener("seeked", onSeeked);
+      // Seeking past the end forces the browser to read the entire file.
+      v.currentTime = 1e101;
     }
   };
 
