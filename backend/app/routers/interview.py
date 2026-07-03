@@ -754,73 +754,8 @@ def _finalize_session(db: Session, session: InterviewSession, user: User) -> Int
 
         # Update enrollment and issue certificate if passed
         if evaluation.get("passed", False):
-            from app.models.models import EnrollmentStatus
-            enrollment = db.query(Enrollment).filter(
-                Enrollment.user_id == user.id,
-                Enrollment.course_id == session.course_id
-            ).first()
-            if enrollment and enrollment.status != EnrollmentStatus.COMPLETED:
-                enrollment.status = EnrollmentStatus.CAPSTONE_READY
-
-            # ── Certificate eligibility: student must have passed ALL chapter modules ──
-            # A certificate requires:
-            #   1. Passing the final oral (capstone) interview  ← already checked above
-            #   2. Having passed every chapter/module evaluation in the course
-            all_chapters = (
-                db.query(Chapter)
-                .filter(Chapter.course_id == session.course_id)
-                .all()
-            )
-            all_modules_passed = True
-            if all_chapters:
-                for chapter in all_chapters:
-                    # Quizzes are the primary progression mechanism; chapter-level
-                    # oral interviews are optional. Accept either as proof of completion.
-                    passed_quiz = db.query(QuizAttempt).filter(
-                        QuizAttempt.user_id == user.id,
-                        QuizAttempt.chapter_id == chapter.id,
-                        QuizAttempt.passed == True,
-                    ).first()
-                    passed_interview = db.query(Evaluation).filter(
-                        Evaluation.user_id == user.id,
-                        Evaluation.chapter_id == chapter.id,
-                        Evaluation.passed == True,
-                    ).first()
-                    if not passed_quiz and not passed_interview:
-                        all_modules_passed = False
-                        logger.info(
-                            "Certificate NOT issued for user=%s course=%s — "
-                            "chapter '%s' has no passing quiz or evaluation",
-                            user.id, session.course_id, chapter.title,
-                        )
-                        break
-            else:
-                # No chapters in course — don't block the cert
-                all_modules_passed = True
-
-            if all_modules_passed:
-                # Update enrollment status to COMPLETED since both capstone and all modules are complete
-                if enrollment:
-                    enrollment.status = EnrollmentStatus.COMPLETED
-                    from datetime import datetime
-                    enrollment.completed_at = datetime.utcnow()
-                # Check if certificate already exists
-                existing_cert = db.query(Certificate).filter(
-                    Certificate.user_id == user.id,
-                    Certificate.course_id == session.course_id
-                ).first()
-                if not existing_cert:
-                    import secrets
-                    cert = Certificate(
-                        user_id=user.id,
-                        course_id=session.course_id,
-                        verify_code=f"MVK-{secrets.token_hex(4).upper()}"
-                    )
-                    db.add(cert)
-                    logger.info(
-                        "Certificate issued for user=%s course=%s",
-                        user.id, session.course_id,
-                    )
+            from app.services.certificate import issue_certificate_if_eligible
+            issue_certificate_if_eligible(db, user.id, session.course_id)
 
 
         session.status = "completed"

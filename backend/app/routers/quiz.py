@@ -150,21 +150,8 @@ def submit_quiz(
                     next_chapter_unlocked = True
                 else:
                     # Passed the final module — all learning content is complete.
-                    from app.models.models import Evaluation, EvaluationType
-                    passed_capstone = db.query(Evaluation).filter(
-                        Evaluation.user_id == current_user.id,
-                        Evaluation.course_id == chapter.course_id,
-                        Evaluation.type == EvaluationType.CAPSTONE,
-                        Evaluation.passed == True
-                    ).first() is not None
-                    
-                    if passed_capstone:
-                        enrollment.status = EnrollmentStatus.COMPLETED
-                        enrollment.completed_at = datetime.utcnow()
-                        course_completed = True
-                    else:
-                        enrollment.status = EnrollmentStatus.CAPSTONE_READY
-                        course_completed = False
+                    from app.services.certificate import issue_certificate_if_eligible
+                    course_completed = issue_certificate_if_eligible(db, current_user.id, chapter.course_id)
 
     db.commit()
     db.refresh(attempt)

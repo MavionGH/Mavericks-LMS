@@ -152,6 +152,14 @@ const GREETING_RE = /^\s*(hi+|hello+|hey+|good (morning|afternoon|evening|day)|h
 const PERSONAL_RE = /\b(how are you|how do you do|you doing|are you (ok|good|fine|well|alright)|what('s| is) up|how'?s it going)\b/i;
 const OFFTOPIC_RE = /\b(weather|the time|what time|today'?s date|who (are|is) you|your name|tell me a joke|joke|news|sports|music|movie|song|recipe|food|cook|are you (real|human|a robot))\b/i;
 
+// Regex that matches one or more characters from a non-Latin script block
+// (Arabic, Urdu, Hindi/Devanagari, CJK, Cyrillic, etc.). A word is "non-Latin"
+// if it contains at least one such character. If the majority of words in the
+// student's turn are non-Latin, the fallback heuristic treats it as a foreign-
+// language utterance and does NOT count it as progress — only Mav's own
+// `mark_question_answered` tool call can advance the counter for those turns.
+const NON_LATIN_CHAR_RE = /[\u0600-\u06FF\u0750-\u077F\u0900-\u097F\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF\u0400-\u04FF\u0080-\u024F]/;
+
 function looksLikeAnsweredTurn(text) {
   const t = (text || "").trim().toLowerCase();
   if (!t) return false;
@@ -164,7 +172,16 @@ function looksLikeAnsweredTurn(text) {
   // _is_obvious_answer fast-path, and matters most on the LAST question: a
   // false "answered" here would otherwise end the interview right then.
   if (t.split(/\s+/).length < 6) return false;
-  return true; // substantive, non-chitchat text -> treat as a genuine answer
+  // If the majority of words contain non-Latin/non-ASCII characters (e.g. Urdu,
+  // Arabic, Hindi, Chinese) treat it as a foreign-language utterance. The system
+  // instructions tell Mav to NOT call `mark_question_answered` in this case, so
+  // the fallback heuristic must also refuse to count it. This prevents a student
+  // speaking a long sentence in another language from accidentally advancing the
+  // question counter via the fallback path.
+  const words = t.split(/\s+/);
+  const nonLatinCount = words.filter((w) => NON_LATIN_CHAR_RE.test(w)).length;
+  if (nonLatinCount > words.length / 2) return false; // majority non-Latin → skip
+  return true; // substantive English text → treat as a genuine answer
 }
 
 // Mav is told (see realtime.py's wrap-up instructions) to include a clear
