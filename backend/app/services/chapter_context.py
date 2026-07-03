@@ -27,13 +27,9 @@ def build_chapter_context(
     A per-module interview only concerns ONE chapter, whose article + transcript
     already fit comfortably in the prompt, so we use the raw text directly.
 
-    This deliberately performs NO embedding/vector search: the embedding model is
-    a ~90 MB lazy-loaded download whose first call dominated interview startup,
-    and the pgvector `chunk_embeddings` table it queried is never populated (module
-    content is indexed into Pinecone at upload time, not pgvector) — so retrieval
-    always fell back to this same raw text anyway. Skipping it is behaviour-
-    preserving and removes the cold-load entirely. `query`/`db` are accepted for
-    backward compatibility and intentionally unused.
+    This performs NO embedding/vector search — the raw module text is the single
+    source of truth. `query`/`db` are accepted for backward compatibility and
+    intentionally unused.
     """
     parts = [
         f"# Module: {chapter.title}",
@@ -78,25 +74,10 @@ def build_course_context(
     Build a context string spanning ALL modules of a course for the final,
     course-wide AI interview.
 
-    Strategy:
-      1. Semantic search across the course's Pinecone namespace (every module's
-         embedded video transcript + article) for the chunks most relevant to
-         the query.
-      2. Fall back to a length-bounded concatenation of every module's raw
-         article + transcript when vector search is unavailable or returns
-         nothing — so the interviewer always has the full course knowledge base.
+    Uses a length-bounded concatenation of every module's raw article +
+    transcript, so the interviewer always has the full course knowledge base.
+    No embedding/vector search is performed — the raw module text is the single
+    source of truth. `query`/`db` are accepted for backward compatibility and
+    intentionally unused.
     """
-    try:
-        from app.services.pinecone_store import query_course_content
-        chunks = query_course_content(course.id, query or course.title)
-        if chunks:
-            return (
-                f"# Course: {course.title}\n\n"
-                "The following are the most relevant excerpts drawn from across "
-                "all modules of this course (video transcripts and articles):\n\n"
-                + "\n\n---\n\n".join(chunks)
-            )
-    except Exception as exc:
-        logger.warning("Course-wide vector search failed, using raw fallback: %s", exc)
-
     return _raw_course_context(course)

@@ -49,6 +49,8 @@ def get_quiz(
 
     # Always regenerate — questions are NOT cached, so each request is different.
     # Built directly from the module's video transcript + article (no vector search).
+    # Variety across attempts comes from randomized prompt facets + temperature
+    # inside llm_generate_quiz (no per-student question history is stored).
     raw_qs = llm_generate_quiz(
         chapter.title, chapter.video_transcript, chapter.article_content
     )
@@ -88,7 +90,7 @@ def submit_quiz(
             detail="No quiz questions found — call GET /api/quiz/{chapter_id} first",
         )
 
-    threshold = chapter.course.pass_threshold if chapter.course else 70
+    threshold = (chapter.course.quiz_threshold if chapter.course else None) or 70
     questions = cached.questions
     correct_count = 0
     result_items = []

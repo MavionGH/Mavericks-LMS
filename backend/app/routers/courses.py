@@ -3,7 +3,7 @@ import os
 import shutil
 import tempfile
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, File, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, BackgroundTasks
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload, load_only
 from typing import List, Optional
@@ -17,7 +17,6 @@ from app.schemas.schemas import (
 from app.auth.dependencies import get_current_user, require_teacher, require_admin, get_optional_current_user
 from app.services.transcript import fetch_youtube_transcript
 from app.services.storage import upload_video_to_r2
-from app.services.pinecone_store import index_module_content
 from app.services.video_transcription import transcribe_video_bytes
 from app.services.document_parser import extract_text_from_document
 
@@ -149,6 +148,7 @@ def create_course(
         description=data.description,
         thumbnail=data.thumbnail,
         pass_threshold=data.pass_threshold,
+        quiz_threshold=data.quiz_threshold,
         teacher_id=current_user.id,
     )
     db.add(course)
@@ -173,6 +173,7 @@ def update_course(
     course.description = data.description
     course.thumbnail = data.thumbnail
     course.pass_threshold = data.pass_threshold
+    course.quiz_threshold = data.quiz_threshold
     db.commit()
     db.refresh(course)
     return CourseResponse.model_validate(course)
@@ -253,7 +254,6 @@ def get_chapter(chapter_id: str, db: Session = Depends(get_db)):
 def add_chapter(
     course_id: str,
     data: ChapterCreate,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_teacher),
 ):
@@ -281,13 +281,9 @@ def add_chapter(
     db.commit()
     db.refresh(chapter)
 
-    # Embed transcript + article with OpenAI and store the vectors in
-    # Pinecone (the single source of truth for vectors). The transcript/article
-    # text itself stays in Supabase (the Chapter row above) for quiz generation.
-    background_tasks.add_task(
-        index_module_content,
-        course_id, chapter.id, data.article_content, video_transcript,
-    )
+    # The chapter's transcript + article text is persisted on the Chapter row
+    # above; it is the single source of truth used directly for quiz generation
+    # and interviews (no embedding / vector indexing step).
 
     return ChapterResponse.model_validate(chapter)
 
@@ -296,7 +292,6 @@ def add_chapter(
 def update_chapter(
     chapter_id: str,
     data: ChapterCreate,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_teacher),
 ):
@@ -319,14 +314,9 @@ def update_chapter(
     chapter.video_transcript = video_transcript
     db.commit()
     db.refresh(chapter)
-    course_id = chapter.course_id
 
-    # Re-embed into Pinecone (vectors only live in Pinecone). The updated
-    # transcript/article text is already persisted on the Chapter row above.
-    background_tasks.add_task(
-        index_module_content,
-        course_id, chapter_id, data.article_content, video_transcript,
-    )
+    # The updated transcript/article text is persisted on the Chapter row above
+    # and used directly (no embedding / vector indexing step).
 
     return ChapterResponse.model_validate(chapter)
 
@@ -357,11 +347,39 @@ MAX_FILE_SIZE = 100 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv"}
 
 
+def _run_transcription_job(job_id: str, data: bytes, filename: str) -> None:
+    """Background worker: transcribe `data` and store the result under `job_id`.
+
+    transcribe_video_bytes never raises (returns None on any failure), but we
+    still guard so an unexpected error is surfaced to the poller as 'error'
+    rather than leaving the job stuck 'pending' forever.
+    """
+    from app.services.transcription_jobs import set_result, set_error
+    try:
+        text = transcribe_video_bytes(data, filename) or ""
+        set_result(job_id, text)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Async transcription job %s failed: %s", job_id, exc)
+        set_error(job_id, str(exc))
+
+
 @router.post("/upload-video")
 def upload_video(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    async_transcript: bool = False,
     current_user: User = Depends(require_teacher),
 ):
+    """Upload a module video to R2 and (by default) return its Whisper transcript.
+
+    Two modes:
+      • Synchronous (default): upload + transcription run concurrently and the
+        response includes {video_url, transcript}. Unchanged legacy behaviour.
+      • Async opt-in (?async_transcript=1): upload only, then return immediately
+        with {video_url, transcript: "", transcript_job_id}. Transcription runs
+        in the background; the client polls GET /transcript-status/{job_id}. This
+        makes the upload feel done in seconds regardless of video length.
+    """
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
@@ -375,12 +393,51 @@ def upload_video(
         raise HTTPException(status_code=400, detail="File is too large. Max size is 100MB.")
     file.file.seek(0)
 
-    url = upload_video_to_r2(file)
+    if async_transcript:
+        # Upload synchronously (the URL must be ready to return), then hand the
+        # already-read bytes to a background transcription job and return at once.
+        url = upload_video_to_r2(file)
+        from app.services.transcription_jobs import create_job
+        job_id = create_job()
+        background_tasks.add_task(_run_transcription_job, job_id, data, file.filename)
+        return {"video_url": url, "transcript": "", "transcript_job_id": job_id}
 
-    # Auto-generate the transcript from the uploaded video (OpenAI Whisper).
-    # Returns "" on any failure so the teacher can still fill it in manually.
-    transcript = transcribe_video_bytes(data, file.filename) or ""
+    # ── Synchronous path (default, unchanged response shape) ──
+    # The R2 upload (reads file.file) and the transcription (works from the
+    # in-memory `data`) are independent and both I/O-bound — ffmpeg is a
+    # subprocess and both R2 and Whisper are network calls, all of which release
+    # the GIL. Run them concurrently so the request waits ~max(upload, transcribe)
+    # instead of the sum.
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        upload_future = executor.submit(upload_video_to_r2, file)
+        transcribe_future = executor.submit(transcribe_video_bytes, data, file.filename)
+        # upload_video_to_r2 raises HTTPException on failure — .result() re-raises
+        # it here so the endpoint still returns the same 500. transcribe returns
+        # None on any failure (never raises), so the teacher can fill it in manually.
+        url = upload_future.result()
+        transcript = transcribe_future.result() or ""
+
     return {"video_url": url, "transcript": transcript}
+
+
+@router.get("/transcript-status/{job_id}")
+def transcript_status(
+    job_id: str,
+    current_user: User = Depends(require_teacher),
+):
+    """Poll the status of an async transcription job started by /upload-video.
+
+    Returns {status: "pending"|"done"|"error", transcript, error}. 404 once the
+    job is unknown or has expired (TTL) — the client should then fall back to
+    manual transcript entry.
+    """
+    from app.services.transcription_jobs import get_job
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Transcript job not found or expired")
+    return job
 
 
 # ─── ARTICLE DOCUMENT IMPORT ───

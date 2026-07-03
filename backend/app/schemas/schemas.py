@@ -91,7 +91,8 @@ class CourseCreate(BaseModel):
     title: str
     description: str
     thumbnail: Optional[str] = None
-    pass_threshold: int = 70
+    pass_threshold: int = 70   # interview / oral assessment pass %
+    quiz_threshold: int = 70   # quiz pass %
 
 
 class CourseResponse(BaseModel):
@@ -100,6 +101,7 @@ class CourseResponse(BaseModel):
     description: str
     thumbnail: Optional[str] = None
     pass_threshold: int
+    quiz_threshold: int = 70
     teacher_id: Optional[str] = None
     is_published: bool
     is_approved: bool = False
@@ -298,6 +300,7 @@ class InterviewResultResponse(BaseModel):
     transcript: list
     next_chapter_unlocked: bool = False
     chapter_title: str = ""
+    pass_threshold: int = 70   # interview pass % for this course
 
 
 class InterviewEligibilityResponse(BaseModel):

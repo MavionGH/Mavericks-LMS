@@ -6,14 +6,6 @@ from datetime import datetime
 import enum
 import uuid
 
-try:
-    from pgvector.sqlalchemy import Vector
-    from app.services.openai_config import EMBED_DIM
-    _embedding_type = Vector(EMBED_DIM)
-except ImportError:
-    from sqlalchemy import Text as _TextFallback
-    _embedding_type = _TextFallback()
-
 from app.database import Base
 
 
@@ -68,7 +60,8 @@ class Course(Base):
     title = Column(String(255), nullable=False)
     description = Column(Text, nullable=False)
     thumbnail = Column(String(500), nullable=True)
-    pass_threshold = Column(Integer, default=70)
+    pass_threshold = Column(Integer, default=70)   # interview / oral assessment pass %
+    quiz_threshold = Column(Integer, default=70)    # quiz pass %
     # teacher_id: owner of the course (nullable for backward-compat with existing rows)
     teacher_id = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     # is_published: teacher has submitted the course for review (their intent flag)
@@ -82,7 +75,6 @@ class Course(Base):
     chapters = relationship("Chapter", back_populates="course", order_by="Chapter.order_index", cascade="all, delete-orphan")
     enrollments = relationship("Enrollment", back_populates="course", cascade="all, delete-orphan")
     certificates = relationship("Certificate", back_populates="course", cascade="all, delete-orphan")
-    chunk_embeddings = relationship("ChunkEmbedding", back_populates="course", cascade="all, delete-orphan")
     interview_sessions = relationship("InterviewSession", back_populates="course", cascade="all, delete-orphan")
     evaluations = relationship("Evaluation", back_populates="course", cascade="all, delete-orphan")
 
@@ -115,7 +107,6 @@ class Chapter(Base):
     evaluations = relationship("Evaluation", back_populates="chapter", cascade="all, delete-orphan")
     quiz_attempts = relationship("QuizAttempt", back_populates="chapter", cascade="all, delete-orphan")
     quiz_question = relationship("QuizQuestion", back_populates="chapter", uselist=False, cascade="all, delete-orphan")
-    chunk_embeddings = relationship("ChunkEmbedding", back_populates="chapter", cascade="all, delete-orphan")
     interview_sessions = relationship("InterviewSession", back_populates="chapter", cascade="all, delete-orphan")
 
     @property
@@ -238,16 +229,3 @@ class Certificate(Base):
     course = relationship("Course", back_populates="certificates")
 
 
-# ─── CHUNK EMBEDDINGS (for RAG — denormalized course_id for cross-chapter queries) ───
-class ChunkEmbedding(Base):
-    __tablename__ = "chunk_embeddings"
-
-    id = Column(String, primary_key=True, default=generate_uuid)
-    chapter_id = Column(String, ForeignKey("chapters.id", ondelete="CASCADE"), nullable=False, index=True)
-    course_id = Column(String, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
-    chunk_text = Column(Text, nullable=False)
-    embedding = Column(_embedding_type, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    chapter = relationship("Chapter", back_populates="chunk_embeddings")
-    course = relationship("Course", back_populates="chunk_embeddings")

@@ -462,7 +462,7 @@ export default function InterviewRoom({
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     const ctx = new AudioCtx();
     micCtxRef.current = ctx;
-    if (ctx.state === "suspended") ctx.resume().catch(() => {});
+    if (ctx.state === "suspended") ctx.resume().catch(() => { });
     const source = ctx.createMediaStreamSource(stream);
     const processor = ctx.createScriptProcessor(4096, 1, 1);
     micProcessorRef.current = processor;
@@ -1051,7 +1051,7 @@ export default function InterviewRoom({
   }
 
   if (isFinished && results) {
-    const passThreshold = 70;
+    const passThreshold = results.pass_threshold ?? 70;
     return (
       <>
         <Navbar />
