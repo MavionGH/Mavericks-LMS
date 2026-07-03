@@ -1,10 +1,10 @@
-"""LLM wrapper — OpenAI (gpt-4o-mini for dialog/quiz, gpt-4o for grading),
-then rule-based scoring as a graceful fallback.
+"""LLM wrapper — OpenAI (gpt-4o-mini for dialog/quiz), Gemini + OpenAI for grading.
 
-score_realtime_interview() is the one exception: it grades the newer Gemini
-Realtime interview and uses a cheap Gemini text model instead (see
-gemini_config.py) — the older graph-based interview's grading below still
-runs on OpenAI via get_grading_llm().
+Interview grading (both llm_score_interview and score_realtime_interview)
+tries Gemini first, falls back to OpenAI if Gemini is unavailable or fails,
+and returns an honest zero-score result if neither model is reachable — no
+fabricated heuristic scores are ever produced. All scores are out of 100,
+clamped and validated by the backend via _finalize_llm_scores().
 """
 import json
 import logging
@@ -592,7 +592,6 @@ def llm_score_interview(
             "suggested_review": [f"Please complete the oral assessment for {chapter_title}."],
         }
 
-    llm = get_grading_llm()
     dialogue = "\n".join(
         f"{m['speaker'].upper()}: {m['text']}" for m in transcript
     )
@@ -606,57 +605,50 @@ def llm_score_interview(
         total_filler = sum(p.get("filler_word_count", 0) for p in pause_metrics)
         avg_filler = total_filler / len(pause_metrics)
 
-    if llm:
-        from langchain_core.messages import HumanMessage, SystemMessage
-        system = (
-            "You are an expert evaluator for technical oral assessments. "
-            "Score the student's interview performance based on the module content. "
-            f"Pass threshold is {pass_threshold}%. "
-            "Return ONLY valid JSON with keys: "
-            "technical_score (0-100), communication_score (0-100), "
-            "confidence_score (0-100), overall_score (0-100), passed (boolean), "
-            "strengths (array of strings), weak_areas (array of strings), "
-            "suggested_review (array of strings referencing module topics to re-study). "
-            "Scoring guidelines: "
-            "technical_score = accuracy and depth of answers vs module content; "
-            "communication_score = clarity, structure, and coherence of speech "
-            "(penalise heavily for excessive filler words); "
-            "confidence_score = penalise for filler words (um, uh, mhm, hmm, like, you know) "
-            "and long hesitation pauses — these directly signal uncertainty and poor preparation.\n"
-            f"IMPORTANT: The student has only answered {num_answers} out of 5 questions. "
-            "Unanswered questions must receive 0 marks. Pro-rate the technical, communication, "
-            "and confidence scores down to reflect the fraction of questions answered."
-        )
-        user = (
-            f"Module: {chapter_title}\n\n"
-            f"Reference content:\n{context[:4000]}\n\n"
-            f"Interview transcript:\n{dialogue}\n\n"
-            f"Speech quality metrics:\n"
-            f"- Avg hesitation pauses per answer: {avg_pause:.1f}\n"
-            f"- Avg response time: {avg_response:.0f} ms\n"
-            f"- Total filler words (um/uh/mhm/hmm/like/you know): {total_filler} "
-            f"(avg {avg_filler:.1f} per answer)\n"
-            "Filler words and long pauses must significantly reduce confidence_score and communication_score."
-        )
-        resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
-        result = _extract_json(resp.content)
-        
-        # Enforce proportional limit programmatically based on completion ratio
-        completion_ratio = num_answers / 5.0
-        result["technical_score"] = min(result.get("technical_score", 0.0), 100.0) * completion_ratio
-        result["communication_score"] = min(result.get("communication_score", 0.0), 100.0) * completion_ratio
-        result["confidence_score"] = min(result.get("confidence_score", 0.0), 100.0) * completion_ratio
+    completion_ratio = min(num_answers / 5.0, 1.0)
 
-        result["overall_score"] = round(
-            result.get("technical_score", 0) * 0.5
-            + result.get("communication_score", 0) * 0.3
-            + result.get("confidence_score", 0) * 0.2,
-            1,
-        )
-        result["passed"] = result["overall_score"] >= pass_threshold
-        return result
+    system = (
+        "You are an expert evaluator for technical oral assessments. "
+        "Score the student's interview performance based on the module content. "
+        "Return ONLY valid JSON with keys: "
+        "technical_score (0-100), communication_score (0-100), "
+        "confidence_score (0-100), "
+        "strengths (array of strings), weak_areas (array of strings), "
+        "suggested_review (array of strings referencing module topics to re-study). "
+        "Each score MUST be between 0 and 100 inclusive — never exceed 100. "
+        "Be honest, accurate, and objective. "
+        "Scoring guidelines: "
+        "technical_score = accuracy and depth of answers vs module content; "
+        "communication_score = clarity, structure, and coherence of speech "
+        "(penalise heavily for excessive filler words); "
+        "confidence_score = penalise for filler words (um, uh, mhm, hmm, like, you know) "
+        "and long hesitation pauses — these directly signal uncertainty and poor preparation.\n"
+        f"IMPORTANT: The student has only answered {num_answers} out of 5 questions. "
+        "Unanswered questions must receive 0 marks. Pro-rate the technical, communication, "
+        "and confidence scores down to reflect the fraction of questions answered."
+    )
+    user = (
+        f"Module: {chapter_title}\n\n"
+        f"Reference content:\n{context[:4000]}\n\n"
+        f"Interview transcript:\n{dialogue}\n\n"
+        f"Speech quality metrics:\n"
+        f"- Avg hesitation pauses per answer: {avg_pause:.1f}\n"
+        f"- Avg response time: {avg_response:.0f} ms\n"
+        f"- Total filler words (um/uh/mhm/hmm/like/you know): {total_filler} "
+        f"(avg {avg_filler:.1f} per answer)\n"
+        "Filler words and long pauses must significantly reduce confidence_score and communication_score."
+    )
 
-    return _fallback_score(transcript, pause_metrics, pass_threshold, chapter_title)
+    # Gemini first, then OpenAI fallback
+    result = _grade_transcript_gemini(system, user)
+    if result is None:
+        result = _grade_transcript_openai(system, user)
+
+    if result is not None:
+        return _finalize_llm_scores(result, completion_ratio, pass_threshold)
+
+    logger.warning("Both Gemini and OpenAI grading unavailable for module interview")
+    return _grading_unavailable(chapter_title)
 
 
 def _coerce_score(value, default: float = 0.0) -> float:
@@ -671,6 +663,86 @@ def _coerce_score(value, default: float = 0.0) -> float:
         except ValueError:
             return default
     return default
+
+
+def _finalize_llm_scores(result: dict, completion_ratio: float, pass_threshold: int) -> dict:
+    """Normalise a grader's raw scores on the backend so a model can never return
+    an out-of-range score or hallucinate a pass.
+
+    Each sub-score is coerced to a float, clamped to 0-100, then scaled by how
+    much of the interview was completed. overall_score is a 0.5/0.3/0.2 weighted
+    average of three values that are each already <=100, so it is itself always
+    within 0-100 and can never exceed 100. `passed` is always recomputed here
+    (overall_score >= pass_threshold) — never taken from the model.
+    """
+    result["technical_score"] = min(max(_coerce_score(result.get("technical_score")), 0.0), 100.0) * completion_ratio
+    result["communication_score"] = min(max(_coerce_score(result.get("communication_score")), 0.0), 100.0) * completion_ratio
+    result["confidence_score"] = min(max(_coerce_score(result.get("confidence_score")), 0.0), 100.0) * completion_ratio
+    result["overall_score"] = round(
+        result["technical_score"] * 0.5
+        + result["communication_score"] * 0.3
+        + result["confidence_score"] * 0.2,
+        1,
+    )
+    result["passed"] = result["overall_score"] >= pass_threshold
+    result.setdefault("strengths", [])
+    result.setdefault("weak_areas", [])
+    result.setdefault("suggested_review", [])
+    return result
+
+
+def _grading_unavailable(name: str) -> dict:
+    """Honest, un-scored result used ONLY when neither grader (Gemini, then
+    OpenAI) is reachable. No score is fabricated — everything is zero and not
+    passed — so a grading outage can never inflate, fake, or pass an assessment.
+    """
+    return {
+        "technical_score": 0.0,
+        "communication_score": 0.0,
+        "confidence_score": 0.0,
+        "overall_score": 0.0,
+        "passed": False,
+        "strengths": [],
+        "weak_areas": ["Automated grading was temporarily unavailable."],
+        "suggested_review": [
+            f"Grading could not be completed for {name}. Please retry the assessment."
+        ],
+    }
+
+
+def _grade_transcript_openai(system: str, user: str) -> dict | None:
+    """Try grading a transcript with the premium OpenAI model. Returns None on
+    any failure (no API key, request error, unparsable response) so the caller
+    can fall through to Gemini."""
+    llm = get_grading_llm()
+    if not llm:
+        return None
+    try:
+        from langchain_core.messages import HumanMessage, SystemMessage
+        resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+        return _extract_json(resp.content)
+    except Exception:
+        logger.exception("OpenAI grading failed")
+        return None
+
+
+def _grade_transcript_gemini(system: str, user: str) -> dict | None:
+    """Try grading a transcript with Gemini. Returns None on any failure so
+    the caller can fall through to the rule-based heuristic."""
+    client = _get_gemini_grading_client()
+    if not client:
+        return None
+    try:
+        from google.genai import types as genai_types
+        resp = client.models.generate_content(
+            model=GEMINI_GRADING_MODEL,
+            contents=user,
+            config=genai_types.GenerateContentConfig(system_instruction=system, temperature=0.3),
+        )
+        return _extract_json(resp.text)
+    except Exception:
+        logger.exception("Gemini grading failed")
+        return None
 
 
 def score_realtime_interview(
@@ -692,8 +764,11 @@ def score_realtime_interview(
     questions genuinely answered) can't max out 100 just because those 2
     answers happened to be good. Returns the same shape as
     ``llm_score_interview`` so the Evaluation record and dashboards are
-    unchanged. Uses a cheap Gemini text model (GEMINI_GRADING_MODEL) — separate
-    from the OpenAI grading model the older graph-based interview still uses.
+    unchanged.
+
+    Grading is attempted in order: Gemini first (primary grader),
+    then OpenAI if Gemini is unavailable or fails. If neither model is
+    reachable, an honest zero-score result is returned (no fabricated scores).
     """
     student_turns = [m for m in (transcript or []) if m.get("speaker") == "student" and m.get("text", "").strip()]
     num_answers = len(student_turns)
@@ -713,64 +788,51 @@ def score_realtime_interview(
     # never boost the score above what a full, complete interview would earn.
     completion_ratio = min(num_answers / max(total_questions, 1), 1.0)
 
-    client = _get_gemini_grading_client()
     dialogue = "\n".join(f"{m['speaker'].upper()}: {m['text']}" for m in transcript)
 
-    if client:
-        system = (
-            "You are an expert evaluator for technical oral assessments. "
-            "Score the candidate's spoken interview against the course material. "
-            f"Pass threshold is {pass_threshold}%. "
-            "Return ONLY valid JSON with keys: "
-            "technical_score (0-100), communication_score (0-100), "
-            "confidence_score (0-100), strengths (array of strings), "
-            "weak_areas (array of strings), "
-            "suggested_review (array of strings referencing course topics to re-study). "
-            "Scoring guidelines: "
-            "technical_score = accuracy and depth of answers vs the course material; "
-            "communication_score = clarity, structure, and coherence of speech; "
-            "confidence_score = decisiveness and fluency, penalising heavy hesitation, "
-            "filler words, and 'I don't know' non-answers. "
-            "Be strict and critical — reserve 90-100 for genuinely thorough, precise, "
-            "well-explained answers. A brief or partially correct answer should score "
-            "well below 90, even if not wrong. Grade ONLY the quality of what the "
-            f"candidate actually said in the {num_answers} answer(s) below; do not "
-            "try to compensate for the interview being short."
-        )
-        user = (
-            f"Course: {course_name}\n\n"
-            f"Reference material:\n{context[:4000]}\n\n"
-            f"Interview transcript ({num_answers} candidate answers):\n{dialogue}"
-        )
-        try:
-            from google.genai import types as genai_types
-            resp = client.models.generate_content(
-                model=GEMINI_GRADING_MODEL,
-                contents=user,
-                config=genai_types.GenerateContentConfig(system_instruction=system, temperature=0.3),
-            )
-            result = _extract_json(resp.text)
-            result["technical_score"] = min(max(_coerce_score(result.get("technical_score")), 0.0), 100.0) * completion_ratio
-            result["communication_score"] = min(max(_coerce_score(result.get("communication_score")), 0.0), 100.0) * completion_ratio
-            result["confidence_score"] = min(max(_coerce_score(result.get("confidence_score")), 0.0), 100.0) * completion_ratio
-            result["overall_score"] = round(
-                result["technical_score"] * 0.5
-                + result["communication_score"] * 0.3
-                + result["confidence_score"] * 0.2,
-                1,
-            )
-            result["passed"] = result["overall_score"] >= pass_threshold
-            result.setdefault("strengths", [])
-            result.setdefault("weak_areas", [])
-            result.setdefault("suggested_review", [])
-            return result
-        except Exception:
-            logger.exception("Gemini realtime grading failed — falling back to rule-based scoring")
+    system = (
+        "You are an expert evaluator for technical oral assessments. "
+        "Score the candidate's spoken interview against the course material. "
+        "Return ONLY valid JSON with keys: "
+        "technical_score (0-100), communication_score (0-100), "
+        "confidence_score (0-100), strengths (array of strings), "
+        "weak_areas (array of strings), "
+        "suggested_review (array of strings referencing course topics to re-study). "
+        "Each score MUST be between 0 and 100 inclusive — never exceed 100. "
+        "Be honest, accurate, objective, and unbiased. "
+        "Scoring guidelines: "
+        "technical_score = accuracy and depth of answers vs the course material; "
+        "communication_score = clarity, structure, and coherence of speech; "
+        "confidence_score = decisiveness and fluency, penalising heavy hesitation, "
+        "filler words, and 'I don't know' non-answers. "
+        "Judge every score strictly on the "
+        "actual substance of what the candidate said, never on the length, "
+        "fluency, or volume of an answer by itself — a long, confident-sounding "
+        "answer that is technically wrong or vague must score low on technical_score "
+        "regardless of how well it is delivered. "
+        "Be strict and critical — reserve 90-100 for genuinely thorough, precise, "
+        "well-explained answers. A brief, vague, or partially correct answer should "
+        "score well below 90, even if not technically wrong. Grade ONLY the quality "
+        f"of what the candidate actually said in the {num_answers} answer(s) below; "
+        "do not try to compensate for the interview being short, and do not reward "
+        "rambling or padded answers that lack real content."
+    )
+    user = (
+        f"Course: {course_name}\n\n"
+        f"Reference material:\n{context[:4000]}\n\n"
+        f"Interview transcript ({num_answers} candidate answers):\n{dialogue}"
+    )
 
-    # No LLM available — reuse the rule-based fallback with synthetic per-answer
-    # metrics (one zero-metric entry per candidate turn).
-    synthetic_metrics = [{"pause_count": 0, "filler_word_count": 0, "response_time_ms": 0} for _ in student_turns]
-    return _fallback_score(transcript, synthetic_metrics, pass_threshold, course_name)
+    # Gemini first, then OpenAI fallback
+    result = _grade_transcript_gemini(system, user)
+    if result is None:
+        result = _grade_transcript_openai(system, user)
+
+    if result is not None:
+        return _finalize_llm_scores(result, completion_ratio, pass_threshold)
+
+    logger.warning("Both Gemini and OpenAI grading unavailable for realtime interview")
+    return _grading_unavailable(course_name)
 
 
 def llm_generate_mock_transcript(title: str) -> str:
@@ -828,17 +890,21 @@ _QUIZ_DIFFICULTIES = [
 
 def _get_quiz_llm():
     """
-    LLM tuned for diverse quiz generation: temperature 0.8-1.0 and top_p 0.9.
-    A fresh random temperature each call helps every quiz come out different.
+    LLM tuned for diverse quiz generation. A fresh random temperature (0.9-1.1)
+    and top_p (0.95) are drawn every call so repeated generations on the same
+    module diverge, while a small presence_penalty nudges the model to reach for
+    different facts/wording rather than the most obvious ones. The range is kept
+    moderate so the single generation call stays fast and the JSON stays valid.
     """
-    temperature = round(random.uniform(0.8, 1.0), 2)
+    temperature = round(random.uniform(0.9, 1.1), 2)
     if OPENAI_API_KEY:
         try:
             from langchain_openai import ChatOpenAI
             return ChatOpenAI(
                 model=OPENAI_MODEL,
                 temperature=temperature,
-                top_p=0.9,
+                top_p=0.95,
+                presence_penalty=0.4,
                 api_key=OPENAI_API_KEY,
             )
         except Exception:
@@ -882,18 +948,74 @@ def _normalize_question(text: str) -> str:
     return re.sub(r"[^a-z0-9 ]", "", text.lower()).strip()
 
 
-def _dedupe_questions(questions: list) -> list:
-    """Keep only valid, non-duplicate MCQs (deduped by normalized question text)."""
-    seen = set()
+# Words too common to signal that two questions are "about the same thing".
+# Ignoring them stops near-duplicate detection from firing just because both
+# questions share filler like "which of the following is the ...".
+_QUESTION_STOPWORDS = frozenset({
+    "the", "a", "an", "of", "to", "in", "on", "for", "and", "or", "is", "are",
+    "was", "were", "be", "which", "what", "who", "whom", "whose", "how", "why",
+    "when", "where", "does", "do", "did", "following", "best", "most", "that",
+    "this", "these", "those", "with", "as", "at", "by", "from", "into", "about",
+    "it", "its", "their", "your", "you", "one", "correct", "true", "false",
+    "statement", "option", "answer", "question", "describes", "describe",
+})
+
+# Jaccard overlap of content tokens above which two questions are treated as the
+# same question. 0.6 catches "What is X?" vs "Which option describes X?" while
+# still allowing genuinely different questions about the same topic.
+_NEAR_DUP_THRESHOLD = 0.6
+
+
+def _content_tokens(key: str) -> frozenset:
+    """Significant (non-stopword) tokens of an already-normalized question."""
+    return frozenset(t for t in key.split() if t not in _QUESTION_STOPWORDS)
+
+
+def _too_similar(tokens: frozenset, existing: list) -> bool:
+    """True if `tokens` overlaps any token-set in `existing` past the threshold."""
+    if not tokens:
+        return False
+    for other in existing:
+        if not other:
+            continue
+        union = len(tokens | other)
+        if union and len(tokens & other) / union >= _NEAR_DUP_THRESHOLD:
+            return True
+    return False
+
+
+def _dedupe_questions(questions: list, avoid_texts: list = None) -> list:
+    """Keep only valid, non-duplicate MCQs.
+
+    Removes, in addition to exact normalized-text duplicates:
+    - near-duplicates within this set (same concept reworded — high token overlap),
+      which is what makes a single quiz appear to "repeat" a question; and
+    - any question matching one in ``avoid_texts`` (previously-asked questions),
+      which keeps quiz retakes fresh instead of re-serving the same items.
+    """
+    # Seed the "already seen" pools with previously-asked questions so retakes
+    # skip both exact and reworded repeats of them.
+    seen_keys = set()
+    seen_tokens = []
+    for t in (avoid_texts or []):
+        k = _normalize_question(str(t))
+        if k:
+            seen_keys.add(k)
+            seen_tokens.append(_content_tokens(k))
+
     out = []
     for q in questions:
         if not _valid_mcq(q):
             continue
         q["correct"] = str(q["correct"]).strip().upper()
         key = _normalize_question(str(q["question"]))
-        if not key or key in seen:
+        if not key or key in seen_keys:
             continue
-        seen.add(key)
+        toks = _content_tokens(key)
+        if _too_similar(toks, seen_tokens):
+            continue
+        seen_keys.add(key)
+        seen_tokens.append(toks)
         out.append(q)
     return out
 
@@ -921,7 +1043,12 @@ def _batch_content(text: str, max_chars: int = _QUIZ_BATCH_CHARS) -> list:
 
 
 def _generate_quiz_batch(llm, title, content, count, focus_areas, difficulty, nonce) -> list:
-    """Generate candidate MCQs from a single content batch."""
+    """Generate candidate MCQs from a single content batch.
+
+    Variety across separate quiz generations comes purely from the randomized
+    ``focus_areas``, ``difficulty`` and ``nonce`` passed in here plus the
+    randomized temperature on ``llm`` — no question history is stored or sent.
+    """
     from langchain_core.messages import HumanMessage, SystemMessage
     system = (
         "You are an expert educator creating multiple-choice quiz questions.\n"
@@ -929,9 +1056,13 @@ def _generate_quiz_batch(llm, title, content, count, focus_areas, difficulty, no
         "RULES:\n"
         "- Use ONLY the provided material. Do NOT invent facts or use any outside knowledge.\n"
         "- Each question must have exactly 4 options (A, B, C, D) with exactly ONE correct answer.\n"
-        "- Make every question unique — never reword the same concept twice.\n"
+        "- Make every question unique — never reword or rephrase the same concept twice, "
+        "even with different wording or answer options.\n"
         "- Cover diverse parts of the material: definitions, concepts, processes, examples, "
-        "and practical understanding.\n"
+        "and practical understanding — spread the questions across the WHOLE material, "
+        "not just the opening section.\n"
+        "- Vary the phrasing and the type of question (definition, scenario, compare, "
+        "cause-and-effect, 'which is NOT', best-practice) so the set feels fresh.\n"
         "- Return ONLY valid JSON: a JSON array of objects, each with keys "
         'id (integer), question (string), options (object with keys "A","B","C","D"), '
         'correct (one of "A","B","C","D").\n'
@@ -942,8 +1073,10 @@ def _generate_quiz_batch(llm, title, content, count, focus_areas, difficulty, no
         f"Module material:\n{content}\n\n"
         f"Focus especially on: {', '.join(focus_areas)}.\n"
         f"Use {difficulty}.\n"
-        f"Generate {count} fresh, diverse MCQs that cover different concepts. "
-        f"(Variation token {nonce}: use it only to vary your choices; never mention it.)\n"
+        f"Generate {count} fresh, diverse MCQs that cover different concepts, and pick a "
+        f"DIFFERENT selection of facts and angles than an obvious first pass would. "
+        f"(Variation token {nonce}: use it only to vary which facts you pick and how you "
+        f"word them; never mention it.)\n"
         "Return ONLY the JSON array."
     )
     try:
@@ -964,8 +1097,9 @@ def llm_generate_quiz(
 
     Long content is split into batches, each batch produces candidate questions,
     then results are merged, de-duplicated, and the final 10 are selected. Prompt
-    facets and sampling are randomized so each generation is fresh (not cached,
-    not templated).
+    facets (focus areas, difficulty, a random variation token) and the sampling
+    temperature are randomized every call, so each generation is fresh and a
+    retake tends to differ — without storing or tracking any per-student history.
 
     Returns list of {id, question, options:{A,B,C,D}, correct}.
     """
@@ -993,6 +1127,8 @@ def llm_generate_quiz(
             _generate_quiz_batch(llm, chapter_title, batch, per_batch, focus, difficulty, nonce)
         )
 
+    # Drop exact AND near-duplicate (reworded) questions so a single quiz never
+    # shows the same thing twice, then randomize which of the survivors are kept.
     unique = _dedupe_questions(candidates)
     random.shuffle(unique)  # randomize which questions are selected each time
     selected = unique[:QUIZ_QUESTION_COUNT]
@@ -1056,79 +1192,4 @@ def _fallback_questions(title: str, context: str) -> list:
         "and how would you avoid them?"
     )
     return questions
-
-
-def _fallback_score(transcript: list, pause_metrics: list, threshold: int, title: str) -> dict:
-    # Genuine answers = number of recorded pause-metric entries (one per real
-    # answer). The greeting reply and any chitchat add student transcript lines but
-    # no pause metric, so they never inflate this count.
-    num_answers = len(pause_metrics) if pause_metrics else 0
-    if num_answers == 0:
-        return {
-            "technical_score": 0.0,
-            "communication_score": 0.0,
-            "confidence_score": 0.0,
-            "overall_score": 0.0,
-            "passed": False,
-            "strengths": ["None (interview ended before starting)"],
-            "weak_areas": ["Interview was terminated early without any answers."],
-            "suggested_review": [f"Please complete the oral assessment for {title}."],
-        }
-
-    # Use the last `num_answers` student lines as the genuine answers for length
-    # metrics (excludes the earlier greeting reply if present).
-    student_msgs = [m["text"] for m in transcript if m["speaker"] == "student"][-num_answers:]
-    total_words = sum(len(m.split()) for m in student_msgs)
-    avg_len = total_words / max(num_answers, 1)
-
-    avg_pauses = 0
-    total_filler = 0
-    avg_filler = 0
-    if pause_metrics:
-        avg_pauses = sum(p.get("pause_count", 0) for p in pause_metrics) / len(pause_metrics)
-        total_filler = sum(p.get("filler_word_count", 0) for p in pause_metrics)
-        avg_filler = total_filler / len(pause_metrics)
-
-    # Pro-rate scores based on completion fraction (each answer adds up to 1/5th of the score)
-    completion_ratio = num_answers / 5.0
-
-    raw_technical = min(100.0, 40.0 + avg_len * 2.0 + num_answers * 8.0)
-    raw_communication = min(100.0, max(20.0, 35.0 + avg_len * 1.5 + num_answers * 10.0 - avg_filler * 5.0))
-    raw_confidence = max(20.0, min(100.0, 100.0 - avg_pauses * 8.0 - avg_filler * 4.0))
-
-    technical = raw_technical * completion_ratio
-    communication = raw_communication * completion_ratio
-    confidence = raw_confidence * completion_ratio
-
-    overall = round(technical * 0.5 + communication * 0.3 + confidence * 0.2, 1)
-    passed = overall >= threshold
-
-    strengths, weak_areas = [], []
-    if avg_len > 30:
-        strengths.append("Provided detailed, structured answers.")
-    else:
-        weak_areas.append("Answers were too brief — expand with examples.")
-    if avg_pauses > 3:
-        weak_areas.append("Frequent long pauses suggest uncertainty — review the module.")
-    else:
-        strengths.append("Responded with reasonable confidence and flow.")
-    if avg_filler > 3:
-        weak_areas.append(f"High use of filler words ({int(total_filler)} total: um, uh, mhm, like, you know) — practice speaking more deliberately.")
-    elif avg_filler == 0:
-        strengths.append("Spoke clearly without excessive filler words.")
-    if num_answers >= 3:
-        strengths.append("Engaged well across multiple interview questions.")
-
-    return {
-        "technical_score": round(technical, 1),
-        "communication_score": round(communication, 1),
-        "confidence_score": round(confidence, 1),
-        "overall_score": overall,
-        "passed": passed,
-        "strengths": strengths or ["Showed willingness to participate."],
-        "weak_areas": weak_areas or ["Continue practicing verbal explanations."],
-        "suggested_review": [f"Re-watch and re-read: {title}"] if not passed else [],
-    }
-
-
 

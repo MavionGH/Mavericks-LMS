@@ -3,6 +3,17 @@ import uuid
 from fastapi import UploadFile, HTTPException
 import boto3
 from botocore.config import Config
+from boto3.s3.transfer import TransferConfig
+
+# Multipart upload tuning: split anything over 8 MB into 8 MB parts and push up
+# to 4 parts concurrently. For large module videos this is dramatically faster
+# than a single-shot put_object, while small files still upload in one request.
+_TRANSFER_CONFIG = TransferConfig(
+    multipart_threshold=8 * 1024 * 1024,
+    multipart_chunksize=8 * 1024 * 1024,
+    max_concurrency=4,
+    use_threads=True,
+)
 
 
 def _r2_client_and_targets():
@@ -43,11 +54,14 @@ def upload_video_to_r2(file: UploadFile) -> str:
         # Reset file cursor just in case it has been read before
         file.file.seek(0)
 
-        s3_client.put_object(
-            Bucket=bucket_name,
-            Key=unique_filename,
-            Body=file.file,
-            ContentType=content_type
+        # Multipart, concurrent upload (see _TRANSFER_CONFIG) — much faster than a
+        # single put_object for large videos.
+        s3_client.upload_fileobj(
+            file.file,
+            bucket_name,
+            unique_filename,
+            ExtraArgs={"ContentType": content_type},
+            Config=_TRANSFER_CONFIG,
         )
 
         return f"{base_url}/{unique_filename}"
@@ -75,11 +89,13 @@ def upload_recording_to_r2(file: UploadFile, prefix: str = "interviews") -> str:
 
         file.file.seek(0)
 
-        s3_client.put_object(
-            Bucket=bucket_name,
-            Key=unique_filename,
-            Body=file.file,
-            ContentType=content_type
+        # Multipart, concurrent upload — faster for large recordings.
+        s3_client.upload_fileobj(
+            file.file,
+            bucket_name,
+            unique_filename,
+            ExtraArgs={"ContentType": content_type},
+            Config=_TRANSFER_CONFIG,
         )
 
         return f"{base_url}/{unique_filename}"

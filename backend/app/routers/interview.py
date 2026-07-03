@@ -707,6 +707,21 @@ def _finalize_session(db: Session, session: InterviewSession, user: User) -> Int
     graph_state = session.graph_state or {}
     evaluation = graph_state.get("evaluation", {})
 
+    # Resolve the interview pass threshold for this session. Priority order:
+    # 1. graph_state (stored when the session started — most reliable)
+    # 2. course.pass_threshold (live DB value)
+    # 3. fallback default of 70
+    pass_threshold = graph_state.get("pass_threshold")
+    if pass_threshold is None:
+        if session.course_id:
+            _course_tmp = db.query(Course).filter(Course.id == session.course_id).first()
+            pass_threshold = _course_tmp.pass_threshold if _course_tmp else None
+        elif session.chapter_id:
+            _chapter_tmp = db.query(Chapter).filter(Chapter.id == session.chapter_id).first()
+            if _chapter_tmp and _chapter_tmp.course:
+                pass_threshold = _chapter_tmp.course.pass_threshold
+    pass_threshold = int(pass_threshold or 70)
+
     # ── Course-wide final interview ──
     # Optional and ungated: it records a CAPSTONE evaluation but never alters the
     # student's module progression (that is driven entirely by passing quizzes).
@@ -825,6 +840,7 @@ def _finalize_session(db: Session, session: InterviewSession, user: User) -> Int
             transcript=graph_state.get("transcript", []),
             next_chapter_unlocked=False,
             chapter_title=course.title if course else "",
+            pass_threshold=pass_threshold,
         )
 
     # ── Per-module interview (legacy path) ──
@@ -892,4 +908,5 @@ def _finalize_session(db: Session, session: InterviewSession, user: User) -> Int
         transcript=graph_state.get("transcript", []),
         next_chapter_unlocked=next_unlocked and evaluation.get("passed", False),
         chapter_title=chapter.title,
+        pass_threshold=pass_threshold,
     )

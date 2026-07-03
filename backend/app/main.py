@@ -11,19 +11,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Enable pgvector extension before creating tables (safe no-op if already enabled)
     from sqlalchemy import text
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-            conn.commit()
-        logger.info("pgvector extension ready.")
-    except Exception as exc:
-        logger.warning(
-            "Could not auto-enable pgvector extension: %s. "
-            "Enable it manually in Supabase Dashboard → Database → Extensions → vector",
-            exc,
-        )
 
     Base.metadata.create_all(bind=engine)
 
@@ -93,21 +81,6 @@ async def lifespan(app: FastAPI):
 
     logger.info("Schema columns ensured.")
 
-    # ── Embeddings now run on OpenAI (text-embedding-3-small) ──
-    # Embeddings are produced by a hosted OpenAI API call, so there's no local
-    # model to download or warm — the first interview no longer pays a cold-load
-    # penalty. We just log whether the key is configured so misconfiguration is
-    # obvious in the startup logs. RAG degrades gracefully to raw course text if
-    # the key is missing.
-    try:
-        from app.services.embeddings import embeddings_available
-        if embeddings_available():
-            logger.info("OpenAI embeddings configured and ready for RAG/interviews.")
-        else:
-            logger.warning("OPENAI_API_KEY not set — RAG will fall back to raw course text.")
-    except Exception as exc:  # pragma: no cover - best-effort check
-        logger.warning("Embedding availability check skipped: %s", exc)
-
     # ── LLM + LangGraph warm-up ──────────────────────────────────────────────
     # The first call to get_llm() imports LangChain and builds an HTTP connection
     # pool — this alone costs 10–60 s on a cold process. Pre-initialising here
@@ -116,10 +89,11 @@ async def lifespan(app: FastAPI):
     # 30–120 s. Likewise, pre-compiling the LangGraph state machines avoids
     # graph-compilation overhead on the first request.
     try:
-        from app.services.llm import get_llm, get_grading_llm, _get_question_llm
+        from app.services.llm import get_llm, get_grading_llm, _get_question_llm, _get_gemini_grading_client
         from app.services.interview_graph import _get_start_graph, _get_answer_graph
         get_llm()             # dialog / chitchat client
-        get_grading_llm()     # final scoring client
+        get_grading_llm()     # OpenAI grading client (fallback grader)
+        _get_gemini_grading_client()  # Gemini grading client (primary grader)
         _get_question_llm()   # question-generation client (now cached — no more per-Q pool rebuild)
         _get_start_graph()    # compiles GreetingNode graph
         _get_answer_graph()   # compiles record_answer → follow_up/score graph

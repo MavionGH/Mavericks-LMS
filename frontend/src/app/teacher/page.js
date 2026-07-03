@@ -63,7 +63,7 @@ function TeacherPanel() {
   const [checkingApproval, setCheckingApproval] = useState(false);
   const [approvalMsg, setApprovalMsg] = useState("");
   const [activeTab, setActiveTab] = useState("overview");
-  const [form, setForm] = useState({ title: "", description: "", pass_threshold: 70, thumbnail: "" });
+  const [form, setForm] = useState({ title: "", description: "", pass_threshold: 70, quiz_threshold: 70, thumbnail: "" });
   const [formStatus, setFormStatus] = useState("");
   const [courses, setCourses] = useState([]);
   const [selectedCourseId, setSelectedCourseId] = useState("");
@@ -148,6 +148,48 @@ function TeacherPanel() {
   const [transcribeProgress, setTranscribeProgress] = useState(0);
   const [transcribeError, setTranscribeError] = useState("");
   const videoFileRef = useRef(null); // holds the raw File object for transcription
+  const transcriptPollRef = useRef(null); // setTimeout handle for async transcript polling
+
+  // Poll the async transcription job started by /upload-video?async_transcript=1
+  // until it is done/errored, then invoke the matching callback. Any in-flight
+  // poll is cancelled first so a new upload never races an old one.
+  const pollTranscript = (jobId, { onDone, onError }) => {
+    if (transcriptPollRef.current) clearTimeout(transcriptPollRef.current);
+    let attempts = 0;
+    const maxAttempts = 150; // ~5 min at a 2s cadence, then give up gracefully
+    const tick = async () => {
+      attempts += 1;
+      try {
+        const res = await authFetch(`/api/courses/transcript-status/${jobId}`);
+        if (res.status === 404) {
+          onError("Transcription expired — add a transcript manually below if needed.");
+          return;
+        }
+        if (!res.ok) throw new Error("status check failed");
+        const data = await res.json();
+        if (data.status === "done") { onDone(data.transcript || ""); return; }
+        if (data.status === "error") {
+          onError(data.error || "Transcription failed — add a transcript manually below if needed.");
+          return;
+        }
+        // still pending
+        if (attempts >= maxAttempts) {
+          onError("Transcription is taking too long — add a transcript manually below if needed.");
+          return;
+        }
+        transcriptPollRef.current = setTimeout(tick, 2000);
+      } catch {
+        if (attempts >= maxAttempts) { onError("Network error while checking transcription."); return; }
+        transcriptPollRef.current = setTimeout(tick, 2000);
+      }
+    };
+    transcriptPollRef.current = setTimeout(tick, 1500);
+  };
+
+  // Stop any pending transcript poll if the page unmounts mid-transcription.
+  useEffect(() => () => {
+    if (transcriptPollRef.current) clearTimeout(transcriptPollRef.current);
+  }, []);
 
   const handleVideoUpload = async (e) => {
     const file = e.target.files[0];
@@ -156,6 +198,7 @@ function TeacherPanel() {
     // Store for later transcription
     videoFileRef.current = file;
     // Reset transcription state when a new file is picked
+    if (transcriptPollRef.current) clearTimeout(transcriptPollRef.current);
     setTranscribeStage("");
     setTranscribeError("");
     setTranscribeProgress(0);
@@ -181,7 +224,9 @@ function TeacherPanel() {
     formData.append("file", file);
 
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", "http://localhost:8000/api/courses/upload-video", true);
+    // async_transcript=1: the server returns the video URL immediately and
+    // transcribes in the background; we poll for the transcript afterwards.
+    xhr.open("POST", "http://localhost:8000/api/courses/upload-video?async_transcript=1", true);
     if (token) {
       xhr.setRequestHeader("Authorization", `Bearer ${token}`);
     }
@@ -190,7 +235,7 @@ function TeacherPanel() {
       if (event.lengthComputable) {
         const percentComplete = Math.round((event.loaded / event.total) * 100);
         setUploadProgress(percentComplete);
-        // Bytes are uploaded — the server is now transcribing before it responds.
+        // Bytes are uploaded — the server is now storing + transcribing.
         if (percentComplete >= 100) {
           setTranscribing(true);
         }
@@ -199,22 +244,46 @@ function TeacherPanel() {
 
     xhr.onload = () => {
       setUploading(false);
-      setTranscribing(false);
       if (xhr.status === 200) {
         try {
           const res = JSON.parse(xhr.responseText);
-          setChapterForm((prev) => ({
-            ...prev,
-            youtube_url: res.video_url,
-            // Auto-fill the transcript box from the video's audio. Keep any
-            // text the teacher already typed if transcription returned nothing.
-            video_transcript: res.transcript ? res.transcript : prev.video_transcript,
-          }));
+          // The video URL is ready right away — fill it and finish the upload UI.
+          setChapterForm((prev) => ({ ...prev, youtube_url: res.video_url }));
           setUploadProgress(100);
+
+          if (res.transcript_job_id) {
+            // Async transcription in progress — keep the indicator up and poll.
+            setTranscribing(true);
+            setTranscribeStage("transcribing");
+            pollTranscript(res.transcript_job_id, {
+              onDone: (t) => {
+                setTranscribing(false);
+                setTranscribeStage(t ? "done" : "");
+                if (t) {
+                  setChapterForm((prev) => ({ ...prev, video_transcript: t }));
+                } else {
+                  setTranscribeError("No speech detected in the video — add a transcript manually below if needed.");
+                }
+              },
+              onError: (msg) => {
+                setTranscribing(false);
+                setTranscribeStage("");
+                setTranscribeError(msg);
+              },
+            });
+          } else {
+            // Synchronous fallback (server returned the transcript inline).
+            setTranscribing(false);
+            if (res.transcript) {
+              setChapterForm((prev) => ({ ...prev, video_transcript: res.transcript }));
+            }
+          }
         } catch (e) {
+          setTranscribing(false);
           setUploadError("Failed to parse upload response.");
         }
       } else {
+        setTranscribing(false);
         try {
           const res = JSON.parse(xhr.responseText);
           setUploadError(res.detail || "Upload failed.");
@@ -254,7 +323,9 @@ function TeacherPanel() {
     formData.append("file", file);
 
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${API_BASE}/api/courses/upload-video`, true);
+    // async_transcript=1: server stores the video and returns immediately; the
+    // transcript is produced in the background and fetched by polling.
+    xhr.open("POST", `${API_BASE}/api/courses/upload-video?async_transcript=1`, true);
     if (token) {
       xhr.setRequestHeader("Authorization", `Bearer ${token}`);
     }
@@ -263,8 +334,8 @@ function TeacherPanel() {
       if (event.lengthComputable) {
         const pct = Math.round((event.loaded / event.total) * 100);
         setTranscribeProgress(pct);
-        // Once bytes are uploaded the server extracts audio + runs Whisper
-        // before it responds — reflect that in the stage indicator.
+        // Once bytes are uploaded the server extracts audio + runs Whisper in
+        // the background — reflect that in the stage indicator.
         if (pct >= 100) {
           setTranscribeStage("transcribing");
         }
@@ -272,28 +343,54 @@ function TeacherPanel() {
     };
 
     xhr.onload = () => {
-      setTranscribing(false);
       if (xhr.status === 200) {
         try {
           const res = JSON.parse(xhr.responseText);
           setChapterForm((prev) => ({
             ...prev,
             youtube_url: res.video_url || prev.youtube_url,
-            // Keep any text the teacher already typed if Whisper returned nothing.
-            video_transcript: res.transcript ? res.transcript : prev.video_transcript,
           }));
           setUploadedFileName(file.name);
-          if (res.transcript) {
-            setTranscribeStage("done");
+
+          if (res.transcript_job_id) {
+            // Keep the "transcribing" stage up and poll until the job finishes.
+            setTranscribing(true);
+            setTranscribeStage("transcribing");
+            pollTranscript(res.transcript_job_id, {
+              onDone: (t) => {
+                setTranscribing(false);
+                if (t) {
+                  setChapterForm((prev) => ({ ...prev, video_transcript: t }));
+                  setTranscribeStage("done");
+                } else {
+                  setTranscribeStage("");
+                  setTranscribeError("No speech detected in the video — add a transcript manually below if needed.");
+                }
+              },
+              onError: (msg) => {
+                setTranscribing(false);
+                setTranscribeStage("");
+                setTranscribeError(msg);
+              },
+            });
           } else {
-            setTranscribeStage("");
-            setTranscribeError("No speech detected in the video — add a transcript manually below if needed.");
+            // Synchronous fallback (server returned the transcript inline).
+            setTranscribing(false);
+            if (res.transcript) {
+              setChapterForm((prev) => ({ ...prev, video_transcript: res.transcript }));
+              setTranscribeStage("done");
+            } else {
+              setTranscribeStage("");
+              setTranscribeError("No speech detected in the video — add a transcript manually below if needed.");
+            }
           }
         } catch {
+          setTranscribing(false);
           setTranscribeStage("");
           setTranscribeError("Failed to parse the transcription response.");
         }
       } else {
+        setTranscribing(false);
         let detail = `Transcription failed with status code ${xhr.status}.`;
         try {
           detail = JSON.parse(xhr.responseText).detail || detail;
@@ -421,12 +518,13 @@ function TeacherPanel() {
           title: form.title,
           description: form.description,
           pass_threshold: Number(form.pass_threshold),
+          quiz_threshold: Number(form.quiz_threshold),
           thumbnail: form.thumbnail || null,
         }),
       });
       if (!res.ok) throw new Error((await res.json()).detail || "Failed");
       setFormStatus("success");
-      setForm({ title: "", description: "", pass_threshold: 70, thumbnail: "" });
+      setForm({ title: "", description: "", pass_threshold: 70, quiz_threshold: 70, thumbnail: "" });
       loadCourses();
       setTimeout(() => setFormStatus(""), 3000);
     } catch (err) {
@@ -1231,7 +1329,7 @@ function TeacherPanel() {
                 </div>
                 <div className="grid-2">
                   <div className="form-group">
-                    <label className="form-label">Pass Threshold (%)</label>
+                    <label className="form-label">Interview Pass Threshold (%)</label>
                     <input
                       className="form-input"
                       type="number"
@@ -1239,19 +1337,32 @@ function TeacherPanel() {
                       value={form.pass_threshold}
                       onChange={(e) => setForm({ ...form, pass_threshold: e.target.value })}
                     />
+                    <p style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>Minimum score to pass the AI oral interview</p>
                   </div>
                   <div className="form-group">
-                    <label className="form-label">Thumbnail URL (optional)</label>
+                    <label className="form-label">Quiz Pass Threshold (%)</label>
                     <input
                       className="form-input"
-                      placeholder="https://..."
-                      value={form.thumbnail}
-                      onChange={(e) => setForm({ ...form, thumbnail: e.target.value })}
+                      type="number"
+                      min={0} max={100}
+                      value={form.quiz_threshold}
+                      onChange={(e) => setForm({ ...form, quiz_threshold: e.target.value })}
                     />
+                    <p style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>Minimum score to pass each module quiz</p>
                   </div>
                 </div>
+                <div className="form-group">
+                  <label className="form-label">Thumbnail URL (optional)</label>
+                  <input
+                    className="form-input"
+                    placeholder="https://..."
+                    value={form.thumbnail}
+                    onChange={(e) => setForm({ ...form, thumbnail: e.target.value })}
+                  />
+                </div>
                 <div style={{ display: "flex", justifyContent: "flex-end", gap: "12px", marginTop: "12px" }}>
-                  <button type="button" className="btn btn-secondary" onClick={() => setForm({ title: "", description: "", pass_threshold: 70, thumbnail: "" })}>
+                  <button type="button" className="btn btn-secondary" onClick={() => setForm({ title: "", description: "", pass_threshold: 70, quiz_threshold: 70, thumbnail: "" })}>
+
                     Clear
                   </button>
                   <button type="submit" className="btn btn-primary" disabled={formStatus === "saving"}>

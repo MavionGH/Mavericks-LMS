@@ -228,7 +228,10 @@ function QuizPage() {
 
   // ── Countdown timer ───────────────────────────────────────────────────────
   useEffect(() => {
-    if (!quizStarted || submitted) return;
+    // Stop the countdown the instant the quiz is submitted OR a submit is in
+    // flight — clicking "Submit Quiz" (e.g. on the last question) must freeze the
+    // timer immediately, not only after the async submit round-trip resolves.
+    if (!quizStarted || submitted || submitting) return;
     // Don't start (or resume) the countdown until the question is actually on
     // screen. Questions are generated on-demand, so starting the timer at
     // quizStarted would let generation latency silently eat into question 1.
@@ -280,7 +283,7 @@ function QuizPage() {
 
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [quizStarted, submitted, currentQ, fsWarningVisible, loading, questions.length]);
+  }, [quizStarted, submitted, submitting, currentQ, fsWarningVisible, loading, questions.length]);
 
   // ── Answer selection ──────────────────────────────────────────────────────
   const handleSelect = (qId, option) => {
