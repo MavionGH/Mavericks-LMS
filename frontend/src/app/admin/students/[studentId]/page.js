@@ -38,7 +38,7 @@ function StudentProfilePage() {
     <>
       <Navbar />
       <div className="page-container" style={{ backgroundColor: "var(--bg-canvas)" }}>
-        <div className="container" style={{ padding: "48px 32px" }}>
+        <div className="container admin-container">
 
           <button onClick={() => router.back()} style={{ display: "inline-flex", alignItems: "center", gap: "6px", background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "13px", marginBottom: "28px", padding: 0 }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
@@ -55,25 +55,25 @@ function StudentProfilePage() {
           ) : (
             <>
               {/* Student identity card */}
-              <div className="card" style={{ padding: "28px 32px", marginBottom: "28px", display: "flex", alignItems: "center", gap: "20px" }}>
+              <div className="card admin-identity-card" style={{ marginBottom: "28px" }}>
                 <div style={{ width: 60, height: 60, borderRadius: "50%", background: "linear-gradient(135deg, var(--brand), #8b5cf6)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "24px", fontWeight: "700", color: "#fff", flexShrink: 0 }}>
                   {s?.name?.[0]?.toUpperCase()}
                 </div>
-                <div style={{ flex: 1 }}>
+                <div className="admin-identity-info">
                   <h1 style={{ fontSize: "22px", fontWeight: "700", color: "var(--text-title)", margin: 0, marginBottom: "4px" }}>{s?.name}</h1>
                   <p style={{ color: "var(--text-muted)", fontSize: "13px", margin: 0 }}>{s?.email}</p>
                   <p style={{ color: "var(--text-subtle)", fontSize: "12px", margin: "4px 0 0" }}>
                     Member since {s?.joined ? new Date(s.joined).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }) : "—"}
                   </p>
                 </div>
-                <div style={{ display: "flex", gap: "24px", textAlign: "center" }}>
+                <div className="admin-identity-stats">
                   {[
                     { label: "Courses", value: enrollments.length, color: "var(--brand)" },
                     { label: "Evals", value: evaluations.length, color: "var(--color-warning)" },
                     { label: "Passed", value: passedCount, color: "var(--color-success)" },
                     { label: "Certs", value: certificates.length, color: "#8b5cf6" },
                   ].map((stat) => (
-                    <div key={stat.label}>
+                    <div key={stat.label} style={{ minWidth: "60px" }}>
                       <div style={{ fontSize: "26px", fontWeight: "700", color: stat.color, fontFamily: "JetBrains Mono" }}>{stat.value}</div>
                       <div style={{ fontSize: "11px", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{stat.label}</div>
                     </div>
@@ -83,7 +83,7 @@ function StudentProfilePage() {
 
               {/* Average score bar */}
               {evaluations.length > 0 && (
-                <div className="card" style={{ padding: "20px 28px", marginBottom: "28px" }}>
+                <div className="card" style={{ marginBottom: "28px" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "10px" }}>
                     <span style={{ fontSize: "13px", color: "var(--text-muted)", fontWeight: "500" }}>Overall Average Score</span>
                     <span style={{ fontSize: "14px", fontWeight: "700", color: avgScore >= 70 ? "var(--color-success)" : "var(--color-warning)", fontFamily: "JetBrains Mono" }}>{avgScore}%</span>
@@ -95,7 +95,7 @@ function StudentProfilePage() {
                 </div>
               )}
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+              <div className="admin-grid-2">
                 {/* Enrollments */}
                 <div className="card" style={{ padding: 0, overflow: "hidden" }}>
                   <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border-muted)" }}>

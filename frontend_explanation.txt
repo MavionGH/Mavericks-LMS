@@ -1,0 +1,129 @@
+========================================================================
+                     MAVERICKS LMS FRONTEND EXPLANATION
+========================================================================
+
+This document provides a comprehensive overview of the frontend architecture,
+framework structure, core pages, and advanced system integrations for the 
+Mavericks LMS platform.
+
+------------------------------------------------------------------------
+1. TECHNOLOGY STACK & CORE SYSTEM STYLING
+------------------------------------------------------------------------
+* Framework: Next.js (version 16.2.9) with React (version 19.2.4).
+* Router: Next.js App Router (located in `src/app`).
+* Styling: Vanilla CSS with design variables defined in `src/app/globals.css`.
+  - Supports dynamic Light (Udemy/Coursera-inspired) and Dark themes via 
+    a `.dark` class applied on the HTML root element.
+  - Leverages custom typography: "Inter" for interface controls and text,
+    and "JetBrains Mono" for code blocks and instrumentation counters.
+  - Custom UI buttons, cards, layout systems (grids, sidebar frameworks, etc.).
+* Global Contexts:
+  - AuthContext (`src/context/AuthContext.js`): Manages student, teacher, and 
+    admin authentication states, active session cookies, and provides the
+    `authFetch` helper for authorized API requests to the FastAPI backend.
+  - ThemeContext (`src/context/ThemeContext.js`): Controls the global light/dark theme.
+
+------------------------------------------------------------------------
+2. SYSTEM ROUTING & PAGE ARCHITECTURE
+------------------------------------------------------------------------
+The routing structure utilizes the Next.js App Router:
+
+* Landing / Home (`/`): Introduces the platform features, highlights featured 
+  courses, and automatically routes authenticated users to their corresponding 
+  role-based dashboard (student, teacher, or admin).
+* Auth Pages (`/login`, `/register`): Secure login and registration.
+* Student Dashboard (`/dashboard`): Displays student analytics, registered courses,
+  progression details, and earned certificates.
+* Catalog (`/courses` and `/courses/[id]`): Course catalog list and individual 
+  course description / syllabus preview page.
+* Course Classroom View (`/learn/[courseId]`): Interactive course learning syllabus.
+* Lecture Study Room (`/learn/[courseId]/[chapterId]`): 
+  - Plays lesson videos and displays auto-generated lecture transcripts.
+  - Includes a note-taking pad where students can generate AI notes or write their own.
+  - Gated navigation to progress check points (quizzes and oral interviews).
+* Student Profile (`/profile`): Controls user credentials, visual preferences,
+  profile pictures, and details progress.
+* Certificates Viewer (`/certificates`): Displays earned certificates.
+
+------------------------------------------------------------------------
+3. ORAL INTERVIEW & ASSESSMENT SYSTEM (THE INTERVIEW ROOM)
+------------------------------------------------------------------------
+Paths: `/interview/[courseId]` (course capstone) & `/interview/[courseId]/[chapterId]` (legacy chapter level)
+Primary Component: `src/components/InterviewRoom.js`
+
+Features:
+* Gemini Live API Integration: 
+  - Connects directly from the browser to Gemini via WebSockets (`ai.live.connect()`)
+    using temporary client-minted tokens from the backend.
+  - Completely bypasses standard per-turn backend wrappers to offer near zero-latency 
+    conversational speech.
+* Speech/Audio Pipeline:
+  - Captures local microphone input, downsamples it to 16kHz mono PCM16, and streams 
+    it continually to Gemini.
+  - Receives 24kHz mono PCM16 audio chunks back and queues them in an AudioContext
+    using gapless scheduling for natural voice playback.
+  - Performs live RMS amplitude analysis on output audio to drive the mouth actions 
+    of the AI avatar ("Mav") and trigger dynamic UI labels indicating active speaking.
+* Progression Tracking:
+  - Tracks question milestones. Progression triggers when Gemini calls the 
+    `mark_question_answered` tool.
+  - Fallback Heuristics: Uses regex matching for skips, repeat requests, personal 
+    conversations, and greetings client-side to keep counts accurate even if the 
+    LLM fails to trigger the tool.
+* Full-Session Recording:
+  - Captures the tab screen (combining Mav's vocal output) mixed with the student's
+    local microphone input into a WebM video stream.
+  - On interview termination, the video is automatically compiled and uploaded to 
+    Cloudflare R2 storage for instructor/admin reviews.
+* Accessibility Chat:
+  - Includes a slide-out chat console allowing students to type their replies 
+    directly if they prefer not to speak.
+
+------------------------------------------------------------------------
+4. CHEATING-PROTECTED QUIZ MODULE
+------------------------------------------------------------------------
+Path: `/quiz/[courseId]/[chapterId]`
+Core Files: `page.js`, `useQuizGuard.js`, `FullscreenWarningOverlay.js`, `TabWarningOverlay.js`
+
+Features:
+* strict Fullscreen Mode Enforcements:
+  - Forces fullscreen on mount. 
+  - If a student exits fullscreen, a modal warning (`FullscreenWarningOverlay`) covers 
+    the screen, locks inputs, and penalizes the current question to 0 marks.
+* Tab-Switch / Visibility Protection:
+  - Tracks page focus via the Page Visibility API.
+  - Navigating to another window or tab blocks access with a warning modal 
+    (`TabWarningOverlay`) and logs the violation incident to the database.
+* Copy/Paste, Menu & System Key Restrictions:
+  - Disables right-clicks and custom text selections.
+  - Blocks standard copy/paste/cut browser functions (handling `copy`, `paste`, `cut`).
+  - Intercepts and blocks developer console key commands (F12, Ctrl+Shift+I, etc.) and
+    shortcut commands (Ctrl+C, Ctrl+V, Ctrl+A, Ctrl+X).
+
+------------------------------------------------------------------------
+5. INSTRUCTOR & OPERATIONS PORTAL
+------------------------------------------------------------------------
+Path: `/teacher`
+
+Features:
+* Course Studio: Teachers can create, modify, and delete courses.
+* Lecture Manager: Upload video files, draft reading articles, and trigger AI 
+  transcription for video files.
+* Student Performance Tracker:
+  - Lists student enrollments, exam scores, and system audit logs.
+  - Renders the recorded WebM video files of student oral interviews.
+* AI Quiz Builder: Helps generate conceptual multi-choice questions using LLMs
+  based on course documents and articles.
+
+------------------------------------------------------------------------
+6. SYSTEM OPERATIONS CONSOLE
+------------------------------------------------------------------------
+Path: `/admin`
+
+Features:
+* Administration Dashboard:
+  - Manage global settings and database models.
+  - Modify and control teacher roles and approve new accounts.
+  - High-level platform analytics (total courses, grades, active students, etc.).
+
+========================================================================
