@@ -38,7 +38,7 @@ INTERVIEW_QUESTION_COUNT = 5
 # Hard cap on the reference text baked into the instructions. The Realtime model
 # keeps this in session context for the whole call, so we bound it to avoid an
 # oversized session payload (the raw builders also slice further).
-_MAX_CONTEXT_CHARS = 8000
+_MAX_CONTEXT_CHARS = 200000
 
 
 def build_interview_instructions(

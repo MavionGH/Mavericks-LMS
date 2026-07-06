@@ -7,13 +7,13 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Cap raw fallback context so a large multi-module course never blows the prompt.
-_MAX_COURSE_CONTEXT_CHARS = 12000
+_MAX_COURSE_CONTEXT_CHARS = 200000
 
 
 # A single chapter's article + transcript is small enough to hand to the LLM
 # whole, so we never need vector retrieval here. Cap it so a pathologically long
 # transcript can't blow the prompt (the LLM prompt builders also slice further).
-_MAX_CHAPTER_CONTEXT_CHARS = 12000
+_MAX_CHAPTER_CONTEXT_CHARS = 200000
 
 
 def build_chapter_context(

@@ -7,6 +7,20 @@ export const API_BASE = "http://localhost:8000";
 
 const AuthContext = createContext(null);
 
+// Decode a JWT and check its `exp` claim (seconds since epoch) against now.
+// Returns true if the token is missing, malformed, or past its expiry — in all
+// of those cases the session should be treated as invalid.
+function isTokenExpired(token) {
+  if (!token) return true;
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1]));
+    if (!payload.exp) return false; // no expiry claim → treat as non-expiring
+    return payload.exp * 1000 <= Date.now();
+  } catch {
+    return true; // malformed token → force re-login
+  }
+}
+
 export function AuthProvider({ children }) {
   const [user, setUser]       = useState(null);
   const [token, setToken]     = useState(null);
@@ -22,9 +36,15 @@ export function AuthProvider({ children }) {
     /* eslint-disable react-hooks/set-state-in-effect */
     const savedToken = localStorage.getItem("jwt_token");
     const savedUser  = localStorage.getItem("user_data");
-    if (savedToken && savedUser) {
+    if (savedToken && savedUser && !isTokenExpired(savedToken)) {
       setToken(savedToken);
       setUser(JSON.parse(savedUser));
+    } else {
+      // No session, or the token has expired — clear any stale data so that
+      // protected pages (guarded by withAuth) redirect to /login instead of
+      // rendering with a dead token that only fails on the first data fetch.
+      localStorage.removeItem("jwt_token");
+      localStorage.removeItem("user_data");
     }
     setLoading(false);
     /* eslint-enable react-hooks/set-state-in-effect */
@@ -42,12 +62,12 @@ export function AuthProvider({ children }) {
     });
   };
 
-  const clearSession = () => {
+  const clearSession = useCallback(() => {
     localStorage.removeItem("jwt_token");
     localStorage.removeItem("user_data");
     setToken(null);
     setUser(null);
-  };
+  }, []);
 
   // ─── Auth Actions ───
   const login = async (email, password) => {
@@ -106,11 +126,21 @@ export function AuthProvider({ children }) {
 
   const refreshUser = useCallback(async () => {
     const savedToken = localStorage.getItem("jwt_token");
-    if (!savedToken) return null;
+    if (!savedToken || isTokenExpired(savedToken)) {
+      // Expired/missing token — end the session and bounce to login.
+      clearSession();
+      router.replace("/login");
+      return null;
+    }
     try {
       const res = await fetch(`${API_BASE}/api/auth/me`, {
         headers: { Authorization: `Bearer ${savedToken}` },
       });
+      if (res.status === 401) {
+        clearSession();
+        router.replace("/login");
+        return null;
+      }
       if (!res.ok) return null;
       const freshUser = await res.json();
       localStorage.setItem("user_data", JSON.stringify(freshUser));
@@ -119,11 +149,20 @@ export function AuthProvider({ children }) {
     } catch {
       return null;
     }
-  }, []);
+  }, [clearSession, router]);
 
   // ─── Authenticated fetch wrapper ───
   const authFetch = useCallback(
     async (url, options = {}) => {
+      // If the token has already expired client-side, don't even hit the
+      // backend — tear the session down and send the user to /login.
+      if (token && isTokenExpired(token)) {
+        clearSession();
+        router.replace("/login");
+        // Return a synthetic 401 so callers that inspect res.ok bail out cleanly.
+        return new Response(null, { status: 401, statusText: "Session expired" });
+      }
+
       // For FormData (file upload) let the browser set the multipart Content-Type
       // with its boundary — forcing application/json would corrupt the upload.
       const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
@@ -132,9 +171,18 @@ export function AuthProvider({ children }) {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(options.headers || {}),
       };
-      return fetch(`${API_BASE}${url}`, { ...options, headers });
+      const res = await fetch(`${API_BASE}${url}`, { ...options, headers });
+
+      // The backend returns 401 when the JWT is invalid/expired. Whenever an
+      // authenticated request comes back 401, the session is dead: clear it and
+      // redirect to /login so no protected page keeps rendering without data.
+      if (res.status === 401) {
+        clearSession();
+        router.replace("/login");
+      }
+      return res;
     },
-    [token]
+    [token, clearSession, router]
   );
 
   return (

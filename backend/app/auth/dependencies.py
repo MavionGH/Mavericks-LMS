@@ -15,7 +15,7 @@ from app.models.models import User, UserRole
 # JWT config loaded from environment (.env via dotenv)
 SECRET_KEY = os.getenv("SECRET_KEY", "DEV-ONLY-maverik-change-me")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
-TOKEN_EXPIRE_HOURS = int(os.getenv("TOKEN_EXPIRE_HOURS", "24"))
+TOKEN_EXPIRE_HOURS = int(os.getenv("TOKEN_EXPIRE_HOURS", "168"))  # 7 days
 
 bearer_scheme = HTTPBearer()
 

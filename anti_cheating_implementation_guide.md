@@ -110,6 +110,7 @@ export function useQuizGuard({
     const onKeyDown = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase();
       const hasModifier = event.ctrlKey || event.metaKey;
+     
 
       if (key === "escape") {
         event.preventDefault();
