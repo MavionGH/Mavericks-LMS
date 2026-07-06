@@ -85,6 +85,7 @@ function TeacherPanel() {
     video_transcript: "",
   });
   const [chapterStatus, setChapterStatus] = useState("");
+  const [editingChapterId, setEditingChapterId] = useState(null);
 
   // Video upload state
   const [uploading, setUploading] = useState(false);
@@ -550,30 +551,94 @@ function TeacherPanel() {
     if (!selectedCourseId) return;
     setChapterStatus("saving");
     try {
-      const order = (selectedCourse?.chapters?.length || 0);
-      const res = await authFetch(`/api/courses/${selectedCourseId}/chapters`, {
-        method: "POST",
-        body: JSON.stringify({
-          title: chapterForm.title,
-          order_index: order,
-          article_content: chapterForm.article_content,
-          youtube_url: chapterForm.youtube_url,
-          video_transcript: chapterForm.video_transcript || null,
-        }),
-      });
+      let res;
+      if (editingChapterId) {
+        const existingChapter = selectedCourse?.chapters?.find((ch) => ch.id === editingChapterId);
+        const order = existingChapter ? existingChapter.order_index : 0;
+        res = await authFetch(`/api/courses/chapters/${editingChapterId}`, {
+          method: "PUT",
+          body: JSON.stringify({
+            title: chapterForm.title,
+            order_index: order,
+            article_content: chapterForm.article_content,
+            youtube_url: chapterForm.youtube_url,
+            video_transcript: chapterForm.video_transcript || null,
+          }),
+        });
+      } else {
+        const order = (selectedCourse?.chapters?.length || 0);
+        res = await authFetch(`/api/courses/${selectedCourseId}/chapters`, {
+          method: "POST",
+          body: JSON.stringify({
+            title: chapterForm.title,
+            order_index: order,
+            article_content: chapterForm.article_content,
+            youtube_url: chapterForm.youtube_url,
+            video_transcript: chapterForm.video_transcript || null,
+          }),
+        });
+      }
       if (!res.ok) throw new Error((await res.json()).detail || "Failed");
-      setChapterStatus("success");
+      setChapterStatus(editingChapterId ? "success-edit" : "success-add");
       setChapterForm({ title: "", article_content: "", youtube_url: "", video_transcript: "" });
+      setEditingChapterId(null);
       setUploadedFileName("");
       setUploadProgress(0);
       setTranscribing(false);
       setArticleFileName("");
       setArticleError("");
       loadCourses();
+      setActiveTab("modules");
       setTimeout(() => setChapterStatus(""), 3000);
     } catch (err) {
       setChapterStatus("error:" + err.message);
     }
+  };
+
+  const handleEditChapter = async (chapter) => {
+    setEditingChapterId(chapter.id);
+    setActiveTab("edit-chapter");
+    setChapterForm({
+      title: chapter.title,
+      article_content: "Loading documentation...",
+      youtube_url: chapter.youtube_url || "",
+      video_transcript: "Loading transcript...",
+    });
+    if (chapter.youtube_url) {
+      const parts = chapter.youtube_url.split("/");
+      const fileName = parts[parts.length - 1];
+      setUploadedFileName(fileName.includes(".") ? fileName : "Existing Video File");
+    } else {
+      setUploadedFileName("");
+    }
+    setArticleFileName("");
+
+    try {
+      const res = await authFetch(`/api/courses/manage/chapters/${chapter.id}`);
+      if (res.ok) {
+        const fullChapter = await res.json();
+        setChapterForm({
+          title: fullChapter.title,
+          article_content: fullChapter.article_content || "",
+          youtube_url: fullChapter.youtube_url || "",
+          video_transcript: fullChapter.video_transcript || "",
+        });
+      }
+    } catch {
+      setChapterForm((prev) => ({
+        ...prev,
+        article_content: "",
+        video_transcript: "",
+      }));
+    }
+  };
+
+  const handleCancelEditChapter = () => {
+    setEditingChapterId(null);
+    setChapterForm({ title: "", article_content: "", youtube_url: "", video_transcript: "" });
+    setUploadedFileName("");
+    setArticleFileName("");
+    setActiveTab("modules");
   };
 
   const handlePublish = async (courseId, isPublished) => {
@@ -683,6 +748,263 @@ function TeacherPanel() {
     );
   }
 
+  if (activeTab === "edit-chapter") {
+    return (
+      <>
+        <Navbar />
+        <div className="page-container" style={{ backgroundColor: "var(--bg-canvas)", paddingTop: "80px" }}>
+          <div className="container" style={{ maxWidth: "800px", padding: "0 24px 48px" }}>
+            
+            {/* Back button and title */}
+            <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "28px" }}>
+              <button 
+                type="button" 
+                onClick={handleCancelEditChapter}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: "36px",
+                  height: "36px",
+                  borderRadius: "50%",
+                  border: "1px solid var(--border-muted)",
+                  background: "var(--bg-surface)",
+                  cursor: "pointer",
+                  color: "var(--text-main)",
+                  transition: "background-color 0.2s"
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--bg-surface-hover)"}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "var(--bg-surface)"}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+              </button>
+              <div>
+                <div style={{ fontSize: "12px", color: "var(--text-muted)", textTransform: "uppercase", fontWeight: "600", letterSpacing: "0.05em" }}>Course Module Editor</div>
+                <h1 style={{ fontSize: "24px", fontWeight: "700", color: "var(--text-title)", margin: 0 }}>
+                  Edit Module: {chapterForm.title || "Untitled"}
+                </h1>
+              </div>
+            </div>
+
+            {/* The Editor Card */}
+            <div className="card" style={{ backgroundColor: "var(--bg-surface)", padding: "32px", border: "1px solid var(--border-muted)", borderRadius: "var(--radius-lg)" }}>
+              {chapterStatus.startsWith("error:") && (
+                <div style={{ color: "var(--color-danger)", marginBottom: "16px", fontSize: "13px" }}>{chapterStatus.slice(6)}</div>
+              )}
+              
+              <form onSubmit={handleAddChapter}>
+                <div className="form-group" style={{ marginBottom: "24px" }}>
+                  <label className="form-label" style={{ fontWeight: "600", fontSize: "13px", marginBottom: "8px" }}>Module Title</label>
+                  <input 
+                    className="form-input" 
+                    placeholder="e.g. Variables & Data Types" 
+                    value={chapterForm.title} 
+                    onChange={(e) => setChapterForm({ ...chapterForm, title: e.target.value })} 
+                    required 
+                    style={{ padding: "12px" }}
+                  />
+                </div>
+
+                <div className="form-group" style={{ marginBottom: "24px" }}>
+                  <label className="form-label" style={{ fontWeight: "600", fontSize: "13px", marginBottom: "8px" }}>Video File (Replace current video)</label>
+                  <input
+                    type="file"
+                    accept=".mp4,.mov,.webm,.mkv"
+                    onChange={handleVideoUpload}
+                    disabled={uploading}
+                    className="form-input"
+                    style={{ padding: "10px" }}
+                  />
+
+                  {uploading && (
+                    <div style={{ marginTop: "12px" }}>
+                      <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "4px" }}>
+                        Uploading video ({uploadProgress}%)
+                      </div>
+                      <div style={{
+                        width: "100%",
+                        height: "6px",
+                        backgroundColor: "var(--border-muted, #e5e7eb)",
+                        borderRadius: "3px",
+                        overflow: "hidden",
+                      }}>
+                        <div style={{
+                          height: "100%",
+                          width: `${uploadProgress}%`,
+                          backgroundColor: "var(--brand, #0070f3)",
+                          transition: "width 0.1s ease",
+                        }} />
+                      </div>
+                    </div>
+                  )}
+
+                  {transcribing && (
+                    <div style={{ marginTop: "12px", fontSize: "12px", color: "var(--brand)", display: "flex", alignItems: "center", gap: "8px" }}>
+                      <span className="spinner" style={{ width: 12, height: 12, border: "2px solid var(--brand)", borderTopColor: "transparent", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
+                      Transcribing video audio…
+                    </div>
+                  )}
+
+                  {uploadedFileName && !uploading && (
+                    <div style={{ marginTop: "12px", padding: "12px", backgroundColor: "var(--bg-canvas)", border: "1px solid var(--border-muted)", borderRadius: "var(--radius-sm)" }}>
+                      <div style={{ fontSize: "12px", fontWeight: "600", color: "var(--text-main)" }}>
+                        ✓ File: {uploadedFileName}
+                      </div>
+                    </div>
+                  )}
+
+                  {uploadError && (
+                    <p style={{ fontSize: "12px", color: "var(--color-danger)", marginTop: "8px" }}>
+                      ❌ {uploadError}
+                    </p>
+                  )}
+
+                  {/* ── Auto-Transcript Generation ─────────────────────── */}
+                  {uploadedFileName && !uploading && (
+                    <div style={{ marginTop: "16px", padding: "14px 16px", borderRadius: "10px", border: "1px solid rgba(99,102,241,0.25)", background: "linear-gradient(135deg, rgba(99,102,241,0.04) 0%, rgba(139,92,246,0.04) 100%)" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
+                        <div style={{ fontSize: "12px", color: "var(--text-main)", fontWeight: "500" }}>
+                          <span style={{ marginRight: "6px" }}>✨</span>
+                          Auto-generate transcript from this video
+                        </div>
+                        {!transcribing && transcribeStage !== "done" && (
+                          <button
+                            type="button"
+                            onClick={handleGenerateTranscript}
+                            disabled={transcribing}
+                            style={{
+                              padding: "6px 16px",
+                              fontSize: "12px",
+                              fontWeight: "600",
+                              borderRadius: "20px",
+                              border: "none",
+                              cursor: "pointer",
+                              background: "linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)",
+                              color: "#fff",
+                              letterSpacing: "0.02em",
+                              boxShadow: "0 2px 8px rgba(99,102,241,0.35)",
+                              transition: "opacity 0.2s",
+                            }}
+                          >
+                            Generate Transcript
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Stage indicator */}
+                      {transcribing && (
+                        <div style={{ marginTop: "12px" }}>
+                          {/* Upload progress bar */}
+                          {transcribeStage === "uploading" && (
+                            <>
+                              <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "6px" }}>
+                                ⬆️ Uploading video… {transcribeProgress}%
+                              </div>
+                              <div style={{ width: "100%", height: "5px", backgroundColor: "var(--border-muted)", borderRadius: "3px", overflow: "hidden" }}>
+                                <div style={{ height: "100%", width: `${transcribeProgress}%`, background: "linear-gradient(90deg, #6366f1, #8b5cf6)", transition: "width 0.15s ease", borderRadius: "3px" }} />
+                              </div>
+                            </>
+                          )}
+                          {transcribeStage === "extracting" && (
+                            <div style={{ fontSize: "11px", color: "#6366f1", fontWeight: "500" }}>
+                              <StageSpinner /> Extracting audio with FFmpeg…
+                            </div>
+                          )}
+                          {transcribeStage === "transcribing" && (
+                            <div style={{ fontSize: "11px", color: "#8b5cf6", fontWeight: "500" }}>
+                              <StageSpinner /> Transcribing with Whisper AI…
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Done */}
+                      {transcribeStage === "done" && !transcribing && (
+                        <div style={{ marginTop: "10px", fontSize: "11px", color: "var(--color-success)", fontWeight: "600" }}>
+                          ✓ Transcript generated and filled below — review and edit if needed.
+                        </div>
+                      )}
+
+                      {/* Error */}
+                      {transcribeError && (
+                        <div style={{ marginTop: "10px", fontSize: "11px", color: "var(--color-danger)", fontWeight: "500" }}>
+                          ❌ {transcribeError}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className="form-group" style={{ marginBottom: "24px" }}>
+                  <label className="form-label" style={{ fontWeight: "600", fontSize: "13px", marginBottom: "8px" }}>Article Content (markdown)</label>
+                  <div style={{ marginBottom: "12px" }}>
+                    <input
+                      type="file"
+                      accept=".txt,.md,.pdf,.docx"
+                      onChange={handleArticleUpload}
+                      disabled={articleUploading}
+                      className="form-input"
+                      style={{ padding: "8px" }}
+                    />
+                    {articleUploading && (
+                      <div style={{ marginTop: "8px", fontSize: "12px", color: "var(--brand)", display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span className="spinner" style={{ width: 12, height: 12, border: "2px solid var(--brand)", borderTopColor: "transparent", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
+                        Extracting text from {articleFileName}…
+                      </div>
+                    )}
+                    {articleFileName && !articleUploading && !articleError && (
+                      <div style={{ marginTop: "8px", fontSize: "11px", color: "var(--color-success)" }}>
+                        ✓ Imported text from {articleFileName}. Review/edit below.
+                      </div>
+                    )}
+                    {articleError && (
+                      <p style={{ fontSize: "12px", color: "var(--color-danger)", marginTop: "8px" }}>❌ {articleError}</p>
+                    )}
+                  </div>
+                  <textarea 
+                    className="form-input form-textarea" 
+                    placeholder="## Topic&#10;Explain key concepts..." 
+                    value={chapterForm.article_content} 
+                    onChange={(e) => setChapterForm({ ...chapterForm, article_content: e.target.value })} 
+                    required 
+                    rows={12} 
+                    style={{ padding: "12px", lineHeight: "1.6", fontFamily: "inherit" }}
+                  />
+                </div>
+
+                <div className="form-group" style={{ marginBottom: "32px" }}>
+                  <label className="form-label" style={{ fontWeight: "600", fontSize: "13px", marginBottom: "8px" }}>Video Transcript (auto-generated — editable)</label>
+                  <textarea 
+                    className="form-input form-textarea" 
+                    placeholder="Transcript will be generated automatically if a new video is uploaded..." 
+                    value={chapterForm.video_transcript} 
+                    onChange={(e) => setChapterForm({ ...chapterForm, video_transcript: e.target.value })} 
+                    rows={8} 
+                    style={{ padding: "12px", lineHeight: "1.6" }}
+                  />
+                </div>
+
+                <div style={{ display: "flex", gap: "12px" }}>
+                  <button type="submit" className="btn btn-primary" disabled={chapterStatus === "saving" || uploading || !chapterForm.youtube_url}>
+                    {chapterStatus === "saving" ? "Saving Changes…" : "Save Changes"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={handleCancelEditChapter}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            </div>
+
+          </div>
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
       <Navbar />
@@ -704,9 +1026,7 @@ function TeacherPanel() {
                 TEACHER
               </span>
             </div>
-            <p style={{ color: "var(--text-muted)", fontSize: "14px", margin: "4px 0 0" }}>
-              Welcome, <strong style={{ color: "var(--text-title)" }}>{user?.name}</strong>. Manage your courses and track student progress.
-            </p>
+
           </div>
 
           {/* Tabs */}
@@ -802,15 +1122,15 @@ function TeacherPanel() {
                     </div>
                   ))}
                 </div>
-                <div className="card" style={{ backgroundColor: "var(--bg-surface)" }}>
+                <div className="card" style={{ backgroundColor: "var(--bg-surface)", alignSelf: "flex-start" }}>
                   <h3 style={{ fontSize: "14px", fontWeight: "700", color: "var(--text-title)", marginBottom: "16px", textTransform: "uppercase", letterSpacing: "0.08em", fontFamily: "JetBrains Mono" }}>
-                    AI Interview Flow
+                    Course Progression Flow
                   </h3>
                   <ol style={{ fontSize: "13px", color: "var(--text-main)", paddingLeft: "18px", lineHeight: "1.8" }}>
-                    <li>Student watches your YouTube video</li>
-                    <li>Student reads the module article</li>
-                    <li>AI oral interview (Google Meet style)</li>
-                    <li>Pass → next module unlocked · Fail → must re-study</li>
+                    <li>Watch video lectures</li>
+                    <li>Read module documentation</li>
+                    <li>Complete concept quizzes to unlock the next module</li>
+                    <li>Complete the final course-wide AI interview</li>
                   </ol>
                 </div>
               </div>
@@ -819,77 +1139,130 @@ function TeacherPanel() {
 
           {/* My Courses - Level 1 (Courses List) */}
           {activeTab === "courses" && !selectedCourseForStudents && (
-            <div className="table-container">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Course Title</th><th>Chapters</th><th>Students</th><th>Pass Rate</th><th>Status</th><th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {courses.map((c) => (
-                    <tr
-                      key={c.id}
-                      style={{ cursor: "pointer" }}
+            <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+              {courses.map((c) => (
+                <div
+                  key={c.id}
+                  className="teacher-course-card"
+                  onClick={() => {
+                    setSelectedCourseForStudents(c);
+                    loadCourseStudents(c.id);
+                  }}
+                >
+                  {/* Left: Thumbnail & Title */}
+                  <div className="teacher-course-card-left">
+                    <div className="mono" style={{
+                      width: "48px",
+                      height: "48px",
+                      borderRadius: "var(--radius-sm)",
+                      backgroundColor: "var(--brand-muted)",
+                      color: "var(--brand)",
+                      display: "grid",
+                      placeItems: "center",
+                      fontSize: "16px",
+                      fontWeight: "700",
+                      flexShrink: 0
+                    }}>
+                      {c.title?.slice(0, 2).toUpperCase()}
+                    </div>
+                    <div>
+                      <h4 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "var(--text-title)" }}>
+                        {c.title}
+                      </h4>
+                      <div style={{ marginTop: "6px", display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span className={`badge ${c.is_published ? "badge-success" : "badge-warning"}`} style={{ fontSize: "10px", padding: "2px 6px" }}>
+                          {c.is_published ? "Live" : "Draft"}
+                        </span>
+                        {publishSuccessMsg[c.id] && (
+                          <span style={{ color: "var(--color-success)", fontSize: "11px", fontWeight: "600" }}>
+                            ✓ {publishSuccessMsg[c.id]}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Middle: Stats */}
+                  <div className="teacher-course-card-middle">
+                    <div style={{ textAlign: "center" }}>
+                      <div style={{ fontSize: "11px", color: "var(--text-muted)", fontFamily: "JetBrains Mono", textTransform: "uppercase", letterSpacing: "0.05em" }}>Modules</div>
+                      <div style={{ fontSize: "16px", fontWeight: "700", color: "var(--text-title)", marginTop: "2px" }} className="mono">
+                        {c.chapters?.length || 0}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "center" }}>
+                      <div style={{ fontSize: "11px", color: "var(--text-muted)", fontFamily: "JetBrains Mono", textTransform: "uppercase", letterSpacing: "0.05em" }}>Students</div>
+                      <div style={{ fontSize: "16px", fontWeight: "700", color: "var(--text-title)", marginTop: "2px" }} className="mono">
+                        {c.student_count ?? 0}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "center" }}>
+                      <div style={{ fontSize: "11px", color: "var(--text-muted)", fontFamily: "JetBrains Mono", textTransform: "uppercase", letterSpacing: "0.05em" }}>Pass Rate</div>
+                      <div style={{ fontSize: "16px", fontWeight: "700", color: "var(--text-title)", marginTop: "2px" }} className="mono">
+                        {c.pass_rate !== undefined && c.pass_rate !== null ? `${c.pass_rate}%` : "0%"}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Right: Actions */}
+                  <div
+                    className="teacher-course-card-right"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      className="btn btn-secondary btn-sm"
                       onClick={() => {
                         setSelectedCourseForStudents(c);
                         loadCourseStudents(c.id);
                       }}
+                      style={{ display: "flex", alignItems: "center", gap: "6px" }}
                     >
-                      <td style={{ fontWeight: "700", color: "var(--text-title)" }}>
-                        {c.title}
-                      </td>
-                      <td className="mono">{c.chapters?.length || 0}</td>
-                      <td className="mono">{c.student_count ?? 0}</td>
-                      <td className="mono">{c.pass_rate !== undefined && c.pass_rate !== null ? `${c.pass_rate}%` : "0%"}</td>
-                      <td>
-                        <span className={`badge ${c.is_published ? "badge-success" : "badge-warning"}`}>
-                          {c.is_published ? "Live" : "Draft"}
-                        </span>
-                      </td>
-                      <td style={{ display: "flex", gap: "8px", flexWrap: "wrap", flexDirection: "column", alignItems: "flex-start" }} onClick={(e) => e.stopPropagation()}>
-                        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                          <button
-                            className="btn btn-primary btn-sm"
-                            onClick={() => {
-                              setSelectedCourseForStudents(c);
-                              loadCourseStudents(c.id);
-                            }}
-                          >
-                            View Students
-                          </button>
-                          <button className="btn btn-secondary btn-sm" onClick={() => { setSelectedCourseId(c.id); setActiveTab("modules"); }}>Add Modules</button>
-                          <button
-                            className="btn btn-secondary btn-sm"
-                            onClick={() => handlePublish(c.id, c.is_published)}
-                            disabled={publishingCourses[c.id]}
-                          >
-                            {publishingCourses[c.id] ? (
-                              c.is_published ? "Unpublishing..." : "Publishing..."
-                            ) : (
-                              c.is_published ? "Unpublish" : "Publish"
-                            )}
-                          </button>
-                          <button
-                            className="btn btn-danger btn-sm"
-                            onClick={() => handleDeleteCourse(c.id)}
-                          >
-                            Delete
-                          </button>
-                        </div>
-                        {publishSuccessMsg[c.id] && (
-                          <div style={{ color: "var(--color-success)", fontSize: "11px", fontWeight: "600", marginTop: "4px" }}>
-                            ✓ {publishSuccessMsg[c.id]}
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                  {courses.length === 0 && (
-                    <tr><td colSpan={6} style={{ textAlign: "center", color: "var(--text-muted)" }}>No courses yet</td></tr>
-                  )}
-                </tbody>
-              </table>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+                      Students
+                    </button>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => { setSelectedCourseId(c.id); setActiveTab("modules"); }}
+                      style={{ display: "flex", alignItems: "center", gap: "6px" }}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2" /><polyline points="2 17 12 22 22 17" /><polyline points="2 12 12 17 22 12" /></svg>
+                      Modules
+                    </button>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => handlePublish(c.id, c.is_published)}
+                      disabled={publishingCourses[c.id]}
+                      style={{ display: "flex", alignItems: "center", gap: "6px" }}
+                    >
+                      {publishingCourses[c.id] ? (
+                        c.is_published ? "Drafting..." : "Publishing..."
+                      ) : c.is_published ? (
+                        <>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 9.9-1" /></svg>
+                          Draft
+                        </>
+                      ) : (
+                        <>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></svg>
+                          Publish
+                        </>
+                      )}
+                    </button>
+                    <button
+                      className="btn btn-danger btn-sm"
+                      onClick={() => handleDeleteCourse(c.id)}
+                      style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 8px" }}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><line x1="10" y1="11" x2="10" y2="17" /><line x1="14" y1="11" x2="14" y2="17" /></svg>
+                    </button>
+                  </div>
+                </div>
+              ))}
+              {courses.length === 0 && (
+                <div style={{ textAlign: "center", padding: "48px", color: "var(--text-muted)", border: "1px dashed var(--border-muted)", borderRadius: "var(--radius-md)" }}>
+                  No courses yet.
+                </div>
+              )}
             </div>
           )}
 
@@ -1067,7 +1440,7 @@ function TeacherPanel() {
             <div className="grid-2" style={{ alignItems: "start" }}>
               <div className="card" style={{ backgroundColor: "var(--bg-surface)" }}>
                 <h3 style={{ fontSize: "14px", fontWeight: "700", marginBottom: "20px", textTransform: "uppercase", fontFamily: "JetBrains Mono" }}>
-                  Add Module (Chapter)
+                  {editingChapterId ? "Edit Module" : "Add Module (Chapter)"}
                 </h3>
                 <div className="form-group">
                   <label className="form-label">Select Course</label>
@@ -1075,14 +1448,22 @@ function TeacherPanel() {
                     className="form-input"
                     value={selectedCourseId}
                     onChange={(e) => setSelectedCourseId(e.target.value)}
+                    disabled={!!editingChapterId}
                   >
                     {courses.map((c) => (
                       <option key={c.id} value={c.id}>{c.title}</option>
                     ))}
                   </select>
                 </div>
-                {chapterStatus === "success" && (
-                  <div className="badge badge-success" style={{ marginBottom: "16px" }}>Module added! Transcript is being fetched in the background — refresh in a moment to see status.</div>
+                {chapterStatus === "success-add" && (
+                  <div className="badge badge-success" style={{ marginBottom: "16px" }}>
+                    Module added! Transcript is being fetched in the background — refresh in a moment to see status.
+                  </div>
+                )}
+                {chapterStatus === "success-edit" && (
+                  <div className="badge badge-success" style={{ marginBottom: "16px" }}>
+                    Module updated successfully!
+                  </div>
                 )}
                 {chapterStatus.startsWith("error:") && (
                   <div style={{ color: "var(--color-danger)", marginBottom: "16px", fontSize: "13px" }}>{chapterStatus.slice(6)}</div>
@@ -1157,79 +1538,7 @@ function TeacherPanel() {
                     {/* Gate on state (not the ref) so the panel re-renders
                         reliably; the raw File is still read from videoFileRef
                         inside the click handler, which is allowed. */}
-                    {uploadedFileName && !uploading && (
-                      <div style={{ marginTop: "16px", padding: "14px 16px", borderRadius: "10px", border: "1px solid rgba(99,102,241,0.25)", background: "linear-gradient(135deg, rgba(99,102,241,0.04) 0%, rgba(139,92,246,0.04) 100%)" }}>
-                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
-                          <div style={{ fontSize: "12px", color: "var(--text-main)", fontWeight: "500" }}>
-                            <span style={{ marginRight: "6px" }}>✨</span>
-                            Auto-generate transcript from this video
-                          </div>
-                          {!transcribing && transcribeStage !== "done" && (
-                            <button
-                              type="button"
-                              onClick={handleGenerateTranscript}
-                              disabled={transcribing}
-                              style={{
-                                padding: "6px 16px",
-                                fontSize: "12px",
-                                fontWeight: "600",
-                                borderRadius: "20px",
-                                border: "none",
-                                cursor: "pointer",
-                                background: "linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)",
-                                color: "#fff",
-                                letterSpacing: "0.02em",
-                                boxShadow: "0 2px 8px rgba(99,102,241,0.35)",
-                                transition: "opacity 0.2s",
-                              }}
-                            >
-                              Generate Transcript
-                            </button>
-                          )}
-                        </div>
 
-                        {/* Stage indicator */}
-                        {transcribing && (
-                          <div style={{ marginTop: "12px" }}>
-                            {/* Upload progress bar */}
-                            {transcribeStage === "uploading" && (
-                              <>
-                                <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "6px" }}>
-                                  ⬆️ Uploading video… {transcribeProgress}%
-                                </div>
-                                <div style={{ width: "100%", height: "5px", backgroundColor: "var(--border-muted)", borderRadius: "3px", overflow: "hidden" }}>
-                                  <div style={{ height: "100%", width: `${transcribeProgress}%`, background: "linear-gradient(90deg, #6366f1, #8b5cf6)", transition: "width 0.15s ease", borderRadius: "3px" }} />
-                                </div>
-                              </>
-                            )}
-                            {transcribeStage === "extracting" && (
-                              <div style={{ fontSize: "11px", color: "#6366f1", fontWeight: "500" }}>
-                                <StageSpinner /> Extracting audio with FFmpeg…
-                              </div>
-                            )}
-                            {transcribeStage === "transcribing" && (
-                              <div style={{ fontSize: "11px", color: "#8b5cf6", fontWeight: "500" }}>
-                                <StageSpinner /> Transcribing with Whisper AI…
-                              </div>
-                            )}
-                          </div>
-                        )}
-
-                        {/* Done */}
-                        {transcribeStage === "done" && !transcribing && (
-                          <div style={{ marginTop: "10px", fontSize: "11px", color: "var(--color-success)", fontWeight: "600" }}>
-                            ✓ Transcript generated and filled below — review and edit if needed.
-                          </div>
-                        )}
-
-                        {/* Error */}
-                        {transcribeError && (
-                          <div style={{ marginTop: "10px", fontSize: "11px", color: "var(--color-danger)", fontWeight: "500" }}>
-                            ❌ {transcribeError}
-                          </div>
-                        )}
-                      </div>
-                    )}
                   </div>
                   <div className="form-group">
                     <label className="form-label">Article Content (markdown)</label>
@@ -1269,9 +1578,20 @@ function TeacherPanel() {
                       Generated automatically from the video&apos;s audio when you upload it. Review/edit before saving — this text is embedded and used by the AI to formulate questions and assess student comprehension.
                     </p>
                   </div>
-                  <button type="submit" className="btn btn-primary" disabled={!selectedCourseId || chapterStatus === "saving" || uploading || !chapterForm.youtube_url}>
-                    {chapterStatus === "saving" ? "Adding…" : "Add Module"}
-                  </button>
+                  <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+                    <button type="submit" className="btn btn-primary" disabled={!selectedCourseId || chapterStatus === "saving" || uploading || !chapterForm.youtube_url}>
+                      {chapterStatus === "saving" ? (editingChapterId ? "Saving…" : "Adding…") : (editingChapterId ? "Save Changes" : "Add Module")}
+                    </button>
+                    {editingChapterId && (
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={handleCancelEditChapter}
+                      >
+                        Cancel
+                      </button>
+                    )}
+                  </div>
                 </form>
               </div>
               <div className="card" style={{ backgroundColor: "var(--bg-surface)" }}>
@@ -1294,15 +1614,24 @@ function TeacherPanel() {
                     <div key={ch.id} style={{ padding: "12px 0", borderBottom: "1px solid var(--border-muted)" }}>
                       <div style={{ fontWeight: "700", fontSize: "14px" }}>{String(i + 1).padStart(2, "0")} — {ch.title}</div>
                       <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px", wordBreak: "break-all" }}>{ch.youtube_url}</div>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "4px" }}>
-
+                      <div style={{ display: "flex", gap: "8px", alignItems: "center", marginTop: "8px" }}>
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          style={{ padding: "2px 8px", fontSize: "11px", display: "flex", alignItems: "center", gap: "4px" }}
+                          onClick={() => handleEditChapter(ch)}
+                        >
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4z" /></svg>
+                          Edit
+                        </button>
                         <button
                           type="button"
                           className="btn btn-danger btn-sm"
-                          style={{ padding: "2px 8px", fontSize: "11px" }}
+                          style={{ padding: "2px 8px", fontSize: "11px", display: "flex", alignItems: "center", gap: "4px" }}
                           onClick={() => handleDeleteChapter(ch.id)}
                         >
-                          Delete Module
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
+                          Delete
                         </button>
                       </div>
                     </div>

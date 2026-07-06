@@ -16,6 +16,16 @@ export default function CourseDetailPage() {
   const [enrollLoading, setEnrollLoading] = useState(true);
   const [enrolling, setEnrolling] = useState(false);
   const [enrollError, setEnrollError] = useState("");
+  const [evaluations, setEvaluations] = useState([]);
+
+  // ── Load evaluations to check if final interview is passed ──
+  useEffect(() => {
+    if (!user) return;
+    authFetch(`/api/student/courses/${params.id}/evaluations`)
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data) => setEvaluations(data))
+      .catch(() => setEvaluations([]));
+  }, [params.id, user, authFetch]);
 
   // ── Load course (public, no auth required) ──
   useEffect(() => {
@@ -99,6 +109,9 @@ export default function CourseDetailPage() {
   const chapters = [...(course.chapters || [])].sort((a, b) => a.order_index - b.order_index);
   const isEnrolled = !!enrollment;
   const currentIndex = enrollment?.current_chapter_index ?? 0;
+  const passedFinalInterview = evaluations.some(
+    (ev) => ev.chapter === "Course Capstone" && ev.passed
+  );
 
   return (
     <>
@@ -113,7 +126,7 @@ export default function CourseDetailPage() {
               <h1 style={{ fontSize: "32px", fontWeight: "700", marginBottom: "12px" }}>{course.title}</h1>
               <p style={{ color: "var(--text-main)", marginBottom: "24px", lineHeight: "1.6" }}>{course.description}</p>
               <div style={{ fontSize: "13px", color: "var(--text-muted)" }}>
-                {chapters.length} Modules · {course.pass_threshold}% pass threshold · Optional course-wide AI interview
+                {chapters.length} Modules · {course.quiz_threshold || 70}% quiz passing threshold · {course.pass_threshold || 70}% interview passing threshold
               </div>
               <div style={{ marginTop: "28px" }}>
                 {!user ? (
@@ -145,6 +158,7 @@ export default function CourseDetailPage() {
           <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
             {chapters.map((ch, i) => {
               const unlocked = isEnrolled && i <= currentIndex;
+              const isPassed = isEnrolled && (enrollment.status === "completed" || enrollment.status === "capstone_ready" || i < currentIndex);
               return (
                 <div className="card" key={ch.id} style={{ padding: "20px 24px", display: "flex", alignItems: "center", gap: "24px", backgroundColor: "var(--bg-surface)" }}>
                   <div className="mono" style={{ width: "36px", height: "36px", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-muted)", display: "grid", placeItems: "center", fontSize: "12px" }}>
@@ -156,9 +170,18 @@ export default function CourseDetailPage() {
                       <p style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "4px" }}>Includes video lecture</p>
                     )}
                   </div>
-                  <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
                     {!user ? null : unlocked ? (
-                      <Link href={`/learn/${params.id}/${ch.id}`} className="btn btn-secondary btn-sm">Enter Module</Link>
+                      <>
+                        {isPassed && (
+                          <span style={{
+                            fontSize: "9px", fontWeight: "700", padding: "2px 6px",
+                            borderRadius: "4px", backgroundColor: "var(--bg-success)", color: "var(--color-success)",
+                            textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "JetBrains Mono", flexShrink: 0
+                          }}>Passed</span>
+                        )}
+                        <Link href={`/learn/${params.id}/${ch.id}`} className="btn btn-secondary btn-sm">Enter Module</Link>
+                      </>
                     ) : !isEnrolled ? (
                       <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>🔒 Enroll to unlock</span>
                     ) : (
@@ -184,7 +207,16 @@ export default function CourseDetailPage() {
                     Optional · Mav asks questions spanning every module · take it any time
                   </p>
                 </div>
-                <Link href={`/interview/${params.id}`} className="btn btn-primary btn-sm">Start Interview</Link>
+                <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                  {passedFinalInterview && (
+                    <span style={{
+                      fontSize: "9px", fontWeight: "700", padding: "2px 6px",
+                      borderRadius: "4px", backgroundColor: "var(--bg-success)", color: "var(--color-success)",
+                      textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "JetBrains Mono", flexShrink: 0
+                    }}>Passed</span>
+                  )}
+                  <Link href={`/interview/${params.id}`} className="btn btn-primary btn-sm">Start Interview</Link>
+                </div>
               </div>
             )}
           </div>

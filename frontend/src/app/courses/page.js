@@ -70,7 +70,7 @@ export default function CoursesPage() {
         <div className="container" style={{ padding: "48px 32px" }}>
           <div className="section-header">
             <h2>Course Catalog</h2>
-            <p>Access our technical learning curriculum with AI oral assessments after each module.</p>
+            <p>Master core engineering concepts with structured tracks and instant AI oral feedback.</p>
           </div>
           {loading ? (
             <p style={{ color: "var(--text-muted)" }}>Loading courses…</p>

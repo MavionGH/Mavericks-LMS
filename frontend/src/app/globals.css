@@ -1896,3 +1896,74 @@ tr:hover td {
     gap: 12px;
   }
 }
+
+/* Teacher Course Card responsive styles */
+.teacher-course-card {
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s;
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-md);
+  position: relative;
+}
+
+.teacher-course-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.05);
+}
+
+.teacher-course-card-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+}
+
+.teacher-course-card-middle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  width: 100%;
+  padding: 12px 0;
+  border-top: 1px solid var(--border-muted);
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.teacher-course-card-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  width: 100%;
+  justify-content: flex-start;
+}
+
+@media (min-width: 992px) {
+  .teacher-course-card {
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    gap: 24px;
+  }
+  .teacher-course-card-left {
+    width: auto;
+    flex: 1.2;
+  }
+  .teacher-course-card-middle {
+    width: auto;
+    flex: 1;
+    justify-content: space-around;
+    padding: 0;
+    border-top: none;
+    border-bottom: none;
+  }
+  .teacher-course-card-right {
+    width: auto;
+    justify-content: flex-end;
+  }
+}
