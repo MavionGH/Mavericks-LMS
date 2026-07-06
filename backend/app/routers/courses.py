@@ -292,6 +292,24 @@ def add_chapter(
     return ChapterResponse.model_validate(chapter)
 
 
+@router.get("/manage/chapters/{chapter_id}", response_model=ChapterResponse)
+def get_chapter_for_edit(
+    chapter_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_teacher),
+):
+    """Get full details of a single chapter for the teacher editing view (includes transcript)."""
+    chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
+    if not chapter:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+    course = db.query(Course).filter(Course.id == chapter.course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    if current_user.role != UserRole.ADMIN and course.teacher_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You do not own this course")
+    return ChapterResponse.model_validate(chapter)
+
+
 @router.put("/chapters/{chapter_id}", response_model=ChapterResponse)
 def update_chapter(
     chapter_id: str,

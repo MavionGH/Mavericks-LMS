@@ -38,17 +38,17 @@ export default function FeaturedCourses() {
   return (
     <div className="grid-3">
       {courses.map((c) => (
-        <div className="card course-card" key={c.id}>
+        <Link href={`/courses/${c.id}`} className="card course-card" key={c.id} style={{ display: "flex", flexDirection: "column" }}>
           <div className="course-card-thumb">{c.title?.slice(0, 2).toUpperCase()}</div>
           <div className="course-card-body">
             <h3>{c.title}</h3>
-            <p>{c.description}</p>
-            <div className="course-card-meta">
-              <span className="course-card-chapters">{c.chapter_count || 0} chapters</span>
-              <Link href={`/courses/${c.id}`} className="btn btn-secondary btn-sm">View details</Link>
+            <p className="course-card-desc">{c.description}</p>
+            <div className="course-card-meta" style={{ marginTop: "auto" }}>
+              <span className="course-card-chapters">{c.chapter_count || 0} modules</span>
+              <span className="btn btn-secondary btn-sm" style={{ pointerEvents: "none" }}>View details</span>
             </div>
           </div>
-        </div>
+        </Link>
       ))}
     </div>
   );
