@@ -356,7 +356,7 @@ def llm_generate_question(
         user = (
             f"Module: {chapter_title}\n"
             f"Student first name: {first or '(unknown)'}\n\n"
-            f"Content:\n{context[:200000]}\n\n"
+            f"Content:\n{context[:500000]}\n\n"
             f"Questions already asked (do NOT repeat these):\n{asked_block}\n\n"
             f"Conversation so far:\n{history or 'None yet'}\n\n"
             f"This is question #{question_number} of up to 5. "
@@ -629,7 +629,7 @@ def llm_score_interview(
     )
     user = (
         f"Module: {chapter_title}\n\n"
-        f"Reference content:\n{context[:200000]}\n\n"
+        f"Reference content:\n{context[:500000]}\n\n"
         f"Interview transcript:\n{dialogue}\n\n"
         f"Speech quality metrics:\n"
         f"- Avg hesitation pauses per answer: {avg_pause:.1f}\n"
@@ -863,7 +863,7 @@ def score_realtime_interview(
     )
     user = (
         f"Course: {course_name}\n\n"
-        f"Reference material:\n{context[:200000]}\n\n"
+        f"Reference material:\n{context[:500000]}\n\n"
         f"Full interview transcript "
         f"({num_answers} genuine answer(s) out of {total_questions} questions):\n"
         f"{dialogue}"

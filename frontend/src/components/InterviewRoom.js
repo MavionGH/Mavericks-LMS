@@ -271,6 +271,7 @@ export default function InterviewRoom({
   const playCtxRef = useRef(null);            // AudioContext playing Mav's voice (24kHz PCM16)
   const playGainRef = useRef(null);           // gain node all played chunks route through
   const playAnalyserRef = useRef(null);       // analyser on the playback chain, drives lip-sync
+  const aiVoiceActiveRef = useRef(false);     // mirrors aiVoiceActive for the mic audio callback
   const nextPlayTimeRef = useRef(0);          // scheduling cursor for gapless chunk playback
   const voiceIntervalRef = useRef(null);      // RMS polling interval for lip-sync
   const transcriptRef = useRef([]);           // source of truth sent to /finish
@@ -330,8 +331,12 @@ export default function InterviewRoom({
       const now = Date.now();
       if (rms > AI_VOICE_RMS_THRESHOLD) {
         lastLoudAt = now;
+        // Mark Mav as speaking BEFORE the state update so the mic callback (which
+        // reads the ref, not the async state) gates immediately on this same tick.
+        aiVoiceActiveRef.current = true;
         setAiVoiceActive(true);
       } else if (now - lastLoudAt > AI_VOICE_HOLD_MS) {
+        aiVoiceActiveRef.current = false;
         setAiVoiceActive(false);
       }
     }, 100);
@@ -486,6 +491,7 @@ export default function InterviewRoom({
     playAnalyserRef.current = null;
     nextPlayTimeRef.current = 0;
     micActiveRef.current = false;
+    aiVoiceActiveRef.current = false;
     setAiVoiceActive(false);
     setMicActive(false);
   }, []);
@@ -506,6 +512,22 @@ export default function InterviewRoom({
     let lastLoudAt = 0;
 
     processor.onaudioprocess = (e) => {
+      // While Mav is speaking, ignore the mic entirely: don't run local VAD and
+      // don't stream anything to Gemini. This is the fix for Mav "hearing"
+      // herself (speaker echo) or a student talking over her mid-turn and
+      // hallucinating / interrupting her own answer. The mic goes live again the
+      // instant she stops (aiVoiceActive is held AI_VOICE_HOLD_MS past her last
+      // word so the sub-second gaps between words don't reopen it early). The
+      // whole-session recorder uses a SEPARATE mic stream (recordMicStreamRef),
+      // so gating here never affects what the teacher reviews later.
+      if (aiVoiceActiveRef.current) {
+        if (micActiveRef.current) {
+          micActiveRef.current = false;
+          setMicActive(false);
+        }
+        return;
+      }
+
       const input = e.inputBuffer.getChannelData(0);
       let sum = 0;
       for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
@@ -1424,7 +1446,7 @@ export default function InterviewRoom({
               ) : aiVoiceActive && isGreeting ? (
                 <span style={{ color: "#8ab4f8" }}>👋 Mav is greeting you…</span>
               ) : aiVoiceActive ? (
-                <span style={{ color: "#8ab4f8" }}>🔊 Mav is speaking…</span>
+                <span style={{ color: "#8ab4f8" }}>🔊 Mav is speaking… your mic is paused — please wait for her to finish</span>
               ) : status === "AI PROCESSING" ? (
                 <span style={{ color: "#9aa0a6" }}>⏳ Thinking…</span>
               ) : connected ? (
