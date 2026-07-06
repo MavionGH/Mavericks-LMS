@@ -1967,3 +1967,32 @@ tr:hover td {
     justify-content: flex-end;
   }
 }
+
+/* ─── SKELETON SCREEN LOADING SHIMMER ─── */
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.skeleton-shimmer-bg {
+  background: linear-gradient(90deg, var(--border-muted) 25%, var(--bg-surface-hover) 37%, var(--border-muted) 63%);
+  background-size: 400% 100%;
+  animation: skeleton-shimmer 1.4s ease infinite;
+}
+
+/* Wrapper used by all full-page skeleton loading states.
+   Adds breathing room between the fixed navbar and the skeleton content. */
+.skeleton-page-wrapper {
+  padding: 40px 32px;
+  width: 100%;
+}
+
+@media (max-width: 768px) {
+  .skeleton-page-wrapper {
+    padding: 24px 16px;
+  }
+}

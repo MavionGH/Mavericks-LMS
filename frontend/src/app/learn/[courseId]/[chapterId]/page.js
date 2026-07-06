@@ -1,28 +1,26 @@
 "use client";
 import Navbar from "@/components/Navbar";
+import Skeleton, { SkeletonClassroom } from "@/components/Skeleton";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
 import { getYouTubeEmbedUrl, renderArticleHtml } from "@/lib/courseUtils";
+import { useLearn } from "../layout";
 
 function LearnPage() {
   const params = useParams();
   const router = useRouter();
   const { authFetch } = useAuth();
 
-  const [course, setCourse] = useState(null);
-  const [enrollment, setEnrollment] = useState(null);
+  const { course, setCourse, enrollment, setEnrollment, getCachedChapter, setCachedChapter } = useLearn();
+
   const [chapterDetail, setChapterDetail] = useState(null);
   const [quizStatus, setQuizStatus] = useState({ attempted: false, passed: false, score: null });
   const [activeTab, setActiveTab] = useState("video");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [chapterLoading, setChapterLoading] = useState(false); // lightweight per-chapter inline loader
   
-  const [evaluations, setEvaluations] = useState(null);
-  const [loadingEvals, setLoadingEvals] = useState(false);
-  const [selectedEval, setSelectedEval] = useState(null);
   const [syllabusExpanded, setSyllabusExpanded] = useState(false);
 
   const [hasPlayedVideo, setHasPlayedVideo] = useState(false);
@@ -34,6 +32,7 @@ function LearnPage() {
 
   useEffect(() => {
     // Reset play detection state when the chapter changes
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setHasPlayedVideo(false);
     setVideoPlayError("");
   }, [params.chapterId]);
@@ -46,7 +45,7 @@ function LearnPage() {
           if (data.event === "onStateChange" && data.info === 1) {
             setHasPlayedVideo(true);
           }
-        } catch (e) {}
+        } catch (e) { }
       }
     };
 
@@ -67,87 +66,80 @@ function LearnPage() {
     };
   }, []);
 
+  // Sync state with cached data asynchronously when chapterId changes
   useEffect(() => {
-    if (activeTab === "interviews" && evaluations === null) {
-      setLoadingEvals(true);
-      authFetch(`/api/student/courses/${params.courseId}/evaluations`)
-        .then(r => r.ok ? r.json() : [])
-        .then(data => setEvaluations(data || []))
-        .catch(() => setEvaluations([]))
-        .finally(() => setLoadingEvals(false));
+    const cached = getCachedChapter(params.chapterId);
+    if (cached) {
+      const timer = setTimeout(() => {
+        setChapterDetail(cached.detail);
+        setQuizStatus(cached.quiz);
+      }, 0);
+      return () => clearTimeout(timer);
+    } else {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setChapterDetail(null);
+      setQuizStatus({ attempted: false, passed: false, score: null });
     }
-  }, [activeTab, params.courseId, authFetch, evaluations]);
+  }, [params.chapterId, getCachedChapter]);
 
-  const chapters = course?.chapters?.sort((a, b) => a.order_index - b.order_index) || [];
+  // ── Effect: Load chapter detail + quiz status (per chapterId) ───────────────
+  // Uses a lightweight inline loader so the sidebar never flickers or disappears.
+  // Results are cached — switching back to a visited module is instant.
+  useEffect(() => {
+    if (!params.chapterId) return;
+
+    // If already cached, our sync effect handles it
+    if (getCachedChapter(params.chapterId)) {
+      return;
+    }
+
+    async function loadChapter() {
+      setChapterLoading(true);
+      try {
+        const [chRes, qRes] = await Promise.all([
+          authFetch(`/api/courses/chapters/${params.chapterId}`),
+          authFetch(`/api/quiz/${params.chapterId}/my-status`),
+        ]);
+
+        const detail = chRes.ok ? await chRes.json() : null;
+        const quiz = qRes.ok ? await qRes.json() : { attempted: false, passed: false, score: null };
+
+        // Store in cache
+        setCachedChapter(params.chapterId, detail, quiz);
+
+        setChapterDetail(detail);
+        setQuizStatus(quiz);
+      } catch (err) {
+        console.error("Chapter load error:", err);
+      } finally {
+        setChapterLoading(false);
+      }
+    }
+    loadChapter();
+  }, [params.chapterId, authFetch, getCachedChapter, setCachedChapter]);
+
+  // Derived values (safe to compute here since course/enrollment are stable after layout load)
+  const chapters = useMemo(() => {
+    return course?.chapters?.sort((a, b) => a.order_index - b.order_index) || [];
+  }, [course]);
+
   const currentIndex = enrollment?.current_chapter_index ?? 0;
   const currentChapter = chapters[currentIndex];
   const viewingChapter = chapters.find((c) => c.id === params.chapterId) || currentChapter;
 
+  // Guard: Redirect to active chapter if attempting to view a locked chapter
+  useEffect(() => {
+    if (!course || !enrollment) return;
+    const active = chapters[currentIndex];
+    const requestedIndex = chapters.findIndex((c) => c.id === params.chapterId);
+    if (active && (requestedIndex === -1 || requestedIndex > currentIndex)) {
+      router.replace(`/learn/${params.courseId}/${active.id}`);
+    }
+  }, [course, enrollment, currentIndex, chapters, params.chapterId, params.courseId, router]);
+
   const isCurrentChapter = viewingChapter?.id === currentChapter?.id;
   const videoWatched = isCurrentChapter && enrollment?.video_watched;
   const articleRead = isCurrentChapter && enrollment?.article_read;
-
-  useEffect(() => {
-    async function load() {
-      setLoading(true);
-      try {
-        // The course, the student's enrollment, the chapter detail and the quiz
-        // status are independent reads — the chapter id is already in the URL —
-        // so fire them together instead of in a serial waterfall. (Enrollment
-        // may need a follow-up POST to auto-enroll; that is the only dependency.)
-        const [courseRes, enrollGetRes, chRes, qRes] = await Promise.all([
-          authFetch(`/api/courses/${params.courseId}`),
-          authFetch(`/api/enrollment/course/${params.courseId}`),
-          params.chapterId
-            ? authFetch(`/api/courses/chapters/${params.chapterId}`)
-            : Promise.resolve(null),
-          params.chapterId
-            ? authFetch(`/api/quiz/${params.chapterId}/my-status`)
-            : Promise.resolve(null),
-        ]);
-
-        if (!courseRes.ok) throw new Error("Course not found");
-        const courseData = await courseRes.json();
-        setCourse(courseData);
-
-        let enrollRes = enrollGetRes;
-        if (enrollRes.status === 404) {
-          enrollRes = await authFetch("/api/enrollment/enroll", {
-            method: "POST",
-            body: JSON.stringify({ course_id: params.courseId }),
-          });
-        }
-        if (!enrollRes.ok) {
-          const detail = await enrollRes
-            .json()
-            .then((d) => d?.detail)
-            .catch(() => null);
-          throw new Error(detail || "Could not enroll in this course");
-        }
-        const enrollData = await enrollRes.json();
-        setEnrollment(enrollData);
-
-        const sorted = [...(courseData.chapters || [])].sort((a, b) => a.order_index - b.order_index);
-        const active = sorted[enrollData.current_chapter_index];
-        if (active && params.chapterId !== active.id) {
-          router.replace(`/learn/${params.courseId}/${active.id}`);
-          return;
-        }
-
-        if (chRes && chRes.ok) {
-          setChapterDetail(await chRes.json());
-        }
-        if (qRes && qRes.ok) {
-          setQuizStatus(await qRes.json());
-        }
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
-    }
-    load();
-  }, [params.courseId, params.chapterId, authFetch, router]);
 
   const markVideoWatched = async () => {
     if (!enrollment) return;
@@ -191,23 +183,12 @@ function LearnPage() {
     }
   };
 
-  if (loading) {
+  if (!viewingChapter) {
     return (
       <>
         <Navbar />
         <div className="page-container" style={{ padding: "80px 32px", textAlign: "center" }}>
-          <p style={{ color: "var(--text-muted)" }}>Loading module...</p>
-        </div>
-      </>
-    );
-  }
-
-  if (error || !viewingChapter) {
-    return (
-      <>
-        <Navbar />
-        <div className="page-container" style={{ padding: "80px 32px", textAlign: "center" }}>
-          <p style={{ color: "var(--color-danger)" }}>{error || "Module not found"}</p>
+          <p style={{ color: "var(--color-danger)" }}>Module not found</p>
           <Link href="/courses" className="btn btn-primary" style={{ marginTop: "16px" }}>Browse courses</Link>
         </div>
       </>
@@ -223,7 +204,6 @@ function LearnPage() {
     video: "Video Lecture",
     article: "Documentation",
     quiz: "Concept Check",
-    interviews: "Interviews",
   };
 
   const allModulesComplete = chapters.length > 0 && enrollment?.status === "completed";
@@ -254,8 +234,8 @@ function LearnPage() {
           </div>
 
           {syllabusExpanded && (
-            <div 
-              className="sidebar-backdrop" 
+            <div
+              className="sidebar-backdrop"
               onClick={() => setSyllabusExpanded(false)}
             />
           )}
@@ -264,7 +244,7 @@ function LearnPage() {
             {/* Sidebar Mobile Header */}
             <div className="sidebar-header-mobile">
               <span className="sidebar-title-mobile">Course Syllabus</span>
-              <button 
+              <button
                 type="button"
                 onClick={() => setSyllabusExpanded(false)}
                 aria-label="Close Course Syllabus"
@@ -326,7 +306,7 @@ function LearnPage() {
               {viewingChapter.title}
             </h1>
 
-            {!isCurrentChapter && (
+            {!isCurrentChapter && enrollment?.status === "enrolled" && (
               <div className="card" style={{ padding: "16px", marginBottom: "24px", backgroundColor: "var(--bg-warning)", border: "1px solid var(--color-warning)" }}>
                 <p style={{ fontSize: "13px", color: "var(--text-main)" }}>
                   This is a previously completed module. Your active module is <strong>{currentChapter?.title}</strong>.
@@ -334,8 +314,26 @@ function LearnPage() {
               </div>
             )}
 
+            {enrollment?.status === "completed" && (
+              <div className="card" style={{ padding: "16px", marginBottom: "24px", backgroundColor: "var(--bg-success)", border: "1px solid var(--color-success)" }}>
+                <p style={{ fontSize: "13px", color: "var(--text-main)", display: "flex", alignItems: "center", gap: "8px", margin: 0 }}>
+                  <span style={{ fontSize: "16px" }}>🎉</span>
+                  <span>You have completed this course! You can review any module at any time.</span>
+                </p>
+              </div>
+            )}
+
+            {enrollment?.status === "capstone_ready" && (
+              <div className="card" style={{ padding: "16px", marginBottom: "24px", backgroundColor: "var(--brand-muted)", border: "1px solid var(--brand-border)" }}>
+                <p style={{ fontSize: "13px", color: "var(--text-main)", display: "flex", alignItems: "center", gap: "8px", margin: 0 }}>
+                  <span style={{ fontSize: "16px" }}>🏆</span>
+                  <span>You have completed all modules! You are ready for the <strong>Final AI Interview</strong>. Go back to the Course page to start.</span>
+                </p>
+              </div>
+            )}
+
             <div className="tabs">
-              {["video", "article", "quiz", "interviews"].map((tab) => (
+              {["video", "article", "quiz"].map((tab) => (
                 <div key={tab} className={`tab ${activeTab === tab ? "active" : ""}`} onClick={() => setActiveTab(tab)}>
                   {TAB_LABELS[tab]}
                   {tab === "quiz" && quizStatus.passed && (
@@ -373,8 +371,8 @@ function LearnPage() {
                 {isCurrentChapter && (
                   !videoWatched ? (
                     <div style={{ marginTop: "16px" }}>
-                      <button 
-                        className="btn btn-secondary" 
+                      <button
+                        className="btn btn-secondary"
                         onClick={markVideoWatched}
                         disabled={videoSaving}
                       >
@@ -401,15 +399,28 @@ function LearnPage() {
             {/* ARTICLE TAB */}
             {activeTab === "article" && (
               <div>
-                <div className="article-content" dangerouslySetInnerHTML={{ __html: renderArticleHtml(chapterDetail?.article_content || "*Loading documentation...*") }} />
+                {chapterLoading ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "10px", paddingTop: "8px" }}>
+                    <Skeleton variant="text" width="40%" height={20} />
+                    <Skeleton variant="text" width="100%" height={14} />
+                    <Skeleton variant="text" width="95%" height={14} />
+                    <Skeleton variant="text" width="88%" height={14} />
+                    <Skeleton variant="text" width="70%" height={14} style={{ marginTop: "12px" }} />
+                    <Skeleton variant="text" width="100%" height={14} />
+                    <Skeleton variant="text" width="80%" height={14} />
+                    <Skeleton variant="rectangular" height={120} style={{ marginTop: "16px" }} />
+                  </div>
+                ) : (
+                  <div className="article-content" dangerouslySetInnerHTML={{ __html: renderArticleHtml(chapterDetail?.article_content || "") }} />
+                )}
                 {isCurrentChapter && (
                   <div style={{ marginTop: "24px" }}>
                     {!articleRead ? (
                       <div>
-                        <button 
-                          className="btn btn-secondary" 
+                        <button
+                          className="btn btn-secondary"
                           onClick={markArticleRead}
-                          disabled={articleSaving}
+                          disabled={articleSaving || chapterLoading}
                         >
                           {articleSaving ? "Saving..." : "Complete documentation"}
                         </button>
@@ -430,175 +441,69 @@ function LearnPage() {
             {/* QUIZ TAB */}
             {activeTab === "quiz" && (
               <div>
-                <div className="card" style={{ padding: "32px", backgroundColor: "var(--bg-surface)" }}>
-                  <h3 style={{ fontSize: "16px", fontWeight: "700", marginBottom: "8px" }}>Concept Check</h3>
-                  <p style={{ color: "var(--text-muted)", marginBottom: "24px", fontSize: "13.5px" }}>
-                    Complete the quiz to verify your understanding of this module.
-                    {isCurrentChapter && " Passing it unlocks the next module."}
-                  </p>
-                  {quizStatus.passed ? (
-                    <div>
-                      <div className="badge badge-success" style={{ marginBottom: "16px" }}>
-                        ✓ Passed ({quizStatus.score}%){isCurrentChapter ? " — Module complete" : ""}
-                      </div>
-                      <br />
-                      {isCurrentChapter && (
-                        allModulesComplete ? (
-                          <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>
-                            You&apos;ve completed every module in this course. 🎉
-                          </span>
-                        ) : (
-                          <Link href={`/learn/${params.courseId}`}>
-                            <button className="btn btn-primary" style={{ marginTop: "12px" }}>Continue to next module</button>
-                          </Link>
-                        )
-                      )}
-                    </div>
-                  ) : quizStatus.attempted ? (
-                    <div>
-                      <div className="badge badge-danger" style={{ marginBottom: "16px" }}>
-                        Score: {quizStatus.score}% — Retake to advance
-                      </div>
-                      <br />
-                      {isCurrentChapter && (
-                        <Link href={`/quiz/${params.courseId}/${viewingChapter.id}`}>
-                          <button className="btn btn-primary" style={{ marginTop: "12px" }}>Retake Quiz</button>
-                        </Link>
-                      )}
-                    </div>
-                  ) : isCurrentChapter ? (
-                    videoWatched && articleRead ? (
-                      <Link href={`/quiz/${params.courseId}/${viewingChapter.id}`}>
-                        <button className="btn btn-primary">Start Concept Check</button>
-                      </Link>
-                    ) : (
-                      <button className="btn btn-primary" disabled>
-                        Complete video and article first
-                      </button>
-                    )
-                  ) : (
-                    <button className="btn btn-secondary" disabled>Not your current module</button>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* INTERVIEWS TAB */}
-            {activeTab === "interviews" && (
-              <div>
-                <h3 style={{ fontSize: "16px", fontWeight: "700", marginBottom: "16px" }}>Oral Evaluation Log</h3>
-                {loadingEvals ? (
-                  <p style={{ color: "var(--text-muted)" }}>Loading interviews...</p>
-                ) : !evaluations || evaluations.length === 0 ? (
-                  <div className="card" style={{ padding: "32px", textAlign: "center", backgroundColor: "var(--bg-surface)" }}>
-                    <p style={{ color: "var(--text-muted)", fontSize: "14px" }}>No interviews recorded for this track yet.</p>
+                {chapterLoading ? (
+                  <div className="card" style={{ padding: "32px", display: "flex", flexDirection: "column", gap: "12px" }}>
+                    <Skeleton variant="text" width="30%" height={18} />
+                    <Skeleton variant="text" width="70%" height={14} />
+                    <Skeleton variant="rectangular" width="160px" height={40} borderRadius="4px" style={{ marginTop: "8px" }} />
                   </div>
                 ) : (
-                  <div className="table-container">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Track Course</th><th>AI Score</th><th>Status</th><th>Date</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {evaluations.map((e, i) => (
-                          <tr key={i}>
-                            <td style={{ fontWeight: "700", color: "var(--text-title)" }}>{e.course}</td>
-                            <td className="mono">
-                              <button
-                                onClick={() => setSelectedEval(e)}
-                                title="Click to view breakdown"
-                                style={{
-                                  background: "none",
-                                  border: "none",
-                                  color: "var(--brand)",
-                                  textDecoration: "underline",
-                                  cursor: "pointer",
-                                  fontWeight: "700",
-                                  fontFamily: "inherit",
-                                  padding: 0
-                                }}
-                              >
-                                {e.score}%
-                              </button>
-                            </td>
-                            <td><span className={`badge ${e.passed ? "badge-success" : "badge-danger"}`}>{e.passed ? "PASSED" : "FAILED"}</span></td>
-                            <td style={{ color: "var(--text-muted)" }}>{e.date}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                  <div className="card" style={{ padding: "32px", backgroundColor: "var(--bg-surface)" }}>
+                    <h3 style={{ fontSize: "16px", fontWeight: "700", marginBottom: "8px" }}>Concept Check</h3>
+                    <p style={{ color: "var(--text-muted)", marginBottom: "24px", fontSize: "13.5px" }}>
+                      Complete the quiz to verify your understanding of this module.
+                      {isCurrentChapter && " Passing it unlocks the next module."}
+                    </p>
+                    {quizStatus.passed ? (
+                      <div>
+                        <div className="badge badge-success" style={{ marginBottom: "16px" }}>
+                          ✓ Passed ({quizStatus.score}%){isCurrentChapter ? " — Module complete" : ""}
+                        </div>
+                        <br />
+                        {isCurrentChapter && (
+                          allModulesComplete ? (
+                            <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+                              You&apos;ve completed every module in this course. 🎉
+                            </span>
+                          ) : (
+                            <Link href={`/learn/${params.courseId}`}>
+                              <button className="btn btn-primary" style={{ marginTop: "12px" }}>Continue to next module</button>
+                            </Link>
+                          )
+                        )}
+                      </div>
+                    ) : quizStatus.attempted ? (
+                      <div>
+                        <div className="badge badge-danger" style={{ marginBottom: "16px" }}>
+                          Score: {quizStatus.score}% — Retake to advance
+                        </div>
+                        <br />
+                        {isCurrentChapter && (
+                          <Link href={`/quiz/${params.courseId}/${viewingChapter.id}`}>
+                            <button className="btn btn-primary" style={{ marginTop: "12px" }}>Retake Quiz</button>
+                          </Link>
+                        )}
+                      </div>
+                    ) : isCurrentChapter ? (
+                      videoWatched && articleRead ? (
+                        <Link href={`/quiz/${params.courseId}/${viewingChapter.id}`}>
+                          <button className="btn btn-primary">Start Concept Check</button>
+                        </Link>
+                      ) : (
+                        <button className="btn btn-primary" disabled>
+                          Complete video and article first
+                        </button>
+                      )
+                    ) : (
+                      <button className="btn btn-secondary" disabled>Not your current module</button>
+                    )}</div>
                 )}
               </div>
             )}
+
           </main>
         </div>
       </div>
-
-      {selectedEval && (
-        <div style={{
-          position: "fixed",
-          top: 0,
-          left: 0,
-          width: "100vw",
-          height: "100vh",
-          backgroundColor: "rgba(15, 23, 42, 0.6)",
-          backdropFilter: "blur(4px)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          zIndex: 1000
-        }}>
-          <div className="card" style={{
-            width: "100%",
-            maxWidth: "400px",
-            padding: "24px",
-            backgroundColor: "var(--bg-surface)",
-            boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
-            borderRadius: "12px",
-            border: "1px solid var(--border-muted)",
-            position: "relative"
-          }}>
-            <button 
-              onClick={() => setSelectedEval(null)}
-              style={{
-                position: "absolute",
-                top: "16px",
-                right: "16px",
-                background: "none",
-                border: "none",
-                fontSize: "20px",
-                cursor: "pointer",
-                color: "var(--text-muted)",
-                lineHeight: 1
-              }}
-            >
-              &times;
-            </button>
-            <h3 style={{ fontSize: "16px", fontWeight: "700", color: "var(--text-title)", marginBottom: "4px" }}>
-              AI Score Breakdown
-            </h3>
-            <p style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "20px" }}>
-              {selectedEval.chapter}
-            </p>
-            
-            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-              {[
-                { label: "Technical Score", value: selectedEval.technical, color: "var(--brand)" },
-                { label: "Speech & Communication", value: selectedEval.communication, color: "var(--color-success)" },
-                { label: "Confidence Level", value: selectedEval.confidence, color: "var(--color-warning)" }
-              ].map((item, idx) => (
-                <div key={idx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", backgroundColor: "var(--bg-canvas)", borderRadius: "6px" }}>
-                  <span style={{ fontSize: "13px", fontWeight: "500", color: "var(--text-main)" }}>{item.label}</span>
-                  <span className="mono" style={{ fontSize: "14px", fontWeight: "700", color: item.color }}>{item.value}%</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
     </>
   );
 }

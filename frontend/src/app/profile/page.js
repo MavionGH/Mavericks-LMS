@@ -1,5 +1,7 @@
 "use client";
 import Navbar from "@/components/Navbar";
+import Skeleton from "@/components/Skeleton";
+import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
 import { useState, useRef, useEffect } from "react";
@@ -50,6 +52,7 @@ function ProfilePage() {
   // Load certificates for students
   useEffect(() => {
     if (user?.role !== "student") return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setCertsLoading(true);
     authFetch("/api/student/certificates")
       .then((res) => res.ok ? res.json() : [])
@@ -391,17 +394,12 @@ function ProfilePage() {
 
               <div style={{ padding: "24px 28px" }}>
                 {certsLoading ? (
-                  <div style={{ display: "flex", alignItems: "center", gap: "12px", padding: "20px 0" }}>
-                    <div style={{
-                      width: 24, height: 24,
-                      border: "3px solid var(--border-muted)",
-                      borderTopColor: "var(--brand)",
-                      borderRadius: "50%",
-                      animation: "spin 0.7s linear infinite",
-                    }} />
-                    <span style={{ color: "var(--text-muted)", fontSize: "13px", fontFamily: "JetBrains Mono" }}>
-                      Retrieving credentials...
-                    </span>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+                    <div style={{ padding: "20px", border: "1px solid var(--border-muted)", borderRadius: "8px", display: "flex", flexDirection: "column", gap: "12px" }}>
+                      <Skeleton variant="text" width="40%" height={16} />
+                      <Skeleton variant="text" width="60%" height={12} />
+                      <Skeleton variant="rectangular" height={180} />
+                    </div>
                   </div>
                 ) : certs.length === 0 ? (
                   <div style={{ textAlign: "center", padding: "32px 0" }}>
@@ -417,7 +415,7 @@ function ProfilePage() {
                     <p style={{ color: "var(--text-muted)", fontSize: "13px", marginBottom: "20px", lineHeight: 1.6 }}>
                       Pass all modules and complete the final oral interview to earn your certificate.
                     </p>
-                    <a href="/courses" className="btn btn-primary btn-sm">Browse Courses</a>
+                    <Link href="/courses" className="btn btn-primary btn-sm">Browse Courses</Link>
                   </div>
                 ) : (
                   <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>

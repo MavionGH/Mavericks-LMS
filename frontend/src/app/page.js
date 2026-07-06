@@ -1,5 +1,6 @@
 "use client";
 import Navbar from "@/components/Navbar";
+import Skeleton from "@/components/Skeleton";
 import Link from "next/link";
 import FeaturedCourses from "@/components/FeaturedCourses";
 import { useAuth } from "@/context/AuthContext";
@@ -39,25 +40,13 @@ export default function HomePage() {
         alignItems: "center",
         justifyContent: "center",
         backgroundColor: "var(--bg-canvas)",
-        color: "var(--text-muted)",
-        fontFamily: "JetBrains Mono, monospace",
-        gap: "16px"
+        gap: "32px"
       }}>
-        <div style={{
-          width: 32,
-          height: 32,
-          border: "3px solid var(--border-muted)",
-          borderTopColor: "var(--brand)",
-          borderRadius: "50%",
-          animation: "spin 0.7s linear infinite",
-        }} />
-        <span>Loading...</span>
-        <style jsx global>{`
-          @keyframes spin {
-            from { transform: rotate(0deg); }
-            to { transform: rotate(360deg); }
-          }
-        `}</style>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "14px", width: 260 }}>
+          <Skeleton variant="circular" width={56} height={56} />
+          <Skeleton variant="text" width="180px" height={16} />
+          <Skeleton variant="text" width="120px" height={12} />
+        </div>
       </div>
     );
   }

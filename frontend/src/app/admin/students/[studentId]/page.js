@@ -1,5 +1,6 @@
 "use client";
 import Navbar from "@/components/Navbar";
+import Skeleton, { SkeletonProfile } from "@/components/Skeleton";
 import { useState, useEffect, useRef } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
@@ -65,6 +66,7 @@ function StudentProfilePage() {
 
   useEffect(() => {
     if (!studentId) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     authFetch(`/api/admin/students/${studentId}`)
       .then((r) => { if (!r.ok) throw new Error("Failed to load student"); return r.json(); })
@@ -75,6 +77,7 @@ function StudentProfilePage() {
 
   useEffect(() => {
     if (activeTab === "interviews" && studentId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setLoadingInterviews(true);
       authFetch(`/api/admin/students/${studentId}/interviews`)
         .then((r) => { if (!r.ok) throw new Error("Failed to load interviews"); return r.json(); })
@@ -91,7 +94,7 @@ function StudentProfilePage() {
         .catch((err) => console.error(err))
         .finally(() => setLoadingInterviews(false));
     }
-  }, [activeTab, studentId, authFetch]);
+  }, [activeTab, studentId, authFetch, selectedCourseId]);
 
   const s = data?.student;
   const enrollments = data?.enrollments ?? [];
@@ -115,10 +118,7 @@ function StudentProfilePage() {
           </button>
 
           {loading ? (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "300px", gap: "16px" }}>
-              <span style={{ width: 36, height: 36, border: "3px solid var(--border-muted)", borderTopColor: "var(--brand)", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
-              <span style={{ color: "var(--text-muted)", fontSize: "14px" }}>Loading student profile…</span>
-            </div>
+            <SkeletonProfile />
           ) : error ? (
             <div style={{ padding: "20px", background: "var(--bg-danger)", border: "1px solid var(--border-danger)", borderRadius: "var(--radius-sm)", color: "var(--color-danger)", fontSize: "13px" }}>❌ {error}</div>
           ) : (
@@ -271,9 +271,16 @@ function StudentProfilePage() {
                     </div>
 
                     {loadingInterviews ? (
-                      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "200px", gap: "12px" }}>
-                        <span style={{ width: 28, height: 28, border: "3px solid var(--border-muted)", borderTopColor: "var(--brand)", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
-                        <span style={{ color: "var(--text-muted)", fontSize: "13.5px" }}>Loading recordings…</span>
+                      <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+                        {Array.from({ length: 2 }).map((_, i) => (
+                          <div key={i} className="card" style={{ padding: "16px", display: "flex", flexDirection: "column", gap: "10px" }}>
+                            <div style={{ display: "flex", justifyContent: "space-between" }}>
+                              <Skeleton variant="text" width="40%" height={14} />
+                              <Skeleton variant="rectangular" width="50px" height={22} borderRadius="10px" />
+                            </div>
+                            <Skeleton variant="rectangular" height={200} />
+                          </div>
+                        ))}
                       </div>
                     ) : !selectedCourseId ? (
                       <p style={{ color: "var(--text-muted)", fontSize: "13.5px", margin: 0 }}>Please select a course to view recordings.</p>

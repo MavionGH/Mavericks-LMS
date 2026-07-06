@@ -1,5 +1,6 @@
 "use client";
 import Navbar from "@/components/Navbar";
+import Skeleton, { SkeletonTable } from "@/components/Skeleton";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { API_BASE, useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
@@ -1294,7 +1295,7 @@ function TeacherPanel() {
                 </button>
               </div>
               {courseStudentsLoading && (
-                <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>Loading students…</p>
+                <SkeletonTable rows={3} cols={3} />
               )}
               {courseStudentsError && (
                 <p style={{ color: "var(--color-danger)", fontSize: "13px" }}>❌ {courseStudentsError}</p>
@@ -1388,7 +1389,20 @@ function TeacherPanel() {
                 </button>
               </div>
               {courseRecordingsLoading && (
-                <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>Loading recordings…</p>
+                <div className="grid-2" style={{ alignItems: "start" }}>
+                  {Array.from({ length: 4 }).map((_, i) => (
+                    <div key={i} className="card" style={{ padding: "16px", display: "flex", flexDirection: "column", gap: "12px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                          <Skeleton variant="text" width="120px" height={14} />
+                          <Skeleton variant="text" width="160px" height={11} />
+                        </div>
+                        <Skeleton variant="rectangular" width="50px" height={22} borderRadius="12px" />
+                      </div>
+                      <Skeleton variant="rectangular" height={160} />
+                    </div>
+                  ))}
+                </div>
               )}
               {courseRecordingsError && (
                 <p style={{ color: "var(--color-danger)", fontSize: "13px" }}>❌ {courseRecordingsError}</p>

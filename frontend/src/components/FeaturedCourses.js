@@ -2,6 +2,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { API_BASE } from "@/context/AuthContext";
+import Spinner from "@/components/Spinner";
 
 // Featured learning tracks on the landing page. These are the REAL published
 // courses pulled from the backend (no hardcoded placeholders) so every card links
@@ -21,7 +22,7 @@ export default function FeaturedCourses() {
   }, []);
 
   if (loading) {
-    return <p style={{ color: "var(--text-muted)" }}>Loading courses…</p>;
+    return <Spinner text="Loading featured courses..." />;
   }
 
   if (courses.length === 0) {

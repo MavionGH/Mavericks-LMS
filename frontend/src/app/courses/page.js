@@ -1,5 +1,6 @@
 "use client";
 import Navbar from "@/components/Navbar";
+import Skeleton, { SkeletonCardGrid } from "@/components/Skeleton";
 import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
 import { useEffect, useState } from "react";
@@ -73,7 +74,9 @@ export default function CoursesPage() {
             <p>Master core engineering concepts with structured tracks and instant AI oral feedback.</p>
           </div>
           {loading ? (
-            <p style={{ color: "var(--text-muted)" }}>Loading courses…</p>
+            <div style={{ paddingTop: "40px" }}>
+              <SkeletonCardGrid count={6} />
+            </div>
           ) : courses.length === 0 ? (
             <div className="card" style={{ padding: "32px", textAlign: "center" }}>
               <p style={{ color: "var(--text-muted)", marginBottom: "16px" }}>No published courses yet. Teachers can create courses in Teacher Studio.</p>

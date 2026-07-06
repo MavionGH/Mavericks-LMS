@@ -1,5 +1,6 @@
 "use client";
 import Navbar from "@/components/Navbar";
+import Skeleton, { SkeletonProfile } from "@/components/Skeleton";
 import { useState, useEffect } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
@@ -19,6 +20,7 @@ function TeacherCoursesPage() {
 
   useEffect(() => {
     if (!teacherId) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     authFetch(`/api/admin/teachers/${teacherId}`)
       .then((r) => {
@@ -66,10 +68,7 @@ function TeacherCoursesPage() {
           </button>
 
           {loading ? (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "300px", gap: "16px" }}>
-              <span style={{ width: 36, height: 36, border: "3px solid var(--border-muted)", borderTopColor: "var(--brand)", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
-              <span style={{ color: "var(--text-muted)", fontSize: "14px" }}>Loading teacher data…</span>
-            </div>
+            <SkeletonProfile />
           ) : error ? (
             <div style={{ padding: "20px", background: "var(--bg-danger)", border: "1px solid var(--border-danger)", borderRadius: "var(--radius-sm)", color: "var(--color-danger)", fontSize: "13px" }}>
               ❌ {error}

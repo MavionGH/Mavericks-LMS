@@ -1,5 +1,6 @@
 "use client";
 import Navbar from "@/components/Navbar";
+import Skeleton, { SkeletonMetrics } from "@/components/Skeleton";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
@@ -77,6 +78,7 @@ function AdminPanel() {
   // ready in parallel (one round-trip instead of three sequential ones).
   useEffect(() => {
     // Analytics
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setAnalyticsLoading(true);
     authFetch("/api/admin/analytics")
       .then((r) => r.json())
@@ -178,7 +180,7 @@ function AdminPanel() {
           {activeTab === "dashboard" && (
             <div>
               {analyticsLoading && (
-                <p style={{ color: "var(--text-muted)", fontSize: "13px", marginBottom: "16px" }}>Loading live data…</p>
+                <SkeletonMetrics count={4} />
               )}
               <div className="grid-4" style={{ marginBottom: "32px" }}>
                 {STATS.map((s, i) => (
@@ -247,14 +249,15 @@ function AdminPanel() {
                   </thead>
                   <tbody>
                     {teachersLoading ? (
-                      <tr>
-                        <td colSpan={5} style={{ textAlign: "center", padding: "48px" }}>
-                          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
-                            <span className="spinner" style={{ width: 28, height: 28, border: "3px solid var(--text-muted)", borderTopColor: "var(--brand)", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
-                            <span style={{ color: "var(--text-muted)", fontSize: "14px", fontWeight: "500" }}>Loading teachers...</span>
-                          </div>
-                        </td>
-                      </tr>
+                      Array.from({ length: 5 }).map((_, i) => (
+                        <tr key={i}>
+                          <td><Skeleton variant="text" width="70%" height={13} /></td>
+                          <td><Skeleton variant="text" width="80%" height={13} /></td>
+                          <td><Skeleton variant="text" width="30px" height={13} /></td>
+                          <td><Skeleton variant="rectangular" width="60px" height={20} borderRadius="10px" /></td>
+                          <td><Skeleton variant="rectangular" width="90px" height={28} borderRadius="4px" /></td>
+                        </tr>
+                      ))
                     ) : filteredTeachers.length === 0 ? (
                       <tr><td colSpan={5} style={{ textAlign: "center", color: "var(--text-muted)", padding: "32px" }}>{teacherSearch ? `No teachers match "${teacherSearch}"` : "No teachers registered yet."}</td></tr>
                     ) : filteredTeachers.map((t) => {
@@ -313,12 +316,16 @@ function AdminPanel() {
                   </thead>
                   <tbody>
                     {studentsLoading ? (
-                      <tr><td colSpan={6} style={{ textAlign: "center", padding: "48px" }}>
-                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
-                          <span className="spinner" style={{ width: 28, height: 28, border: "3px solid var(--text-muted)", borderTopColor: "var(--brand)", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
-                          <span style={{ color: "var(--text-muted)", fontSize: "14px", fontWeight: "500" }}>Loading students...</span>
-                        </div>
-                      </td></tr>
+                      Array.from({ length: 5 }).map((_, i) => (
+                        <tr key={i}>
+                          <td><Skeleton variant="text" width="70%" height={13} /></td>
+                          <td><Skeleton variant="text" width="80%" height={13} /></td>
+                          <td><Skeleton variant="text" width="30px" height={13} /></td>
+                          <td><Skeleton variant="text" width="40px" height={13} /></td>
+                          <td><Skeleton variant="text" width="60px" height={13} /></td>
+                          <td><Skeleton variant="rectangular" width="60px" height={28} borderRadius="4px" /></td>
+                        </tr>
+                      ))
                     ) : filteredStudents.length === 0 ? (
                       <tr><td colSpan={6} style={{ textAlign: "center", color: "var(--text-muted)", padding: "32px" }}>{studentSearch ? `No students match "${studentSearch}"` : "No students yet."}</td></tr>
                     ) : filteredStudents.map((s) => {
@@ -365,12 +372,16 @@ function AdminPanel() {
                   </thead>
                   <tbody>
                     {teachersLoading ? (
-                      <tr><td colSpan={6} style={{ textAlign: "center", padding: "48px" }}>
-                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
-                          <span className="spinner" style={{ width: 28, height: 28, border: "3px solid var(--text-muted)", borderTopColor: "var(--brand)", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
-                          <span style={{ color: "var(--text-muted)", fontSize: "14px", fontWeight: "500" }}>Loading teachers...</span>
-                        </div>
-                      </td></tr>
+                      Array.from({ length: 5 }).map((_, i) => (
+                        <tr key={i}>
+                          <td><Skeleton variant="text" width="70%" height={13} /></td>
+                          <td><Skeleton variant="text" width="80%" height={13} /></td>
+                          <td><Skeleton variant="text" width="30px" height={13} /></td>
+                          <td><Skeleton variant="rectangular" width="60px" height={20} borderRadius="10px" /></td>
+                          <td><Skeleton variant="text" width="60px" height={13} /></td>
+                          <td><Skeleton variant="rectangular" width="80px" height={28} borderRadius="4px" /></td>
+                        </tr>
+                      ))
                     ) : filteredApprove.length === 0 ? (
                       <tr><td colSpan={6} style={{ textAlign: "center", color: "var(--text-muted)", padding: "32px" }}>{approveSearch ? `No teachers match "${approveSearch}"` : "No teachers registered yet."}</td></tr>
                     ) : filteredApprove.map((t) => (

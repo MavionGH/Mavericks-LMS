@@ -1,5 +1,6 @@
 "use client";
 import Navbar from "@/components/Navbar";
+import Skeleton, { SkeletonCardGrid, SkeletonMetrics } from "@/components/Skeleton";
 import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
@@ -81,8 +82,18 @@ function StudentDashboard() {
     return (
       <>
         <Navbar />
-        <div className="page-container" style={{ backgroundColor: "var(--bg-canvas)", display: "flex", justifyContent: "center", alignItems: "center", minHeight: "100vh" }}>
-          <p style={{ color: "var(--text-muted)", fontFamily: "JetBrains Mono" }}>Loading workspace...</p>
+        <div className="page-container" style={{ backgroundColor: "var(--bg-canvas)" }}>
+          <div className="container" style={{ paddingTop: "40px", paddingBottom: "40px" }}>
+            <div style={{ marginBottom: "28px" }}>
+              <Skeleton variant="text" width="240px" height={28} />
+              <Skeleton variant="text" width="340px" height={16} style={{ marginTop: "8px" }} />
+            </div>
+            <SkeletonMetrics count={4} />
+            <div style={{ marginBottom: "20px", marginTop: "12px" }}>
+              <Skeleton variant="text" width="180px" height={20} />
+            </div>
+            <SkeletonCardGrid count={3} />
+          </div>
         </div>
       </>
     );
@@ -296,8 +307,16 @@ function StudentDashboard() {
             </div>
 
             {evalsLoading ? (
-              <div style={{ padding: "40px", textAlign: "center", color: "var(--text-muted)", fontFamily: "JetBrains Mono" }}>
-                Loading assessments...
+              <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <div key={i} style={{ padding: "16px", backgroundColor: "var(--bg-canvas)", border: "1px solid var(--border-muted)", borderRadius: "8px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "6px" }}>
+                      <Skeleton variant="text" width="60%" height={14} />
+                      <Skeleton variant="text" width="40%" height={10} />
+                    </div>
+                    <Skeleton variant="rectangular" width="60px" height={24} borderRadius="12px" />
+                  </div>
+                ))}
               </div>
             ) : evaluations.length === 0 ? (
               <div style={{ padding: "40px", textAlign: "center", color: "var(--text-muted)" }}>
