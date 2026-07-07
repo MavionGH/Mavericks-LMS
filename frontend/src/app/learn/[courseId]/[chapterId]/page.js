@@ -20,7 +20,7 @@ function LearnPage() {
   const [quizStatus, setQuizStatus] = useState({ attempted: false, passed: false, score: null });
   const [activeTab, setActiveTab] = useState("video");
   const [chapterLoading, setChapterLoading] = useState(false); // lightweight per-chapter inline loader
-  
+
   const [syllabusExpanded, setSyllabusExpanded] = useState(false);
 
   const [hasPlayedVideo, setHasPlayedVideo] = useState(false);
@@ -259,7 +259,7 @@ function LearnPage() {
       if (player && typeof player.destroy === "function") {
         try {
           player.destroy();
-        } catch (e) {}
+        } catch (e) { }
       }
       setYtPlayer(null);
       setIsPlaying(false);
@@ -305,13 +305,13 @@ function LearnPage() {
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (activeTab !== "video") return;
-      
+
       // Ignore if user is typing in inputs or editing content
       if (
         document.activeElement &&
         (document.activeElement.tagName === "INPUT" ||
-         document.activeElement.tagName === "TEXTAREA" ||
-         document.activeElement.isContentEditable)
+          document.activeElement.tagName === "TEXTAREA" ||
+          document.activeElement.isContentEditable)
       ) {
         return;
       }
@@ -405,16 +405,7 @@ function LearnPage() {
             {/* Sidebar Mobile Header */}
             <div className="sidebar-header-mobile">
               <span className="sidebar-title-mobile">Course Syllabus</span>
-              <button
-                type="button"
-                onClick={() => setSyllabusExpanded(false)}
-                aria-label="Close Course Syllabus"
-              >
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
+
             </div>
 
             <div className="sidebar-title">{course?.title || "Course"}</div>
@@ -559,7 +550,7 @@ function LearnPage() {
                         title="Rewind 10 seconds (Left Arrow)"
                       >
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M2.5 2v6h6M2.66 15.57a10 10 0 1 0-.57-8.38l.57 1.31"/>
+                          <path d="M2.5 2v6h6M2.66 15.57a10 10 0 1 0-.57-8.38l.57 1.31" />
                         </svg>
                         <span>-10s</span>
                       </button>
@@ -572,12 +563,12 @@ function LearnPage() {
                       >
                         {isPlaying ? (
                           <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2">
-                            <rect x="6" y="4" width="4" height="16" rx="1"/>
-                            <rect x="14" y="4" width="4" height="16" rx="1"/>
+                            <rect x="6" y="4" width="4" height="16" rx="1" />
+                            <rect x="14" y="4" width="4" height="16" rx="1" />
                           </svg>
                         ) : (
                           <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" style={{ marginLeft: "2px" }}>
-                            <polygon points="5 3 19 12 5 21 5 3"/>
+                            <polygon points="5 3 19 12 5 21 5 3" />
                           </svg>
                         )}
                       </button>
@@ -590,7 +581,7 @@ function LearnPage() {
                       >
                         <span>+10s</span>
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1 .57-8.38l-.57 1.31"/>
+                          <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1 .57-8.38l-.57 1.31" />
                         </svg>
                       </button>
                     </div>
