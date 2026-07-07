@@ -838,6 +838,10 @@ def _finalize_session(db: Session, session: InterviewSession, user: User) -> Int
             from app.models.models import EnrollmentStatus
             enrollment.status = EnrollmentStatus.CAPSTONE_READY
             next_unlocked = True
+        
+        # Check certificate eligibility if a module assessment is passed
+        from app.services.certificate import issue_certificate_if_eligible
+        issue_certificate_if_eligible(db, user.id, chapter.course_id)
     elif enrollment and not evaluation.get("passed"):
         enrollment.video_watched = False
         enrollment.article_read = False

@@ -82,6 +82,8 @@ def get_student_dashboard(
     # Enrolled courses list
     enrolled_courses: List[DashboardCourse] = []
     for e in enrollments:
+        if e.status == EnrollmentStatus.COMPLETED:
+            continue
         course = e.course
         if not course:
             continue

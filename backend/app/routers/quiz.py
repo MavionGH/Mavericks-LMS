@@ -161,10 +161,12 @@ def submit_quiz(
                     enrollment.video_watched = False
                     enrollment.article_read = False
                     next_chapter_unlocked = True
-                else:
                     # Passed the final module — all learning content is complete.
-                    from app.services.certificate import issue_certificate_if_eligible
-                    course_completed = issue_certificate_if_eligible(db, current_user.id, chapter.course_id)
+                    pass
+            
+            # Check certificate eligibility whenever any quiz is passed (handles out of order / retakes)
+            from app.services.certificate import issue_certificate_if_eligible
+            issue_certificate_if_eligible(db, current_user.id, chapter.course_id)
 
     db.commit()
     db.refresh(attempt)

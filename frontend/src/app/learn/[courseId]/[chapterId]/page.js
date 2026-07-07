@@ -31,22 +31,12 @@ function LearnPage() {
   const [articleSuccessMsg, setArticleSuccessMsg] = useState("");
 
   const [isPlaying, setIsPlaying] = useState(false);
-  const [ytPlayer, setYtPlayer] = useState(null);
+  const [ytCurrentTime, setYtCurrentTime] = useState(0);
+  const [ytDuration, setYtDuration] = useState(0);
+  const [ytVolume, setYtVolume] = useState(100);
+  const [ytMuted, setYtMuted] = useState(false);
   const videoRef = useRef(null);
-
-  // Load YouTube Iframe API if not already present
-  useEffect(() => {
-    if (!window.YT) {
-      const tag = document.createElement("script");
-      tag.src = "https://www.youtube.com/iframe_api";
-      const firstScriptTag = document.getElementsByTagName("script")[0];
-      if (firstScriptTag && firstScriptTag.parentNode) {
-        firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
-      } else {
-        document.head.appendChild(tag);
-      }
-    }
-  }, []);
+  const iframeRef = useRef(null);
 
   useEffect(() => {
     // Reset play detection state when the chapter changes
@@ -57,14 +47,35 @@ function LearnPage() {
 
   useEffect(() => {
     const handleMessage = (event) => {
-      if (event.origin.includes("youtube.com")) {
-        try {
-          const data = JSON.parse(event.data);
-          if (data.event === "onStateChange" && data.info === 1) {
+      if (!event.origin.includes("youtube.com")) return;
+      
+      try {
+        const data = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
+        
+        if (data.event === "onStateChange") {
+          if (data.info === 1) {
             setHasPlayedVideo(true);
+            setIsPlaying(true);
+          } else if (data.info === 2 || data.info === 0 || data.info === -1) {
+            setIsPlaying(false);
           }
-        } catch (e) { }
-      }
+        }
+        
+        if (data.event === "infoDelivery" && data.info) {
+          if (data.info.currentTime !== undefined) {
+            setYtCurrentTime(data.info.currentTime);
+          }
+          if (data.info.duration !== undefined) {
+            setYtDuration(data.info.duration);
+          }
+          if (data.info.volume !== undefined) {
+            setYtVolume(data.info.volume);
+          }
+          if (data.info.muted !== undefined) {
+            setYtMuted(data.info.muted);
+          }
+        }
+      } catch (e) { }
     };
 
     const handleBlur = () => {
@@ -216,56 +227,6 @@ function LearnPage() {
   const embedUrl = getYouTubeEmbedUrl(viewingChapter.youtube_url);
   const isDirectVideo = viewingChapter.youtube_url?.match(/\.(mp4|mov|webm|mkv)/i);
 
-  // Initialize and destroy YouTube player when embedUrl / isDirectVideo changes
-  useEffect(() => {
-    if (!embedUrl || isDirectVideo) {
-      setYtPlayer(null);
-      setIsPlaying(false);
-      return;
-    }
-
-    let player;
-    const initPlayer = () => {
-      if (window.YT && window.YT.Player) {
-        player = new window.YT.Player("youtube-player", {
-          events: {
-            onStateChange: (event) => {
-              if (event.data === 1) {
-                setHasPlayedVideo(true);
-                setIsPlaying(true);
-              } else if (event.data === 2 || event.data === 0 || event.data === -1) {
-                setIsPlaying(false);
-              }
-            },
-          },
-        });
-        setYtPlayer(player);
-      }
-    };
-
-    if (window.YT && window.YT.Player) {
-      initPlayer();
-    } else {
-      const checkYT = setInterval(() => {
-        if (window.YT && window.YT.Player) {
-          initPlayer();
-          clearInterval(checkYT);
-        }
-      }, 100);
-      return () => clearInterval(checkYT);
-    }
-
-    return () => {
-      if (player && typeof player.destroy === "function") {
-        try {
-          player.destroy();
-        } catch (e) { }
-      }
-      setYtPlayer(null);
-      setIsPlaying(false);
-    };
-  }, [embedUrl, isDirectVideo]);
-
   const handleTogglePlay = () => {
     if (isDirectVideo && videoRef.current) {
       if (videoRef.current.paused) {
@@ -273,32 +234,39 @@ function LearnPage() {
       } else {
         videoRef.current.pause();
       }
-    } else if (ytPlayer && typeof ytPlayer.getPlayerState === "function") {
-      const state = ytPlayer.getPlayerState();
-      if (state === 1) {
-        ytPlayer.pauseVideo();
-      } else {
-        ytPlayer.playVideo();
-      }
+    } else if (iframeRef.current && iframeRef.current.contentWindow) {
+      const command = isPlaying ? "pauseVideo" : "playVideo";
+      iframeRef.current.contentWindow.postMessage(
+        JSON.stringify({ event: "command", func: command, args: [] }),
+        "*"
+      );
+      setIsPlaying(!isPlaying);
     }
   };
 
   const handleRewind10 = () => {
     if (isDirectVideo && videoRef.current) {
       videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime - 10);
-    } else if (ytPlayer && typeof ytPlayer.getCurrentTime === "function") {
-      const curTime = ytPlayer.getCurrentTime() || 0;
-      ytPlayer.seekTo(Math.max(0, curTime - 10), true);
+    } else if (iframeRef.current && iframeRef.current.contentWindow) {
+      const targetTime = Math.max(0, ytCurrentTime - 10);
+      iframeRef.current.contentWindow.postMessage(
+        JSON.stringify({ event: "command", func: "seekTo", args: [targetTime, true] }),
+        "*"
+      );
+      setYtCurrentTime(targetTime);
     }
   };
 
   const handleForward10 = () => {
     if (isDirectVideo && videoRef.current) {
       videoRef.current.currentTime = Math.min(videoRef.current.duration || 0, videoRef.current.currentTime + 10);
-    } else if (ytPlayer && typeof ytPlayer.getCurrentTime === "function") {
-      const curTime = ytPlayer.getCurrentTime() || 0;
-      const duration = ytPlayer.getDuration() || 0;
-      ytPlayer.seekTo(Math.min(duration, curTime + 10), true);
+    } else if (iframeRef.current && iframeRef.current.contentWindow) {
+      const targetTime = Math.min(ytDuration || 9999, ytCurrentTime + 10);
+      iframeRef.current.contentWindow.postMessage(
+        JSON.stringify({ event: "command", func: "seekTo", args: [targetTime, true] }),
+        "*"
+      );
+      setYtCurrentTime(targetTime);
     }
   };
 
@@ -329,26 +297,37 @@ function LearnPage() {
         e.preventDefault();
         if (isDirectVideo && videoRef.current) {
           videoRef.current.volume = Math.min(1, videoRef.current.volume + 0.1);
-        } else if (ytPlayer && typeof ytPlayer.getVolume === "function") {
-          ytPlayer.setVolume(Math.min(100, ytPlayer.getVolume() + 10));
+        } else if (iframeRef.current && iframeRef.current.contentWindow) {
+          const targetVolume = Math.min(100, ytVolume + 10);
+          iframeRef.current.contentWindow.postMessage(
+            JSON.stringify({ event: "command", func: "setVolume", args: [targetVolume] }),
+            "*"
+          );
+          setYtVolume(targetVolume);
         }
       } else if (e.key === "ArrowDown") {
         e.preventDefault();
         if (isDirectVideo && videoRef.current) {
           videoRef.current.volume = Math.max(0, videoRef.current.volume - 0.1);
-        } else if (ytPlayer && typeof ytPlayer.getVolume === "function") {
-          ytPlayer.setVolume(Math.max(0, ytPlayer.getVolume() - 10));
+        } else if (iframeRef.current && iframeRef.current.contentWindow) {
+          const targetVolume = Math.max(0, ytVolume - 10);
+          iframeRef.current.contentWindow.postMessage(
+            JSON.stringify({ event: "command", func: "setVolume", args: [targetVolume] }),
+            "*"
+          );
+          setYtVolume(targetVolume);
         }
       } else if (e.key.toLowerCase() === "m") {
         e.preventDefault();
         if (isDirectVideo && videoRef.current) {
           videoRef.current.muted = !videoRef.current.muted;
-        } else if (ytPlayer && typeof ytPlayer.isMuted === "function") {
-          if (ytPlayer.isMuted()) {
-            ytPlayer.unMute();
-          } else {
-            ytPlayer.mute();
-          }
+        } else if (iframeRef.current && iframeRef.current.contentWindow) {
+          const command = ytMuted ? "unMute" : "mute";
+          iframeRef.current.contentWindow.postMessage(
+            JSON.stringify({ event: "command", func: command, args: [] }),
+            "*"
+          );
+          setYtMuted(!ytMuted);
         }
       }
     };
@@ -357,7 +336,7 @@ function LearnPage() {
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [activeTab, isDirectVideo, ytPlayer]);
+  }, [activeTab, isDirectVideo, isPlaying, ytCurrentTime, ytDuration, ytVolume, ytMuted]);
   const unlockedCount = currentIndex + 1;
   const progressPct = chapters.length ? Math.round((unlockedCount / chapters.length) * 100) : 0;
 
@@ -514,6 +493,7 @@ function LearnPage() {
                     />
                   ) : embedUrl ? (
                     <iframe
+                      ref={iframeRef}
                       id="youtube-player"
                       src={embedUrl}
                       title={viewingChapter.title}

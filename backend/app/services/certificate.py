@@ -22,6 +22,7 @@ def issue_certificate_if_eligible(db: Session, user_id: str, course_id: str) -> 
       
     Returns True if a certificate was issued or already existed, False otherwise.
     """
+    db.flush()
     enrollment = db.query(Enrollment).filter(
         Enrollment.user_id == user_id,
         Enrollment.course_id == course_id
