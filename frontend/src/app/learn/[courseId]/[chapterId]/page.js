@@ -3,7 +3,7 @@ import Navbar from "@/components/Navbar";
 import Skeleton, { SkeletonClassroom } from "@/components/Skeleton";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
 import { getYouTubeEmbedUrl, renderArticleHtml } from "@/lib/courseUtils";
@@ -29,6 +29,24 @@ function LearnPage() {
   const [videoSuccessMsg, setVideoSuccessMsg] = useState("");
   const [articleSaving, setArticleSaving] = useState(false);
   const [articleSuccessMsg, setArticleSuccessMsg] = useState("");
+
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [ytPlayer, setYtPlayer] = useState(null);
+  const videoRef = useRef(null);
+
+  // Load YouTube Iframe API if not already present
+  useEffect(() => {
+    if (!window.YT) {
+      const tag = document.createElement("script");
+      tag.src = "https://www.youtube.com/iframe_api";
+      const firstScriptTag = document.getElementsByTagName("script")[0];
+      if (firstScriptTag && firstScriptTag.parentNode) {
+        firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+      } else {
+        document.head.appendChild(tag);
+      }
+    }
+  }, []);
 
   useEffect(() => {
     // Reset play detection state when the chapter changes
@@ -197,6 +215,149 @@ function LearnPage() {
 
   const embedUrl = getYouTubeEmbedUrl(viewingChapter.youtube_url);
   const isDirectVideo = viewingChapter.youtube_url?.match(/\.(mp4|mov|webm|mkv)/i);
+
+  // Initialize and destroy YouTube player when embedUrl / isDirectVideo changes
+  useEffect(() => {
+    if (!embedUrl || isDirectVideo) {
+      setYtPlayer(null);
+      setIsPlaying(false);
+      return;
+    }
+
+    let player;
+    const initPlayer = () => {
+      if (window.YT && window.YT.Player) {
+        player = new window.YT.Player("youtube-player", {
+          events: {
+            onStateChange: (event) => {
+              if (event.data === 1) {
+                setHasPlayedVideo(true);
+                setIsPlaying(true);
+              } else if (event.data === 2 || event.data === 0 || event.data === -1) {
+                setIsPlaying(false);
+              }
+            },
+          },
+        });
+        setYtPlayer(player);
+      }
+    };
+
+    if (window.YT && window.YT.Player) {
+      initPlayer();
+    } else {
+      const checkYT = setInterval(() => {
+        if (window.YT && window.YT.Player) {
+          initPlayer();
+          clearInterval(checkYT);
+        }
+      }, 100);
+      return () => clearInterval(checkYT);
+    }
+
+    return () => {
+      if (player && typeof player.destroy === "function") {
+        try {
+          player.destroy();
+        } catch (e) {}
+      }
+      setYtPlayer(null);
+      setIsPlaying(false);
+    };
+  }, [embedUrl, isDirectVideo]);
+
+  const handleTogglePlay = () => {
+    if (isDirectVideo && videoRef.current) {
+      if (videoRef.current.paused) {
+        videoRef.current.play();
+      } else {
+        videoRef.current.pause();
+      }
+    } else if (ytPlayer && typeof ytPlayer.getPlayerState === "function") {
+      const state = ytPlayer.getPlayerState();
+      if (state === 1) {
+        ytPlayer.pauseVideo();
+      } else {
+        ytPlayer.playVideo();
+      }
+    }
+  };
+
+  const handleRewind10 = () => {
+    if (isDirectVideo && videoRef.current) {
+      videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime - 10);
+    } else if (ytPlayer && typeof ytPlayer.getCurrentTime === "function") {
+      const curTime = ytPlayer.getCurrentTime() || 0;
+      ytPlayer.seekTo(Math.max(0, curTime - 10), true);
+    }
+  };
+
+  const handleForward10 = () => {
+    if (isDirectVideo && videoRef.current) {
+      videoRef.current.currentTime = Math.min(videoRef.current.duration || 0, videoRef.current.currentTime + 10);
+    } else if (ytPlayer && typeof ytPlayer.getCurrentTime === "function") {
+      const curTime = ytPlayer.getCurrentTime() || 0;
+      const duration = ytPlayer.getDuration() || 0;
+      ytPlayer.seekTo(Math.min(duration, curTime + 10), true);
+    }
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (activeTab !== "video") return;
+      
+      // Ignore if user is typing in inputs or editing content
+      if (
+        document.activeElement &&
+        (document.activeElement.tagName === "INPUT" ||
+         document.activeElement.tagName === "TEXTAREA" ||
+         document.activeElement.isContentEditable)
+      ) {
+        return;
+      }
+
+      if (e.key === " ") {
+        e.preventDefault();
+        handleTogglePlay();
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        handleForward10();
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        handleRewind10();
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        if (isDirectVideo && videoRef.current) {
+          videoRef.current.volume = Math.min(1, videoRef.current.volume + 0.1);
+        } else if (ytPlayer && typeof ytPlayer.getVolume === "function") {
+          ytPlayer.setVolume(Math.min(100, ytPlayer.getVolume() + 10));
+        }
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        if (isDirectVideo && videoRef.current) {
+          videoRef.current.volume = Math.max(0, videoRef.current.volume - 0.1);
+        } else if (ytPlayer && typeof ytPlayer.getVolume === "function") {
+          ytPlayer.setVolume(Math.max(0, ytPlayer.getVolume() - 10));
+        }
+      } else if (e.key.toLowerCase() === "m") {
+        e.preventDefault();
+        if (isDirectVideo && videoRef.current) {
+          videoRef.current.muted = !videoRef.current.muted;
+        } else if (ytPlayer && typeof ytPlayer.isMuted === "function") {
+          if (ytPlayer.isMuted()) {
+            ytPlayer.unMute();
+          } else {
+            ytPlayer.mute();
+          }
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [activeTab, isDirectVideo, ytPlayer]);
   const unlockedCount = currentIndex + 1;
   const progressPct = chapters.length ? Math.round((unlockedCount / chapters.length) * 100) : 0;
 
@@ -349,13 +510,20 @@ function LearnPage() {
                 <div className="video-container" style={{ position: "relative", width: "100%", aspectRatio: "16/9", backgroundColor: "#000", borderRadius: "var(--radius-md)", overflow: "hidden" }}>
                   {isDirectVideo ? (
                     <video
+                      ref={videoRef}
                       src={viewingChapter.youtube_url}
                       controls
-                      onPlay={() => setHasPlayedVideo(true)}
+                      onPlay={() => {
+                        setHasPlayedVideo(true);
+                        setIsPlaying(true);
+                      }}
+                      onPause={() => setIsPlaying(false)}
+                      onEnded={() => setIsPlaying(false)}
                       style={{ width: "100%", height: "100%", objectFit: "contain" }}
                     />
                   ) : embedUrl ? (
                     <iframe
+                      id="youtube-player"
                       src={embedUrl}
                       title={viewingChapter.title}
                       allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
@@ -368,6 +536,85 @@ function LearnPage() {
                     </div>
                   )}
                 </div>
+
+                {(isDirectVideo || embedUrl) && (
+                  <>
+                    {/* Custom Video Controls Bar */}
+                    <div style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: "16px",
+                      marginTop: "12px",
+                      padding: "10px 16px",
+                      backgroundColor: "var(--bg-card, #1e1e24)",
+                      border: "1px solid var(--border-muted, #2e2e38)",
+                      borderRadius: "var(--radius-sm, 8px)",
+                      color: "var(--text-main, #f5f5f7)"
+                    }}>
+                      <button
+                        className="btn btn-secondary"
+                        style={{ display: "flex", alignItems: "center", gap: "6px", padding: "8px 12px" }}
+                        onClick={handleRewind10}
+                        title="Rewind 10 seconds (Left Arrow)"
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M2.5 2v6h6M2.66 15.57a10 10 0 1 0-.57-8.38l.57 1.31"/>
+                        </svg>
+                        <span>-10s</span>
+                      </button>
+
+                      <button
+                        className="btn btn-primary"
+                        style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "40px", height: "40px", borderRadius: "50%", padding: 0 }}
+                        onClick={handleTogglePlay}
+                        title="Play/Pause (Space)"
+                      >
+                        {isPlaying ? (
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2">
+                            <rect x="6" y="4" width="4" height="16" rx="1"/>
+                            <rect x="14" y="4" width="4" height="16" rx="1"/>
+                          </svg>
+                        ) : (
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" style={{ marginLeft: "2px" }}>
+                            <polygon points="5 3 19 12 5 21 5 3"/>
+                          </svg>
+                        )}
+                      </button>
+
+                      <button
+                        className="btn btn-secondary"
+                        style={{ display: "flex", alignItems: "center", gap: "6px", padding: "8px 12px" }}
+                        onClick={handleForward10}
+                        title="Forward 10 seconds (Right Arrow)"
+                      >
+                        <span>+10s</span>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1 .57-8.38l-.57 1.31"/>
+                        </svg>
+                      </button>
+                    </div>
+
+                    {/* Keyboard shortcut helper */}
+                    <div style={{
+                      display: "flex",
+                      justifyContent: "center",
+                      gap: "12px",
+                      marginTop: "8px",
+                      fontSize: "11px",
+                      color: "var(--text-muted, #86868b)",
+                      fontFamily: "JetBrains Mono, monospace"
+                    }}>
+                      <span>Space: Play/Pause</span>
+                      <span>•</span>
+                      <span>← / →: Seek 10s</span>
+                      <span>•</span>
+                      <span>↑ / ↓: Volume</span>
+                      <span>•</span>
+                      <span>M: Mute</span>
+                    </div>
+                  </>
+                )}
                 {isCurrentChapter && (
                   !videoWatched ? (
                     <div style={{ marginTop: "16px" }}>

@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session, selectinload
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session, selectinload, joinedload
 from sqlalchemy import func
-from typing import List
+from typing import List, Optional
 
 from app.database import get_db
 from app.models.models import (
@@ -20,12 +20,14 @@ def get_student_dashboard(
 ):
     # One query: enrollments + their course + that course's chapters, all
     # eager-loaded up front so the loop below never re-queries per course.
-    enrollments = (
+    all_enrollments = (
         db.query(Enrollment)
         .options(selectinload(Enrollment.course).selectinload(Course.chapters))
         .filter(Enrollment.user_id == current_user.id)
         .all()
     )
+    # Filter to only keep enrollments where the course is published
+    enrollments = [e for e in all_enrollments if e.course and e.course.is_published]
     active_tracks = sum(1 for e in enrollments if e.status != EnrollmentStatus.COMPLETED)
 
     # One query each (not per-chapter/per-course): every passed QuizAttempt
@@ -40,24 +42,41 @@ def get_student_dashboard(
     }
     all_evaluations = (
         db.query(Evaluation)
+        .options(joinedload(Evaluation.chapter))
         .filter(Evaluation.user_id == current_user.id)
         .all()
     )
+
+    published_course_ids = {e.course_id for e in enrollments}
+    published_chapter_ids = {
+        c.id for e in enrollments for c in e.course.chapters
+    }
+
+    passed_quiz_chapter_ids = {
+        ch_id for ch_id in passed_quiz_chapter_ids if ch_id in published_chapter_ids
+    }
     passed_chapter_eval_ids = {
         ev.chapter_id for ev in all_evaluations
-        if ev.type == EvaluationType.CHAPTER and ev.passed and ev.chapter_id
+        if ev.type == EvaluationType.CHAPTER and ev.passed and ev.chapter_id and ev.chapter_id in published_chapter_ids
     }
     passed_capstone_course_ids = {
         ev.course_id for ev in all_evaluations
-        if ev.type == EvaluationType.CAPSTONE and ev.passed and ev.course_id
+        if ev.type == EvaluationType.CAPSTONE and ev.passed and ev.course_id and ev.course_id in published_course_ids
     }
 
     modules_completed = len(passed_quiz_chapter_ids | passed_chapter_eval_ids)
+
+    # Evals list filter: only for published courses
+    all_evaluations = [
+        ev for ev in all_evaluations
+        if (ev.course_id in published_course_ids) or (ev.chapter and ev.chapter.course_id in published_course_ids)
+    ]
     oral_assessments = len(all_evaluations)
 
     # Earned credentials: count of certificates
-    earned_credentials = db.query(Certificate).filter(
-        Certificate.user_id == current_user.id
+    earned_credentials = db.query(Certificate).join(Course).filter(
+        Certificate.user_id == current_user.id,
+        Course.is_published == True
     ).count()
 
     # Enrolled courses list
@@ -144,6 +163,23 @@ def get_all_student_evaluations(
         InterviewSession.recording_url.isnot(None)
     ).order_by(InterviewSession.created_at.asc()).all()
 
+    # Get published course IDs
+    published_course_ids = {c_id for (c_id,) in db.query(Course.id).filter(Course.is_published == True).all()}
+    
+    # Eagerly fetch chapter course mappings
+    chapter_course_map = {ch.id: ch.course_id for ch in db.query(Chapter).all()}
+
+    def _is_published(scope_obj):
+        if scope_obj.course_id:
+            return scope_obj.course_id in published_course_ids
+        if scope_obj.chapter_id:
+            c_id = chapter_course_map.get(scope_obj.chapter_id)
+            return c_id in published_course_ids
+        return False
+
+    evals = [e for e in evals if _is_published(e)]
+    sessions = [s for s in sessions if _is_published(s)]
+
     # Group evals and sessions by scope
     evals_by_scope = defaultdict(list)
     for ev in evals:
@@ -224,6 +260,12 @@ def get_course_evaluations(
 ):
     from app.models.models import InterviewSession
     from collections import defaultdict
+
+    course = db.query(Course).filter(Course.id == course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    if not course.is_published:
+        raise HTTPException(status_code=403, detail="This course is not published")
 
     # Fetch all evaluations for the student chronologically (asc)
     evals = db.query(Evaluation).filter(
@@ -344,7 +386,10 @@ def get_student_certificates(
     db: Session = Depends(get_db),  
     current_user: User = Depends(require_student)
 ):
-    certs = db.query(Certificate).filter(Certificate.user_id == current_user.id).all()
+    certs = db.query(Certificate).join(Course).filter(
+        Certificate.user_id == current_user.id,
+        Course.is_published == True
+    ).all()
     results = []
     for c in certs:
         res = CertificateResponse.model_validate(c)

@@ -73,12 +73,15 @@ def check_eligibility(
     # fan-out — keeps this endpoint cheap.
     chapter = (
         db.query(Chapter)
-        .options(load_only(Chapter.course_id))
+        .options(joinedload(Chapter.course))
         .filter(Chapter.id == chapter_id)
         .first()
     )
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
+
+    if not chapter.course or not chapter.course.is_published:
+        return InterviewEligibilityResponse(eligible=False, reason="This course is not published")
 
     enrollment = db.query(Enrollment).filter(
         Enrollment.user_id == current_user.id,
@@ -178,6 +181,9 @@ def start_interview_session(
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
 
+    if not chapter.course or not chapter.course.is_published:
+        raise HTTPException(status_code=403, detail="This course is not published")
+
     enrollment = db.query(Enrollment).filter(
         Enrollment.user_id == current_user.id,
         Enrollment.course_id == chapter.course_id,
@@ -251,6 +257,8 @@ def check_course_eligibility(
     course = db.query(Course).filter(Course.id == course_id).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
+    if not course.is_published:
+        return InterviewEligibilityResponse(eligible=False, reason="This course is not published")
 
     enrollment = db.query(Enrollment).filter(
         Enrollment.user_id == current_user.id,
@@ -274,6 +282,8 @@ def start_course_interview(
     course = db.query(Course).filter(Course.id == data.course_id).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
+    if not course.is_published:
+        raise HTTPException(status_code=403, detail="This course is not published")
 
     enrollment = db.query(Enrollment).filter(
         Enrollment.user_id == current_user.id,
@@ -363,7 +373,9 @@ def start_realtime_interview(
         if not chapter:
             raise HTTPException(status_code=404, detail="Chapter not found")
         course = chapter.course
-        course_id = course.id if course else None
+        if not course or not course.is_published:
+            raise HTTPException(status_code=403, detail="This course is not published")
+        course_id = course.id
         enrollment = db.query(Enrollment).filter(
             Enrollment.user_id == current_user.id,
             Enrollment.course_id == course_id,
@@ -379,6 +391,8 @@ def start_realtime_interview(
         course = db.query(Course).filter(Course.id == data.course_id).first()
         if not course:
             raise HTTPException(status_code=404, detail="Course not found")
+        if not course.is_published:
+            raise HTTPException(status_code=403, detail="This course is not published")
         enrollment = db.query(Enrollment).filter(
             Enrollment.user_id == current_user.id,
             Enrollment.course_id == course.id,
