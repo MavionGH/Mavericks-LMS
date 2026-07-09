@@ -121,7 +121,7 @@ export function AuthProvider({ children }) {
 
   const logout = () => {
     clearSession();
-    router.push("/");
+    window.location.href = "/login";
   };
 
   const refreshUser = useCallback(async () => {

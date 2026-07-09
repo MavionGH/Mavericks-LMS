@@ -179,8 +179,16 @@ export default function CourseDetailPage() {
       <div className="page-container" style={{ backgroundColor: "var(--bg-canvas)" }}>
         <div className="container" style={{ padding: "48px 32px" }}>
           <div className="card" style={{ padding: "40px", marginBottom: "32px", display: "flex", gap: "32px", backgroundColor: "var(--bg-surface)" }}>
-            <div className="mono" style={{ fontSize: "28px", fontWeight: "700", width: "80px", height: "80px", borderRadius: "var(--radius-md)", backgroundColor: "var(--brand-muted)", display: "grid", placeItems: "center", color: "var(--brand)" }}>
-              {course.title?.slice(0, 2).toUpperCase()}
+            <div className="mono" style={{ fontSize: "28px", fontWeight: "700", width: "80px", height: "80px", borderRadius: "var(--radius-md)", backgroundColor: "var(--brand-muted)", display: "grid", placeItems: "center", color: "var(--brand)", overflow: "hidden", flexShrink: 0 }}>
+              {course.thumbnail ? (
+                <img
+                  src={course.thumbnail}
+                  alt={course.title}
+                  style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                />
+              ) : (
+                course.title?.slice(0, 2).toUpperCase()
+              )}
             </div>
             <div style={{ flex: 1 }}>
               <h1 style={{ fontSize: "32px", fontWeight: "700", marginBottom: "12px" }}>{course.title}</h1>

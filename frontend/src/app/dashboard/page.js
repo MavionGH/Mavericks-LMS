@@ -244,8 +244,16 @@ function StudentDashboard() {
                 <div className="card" key={c.id} style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", height: "100%", backgroundColor: "var(--bg-surface)" }}>
                   <div>
                     <div style={{ display: "flex", gap: "12px", alignItems: "center", marginBottom: "16px" }}>
-                      <div className="mono" style={{ fontSize: "14px", fontWeight: "700", width: "36px", height: "36px", border: "1px solid var(--border-muted)", backgroundColor: "var(--bg-canvas)", display: "grid", placeItems: "center", color: "var(--brand)", borderRadius: "var(--radius-sm)" }}>
-                        {c.icon}
+                      <div className="mono" style={{ fontSize: "14px", fontWeight: "700", width: "36px", height: "36px", border: "1px solid var(--border-muted)", backgroundColor: "var(--bg-canvas)", display: "grid", placeItems: "center", color: "var(--brand)", borderRadius: "var(--radius-sm)", overflow: "hidden", flexShrink: 0 }}>
+                        {c.thumbnail ? (
+                          <img
+                            src={c.thumbnail}
+                            alt={c.title}
+                            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                          />
+                        ) : (
+                          c.icon
+                        )}
                       </div>
                       <div>
                         <h3 style={{ fontSize: "15px", fontWeight: "700", color: "var(--text-title)" }}>{c.title}</h3>

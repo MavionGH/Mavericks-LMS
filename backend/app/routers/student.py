@@ -134,7 +134,8 @@ def get_student_dashboard(
             progress=progress,
             currentChapter=current_chapter_title,
             status=status_str,
-            icon=icon_str
+            icon=icon_str,
+            thumbnail=course.thumbnail
         ))
 
     return DashboardStats(

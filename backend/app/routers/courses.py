@@ -16,7 +16,7 @@ from app.schemas.schemas import (
 )
 from app.auth.dependencies import get_current_user, require_teacher, require_admin, get_optional_current_user
 from app.services.transcript import fetch_youtube_transcript
-from app.services.storage import upload_video_to_r2
+from app.services.storage import upload_video_to_r2, upload_course_thumbnail
 from app.services.video_transcription import transcribe_video_bytes
 from app.services.document_parser import extract_text_from_document
 
@@ -390,6 +390,22 @@ def _run_transcription_job(job_id: str, data: bytes, filename: str) -> None:
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Async transcription job %s failed: %s", job_id, exc)
         set_error(job_id, str(exc))
+
+
+@router.post("/upload-thumbnail")
+def upload_thumbnail(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_teacher),
+):
+    """Upload a course thumbnail image and return its public URL."""
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid image format. Allowed: .png, .jpg, .jpeg, .webp, .gif"
+        )
+    url = upload_course_thumbnail(file)
+    return {"thumbnail_url": url}
 
 
 @router.post("/upload-video")

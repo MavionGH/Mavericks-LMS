@@ -9,7 +9,17 @@ function CourseCard({ c }) {
 
   return (
     <Link href={`/courses/${c.id}`} className="card course-card" style={{ display: "flex", flexDirection: "column" }}>
-      <div className="course-card-thumb">{c.title?.slice(0, 2).toUpperCase()}</div>
+      <div className="course-card-thumb" style={{ padding: 0, overflow: "hidden" }}>
+        {c.thumbnail ? (
+          <img
+            src={c.thumbnail}
+            alt={c.title}
+            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+          />
+        ) : (
+          c.title?.slice(0, 2).toUpperCase()
+        )}
+      </div>
       <div className="course-card-body">
         {/* Title row + enrollment badge */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "10px", marginBottom: "6px" }}>

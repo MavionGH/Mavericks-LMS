@@ -5,6 +5,7 @@ import { useState, useEffect, useRef } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
 import { useParams, useRouter } from "next/navigation";
+import CustomSelect from "@/components/CustomSelect";
 
 // Player for interview recordings.
 // MediaRecorder (WebM) files lack a duration header, so the browser reports
@@ -255,19 +256,13 @@ function StudentProfilePage() {
                       <label className="form-label" style={{ fontSize: "14px", fontWeight: "600", marginBottom: "8px", display: "block" }}>
                         Select Course
                       </label>
-                      <select
-                        className="form-input"
+                      <CustomSelect
+                        options={enrollments.map((e) => ({ value: e.course_id, label: e.course_title }))}
                         value={selectedCourseId}
-                        onChange={(e) => setSelectedCourseId(e.target.value)}
-                        style={{ maxWidth: "400px", display: "block", cursor: "pointer" }}
-                      >
-                        <option value="">-- Choose a Course --</option>
-                        {enrollments.map((e) => (
-                          <option key={e.course_id} value={e.course_id}>
-                            {e.course_title}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(val) => setSelectedCourseId(val)}
+                        placeholder="-- Choose a Course --"
+                        style={{ maxWidth: "400px" }}
+                      />
                     </div>
 
                     {loadingInterviews ? (

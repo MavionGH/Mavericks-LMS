@@ -366,6 +366,7 @@ class DashboardCourse(BaseModel):
     currentChapter: str
     status: str
     icon: str
+    thumbnail: Optional[str] = None
 
 
 class DashboardEvaluation(BaseModel):

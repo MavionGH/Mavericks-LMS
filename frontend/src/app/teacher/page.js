@@ -4,6 +4,8 @@ import Skeleton, { SkeletonTable } from "@/components/Skeleton";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { API_BASE, useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
+import CustomSelect from "@/components/CustomSelect";
+import ImageCropperModal from "@/components/ImageCropperModal";
 
 // Player for interview recordings.
 // MediaRecorder (WebM) files lack a duration header, so the browser reports
@@ -88,6 +90,9 @@ function TeacherPanel() {
   const [chapterStatus, setChapterStatus] = useState("");
   const [editingChapterId, setEditingChapterId] = useState(null);
   const [editingCourseId, setEditingCourseId] = useState(null);
+  const [thumbnailSource, setThumbnailSource] = useState("url"); // "url" | "upload"
+  const [cropperImageSrc, setCropperImageSrc] = useState(null);
+  const [thumbnailUploading, setThumbnailUploading] = useState(false);
 
   // Video upload state
   const [uploading, setUploading] = useState(false);
@@ -471,6 +476,54 @@ function TeacherPanel() {
     // Allow re-selecting the same file again later
     e.target.value = "";
   };
+
+  const handleThumbnailFileChange = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const allowed = ["png", "jpg", "jpeg", "webp", "gif"];
+    const ext = file.name.split(".").pop().toLowerCase();
+    if (!allowed.includes(ext)) {
+      setFormStatus("error:Invalid image format. Allowed: png, jpg, jpeg, webp, gif.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setCropperImageSrc(reader.result);
+    };
+    reader.readAsDataURL(file);
+    // Allow re-selecting the same file again later
+    e.target.value = "";
+  };
+
+  const handleCropComplete = async (croppedBlob) => {
+    setCropperImageSrc(null);
+    setThumbnailUploading(true);
+
+    const formData = new FormData();
+    formData.append("file", croppedBlob, "thumbnail.jpg");
+
+    try {
+      const res = await authFetch("/api/courses/upload-thumbnail", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!res.ok) {
+        throw new Error("Failed to upload thumbnail image");
+      }
+
+      const data = await res.json();
+      setForm((prev) => ({ ...prev, thumbnail: data.thumbnail_url }));
+      setFormStatus("");
+    } catch (err) {
+      console.error(err);
+      setFormStatus("error:Failed to upload cropped thumbnail image.");
+    } finally {
+      setThumbnailUploading(false);
+    }
+  };
+
 
   const loadCourses = useCallback(async () => {
     try {
@@ -1493,16 +1546,13 @@ function TeacherPanel() {
                 </h3>
                 <div className="form-group">
                   <label className="form-label">Select Course</label>
-                  <select
-                    className="form-input"
+                  <CustomSelect
+                    options={courses.map((c) => ({ value: c.id, label: c.title }))}
                     value={selectedCourseId}
-                    onChange={(e) => setSelectedCourseId(e.target.value)}
+                    onChange={(val) => setSelectedCourseId(val)}
                     disabled={!!editingChapterId}
-                  >
-                    {courses.map((c) => (
-                      <option key={c.id} value={c.id}>{c.title}</option>
-                    ))}
-                  </select>
+                    placeholder="Choose a Course..."
+                  />
                 </div>
                 {chapterStatus === "success-add" && (
                   <div className="badge badge-success" style={{ marginBottom: "16px" }}>
@@ -1764,14 +1814,88 @@ function TeacherPanel() {
                     <p style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>Minimum score to pass each module quiz</p>
                   </div>
                 </div>
-                <div className="form-group">
-                  <label className="form-label">Thumbnail URL (optional)</label>
-                  <input
-                    className="form-input"
-                    placeholder="https://..."
-                    value={form.thumbnail}
-                    onChange={(e) => setForm({ ...form, thumbnail: e.target.value })}
-                  />
+                 <div className="form-group">
+                  <label className="form-label">Course Thumbnail</label>
+                  <div style={{ display: "flex", gap: "10px", marginBottom: "12px" }}>
+                    <button
+                      type="button"
+                      className={`btn ${thumbnailSource === "url" ? "btn-primary" : "btn-secondary"}`}
+                      style={{ padding: "6px 12px", fontSize: "12px" }}
+                      onClick={() => setThumbnailSource("url")}
+                    >
+                      YouTube / Image URL
+                    </button>
+                    <button
+                      type="button"
+                      className={`btn ${thumbnailSource === "upload" ? "btn-primary" : "btn-secondary"}`}
+                      style={{ padding: "6px 12px", fontSize: "12px" }}
+                      onClick={() => setThumbnailSource("upload")}
+                    >
+                      Upload & Crop Image
+                    </button>
+                  </div>
+
+                  {thumbnailSource === "url" ? (
+                    <input
+                      className="form-input"
+                      placeholder="https://youtube.com/... or https://..."
+                      value={form.thumbnail}
+                      onChange={(e) => setForm({ ...form, thumbnail: e.target.value })}
+                    />
+                  ) : (
+                    <div>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handleThumbnailFileChange}
+                        className="form-input"
+                        style={{ padding: "8px 10px" }}
+                        disabled={thumbnailUploading}
+                      />
+                      {thumbnailUploading && (
+                        <p style={{ fontSize: "12px", color: "var(--brand)", marginTop: "4px" }}>
+                          Uploading cropped image...
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {form.thumbnail && (
+                    <div style={{ marginTop: "12px" }}>
+                      <label className="form-label" style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "4px" }}>Active Thumbnail Preview</label>
+                      <div style={{ position: "relative", width: "160px", aspectRatio: "16/9", borderRadius: "var(--radius-sm)", overflow: "hidden", border: "1px solid var(--border-subtle)" }}>
+                        <img
+                          src={form.thumbnail}
+                          alt="Course Thumbnail Preview"
+                          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                        />
+                        <button
+                          type="button"
+                          style={{
+                            position: "absolute",
+                            top: "4px",
+                            right: "4px",
+                            background: "rgba(15, 23, 42, 0.8)",
+                            border: "none",
+                            color: "#fff",
+                            borderRadius: "50%",
+                            width: "20px",
+                            height: "20px",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            cursor: "pointer",
+                            fontSize: "12px",
+                            lineHeight: 1
+                          }}
+                          onClick={() => setForm({ ...form, thumbnail: "" })}
+                          title="Remove image"
+                        >
+                          &times;
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <div style={{ display: "flex", justifyContent: "flex-end", gap: "12px", marginTop: "12px" }}>
                   {editingCourseId ? (
@@ -1794,6 +1918,15 @@ function TeacherPanel() {
 
         </div>
       </div>
+
+      {cropperImageSrc && (
+        <ImageCropperModal
+          imageSrc={cropperImageSrc}
+          onCrop={handleCropComplete}
+          onClose={() => setCropperImageSrc(null)}
+          aspectRatio={16 / 9}
+        />
+      )}
     </>
   );
 }
