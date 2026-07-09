@@ -14,8 +14,12 @@ const ROLE_BADGE = {
 const NAV_LINKS_BY_ROLE = {
   student: [
     { href: "/courses",   label: "Courses"   },
+    { href: "/hiring",    label: "Interviews" },
   ],
-  teacher: [],
+  teacher: [
+    { href: "/teacher",                   label: "Teacher Studio"    },
+    { href: "/teacher/hiring-templates", label: "Hiring Templates" },
+  ],
   admin: [],
 };
 

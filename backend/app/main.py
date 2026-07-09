@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import engine, Base
-from app.routers import auth, courses, enrollment, admin, interview, quiz, teacher, student
+from app.routers import auth, courses, enrollment, admin, interview, quiz, teacher, student, hiring
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +145,7 @@ app.include_router(interview.router)
 app.include_router(quiz.router)
 app.include_router(teacher.router)
 app.include_router(student.router)
+app.include_router(hiring.router)
 
 from fastapi.staticfiles import StaticFiles
 import os

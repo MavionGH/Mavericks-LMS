@@ -389,3 +389,93 @@ class DashboardStats(BaseModel):
     enrolled_courses: List[DashboardCourse]
 
 
+# ─── HIRING SCHEMAS ───
+
+class HiringTemplateCreate(BaseModel):
+    job_title: str
+
+
+class HiringTemplateResponse(BaseModel):
+    id: str
+    job_title: str
+    teacher_id: str
+    created_at: datetime
+    teacher_name: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class CodingSubmissionCreate(BaseModel):
+    language: str
+    code: str
+
+
+class CodingSubmissionResponse(BaseModel):
+    id: str
+    stage_id: str
+    language: str
+    code: str
+    status: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class InterviewStageResponse(BaseModel):
+    id: str
+    attempt_id: str
+    stage_type: str
+    status: str
+    score: Optional[float] = None
+    feedback: Optional[str] = None
+    created_at: datetime
+    submissions: List[CodingSubmissionResponse] = []
+
+    class Config:
+        from_attributes = True
+
+
+class InterviewAttemptResponse(BaseModel):
+    id: str
+    user_id: str
+    hiring_template_id: str
+    cv_url: Optional[str] = None
+    cv_name: Optional[str] = None
+    job_description: Optional[str] = None
+    status: str
+    current_stage: str
+    created_at: datetime
+    stages: List[InterviewStageResponse] = []
+    job_title: Optional[str] = None
+    student_name: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class StudentInterviewProgressResponse(BaseModel):
+    id: str
+    user_id: str
+    hiring_template_id: str
+    current_stage: str
+    status: str
+    updated_at: datetime
+    student_name: Optional[str] = None
+    student_email: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class StudentHiringDetailResponse(BaseModel):
+    student_id: str
+    student_name: str
+    student_email: str
+    progress_status: str  # in_progress, passed, failed
+    current_stage: str
+    attempts: List[InterviewAttemptResponse]
+
+
+
