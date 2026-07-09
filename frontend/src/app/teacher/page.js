@@ -87,6 +87,7 @@ function TeacherPanel() {
   });
   const [chapterStatus, setChapterStatus] = useState("");
   const [editingChapterId, setEditingChapterId] = useState(null);
+  const [editingCourseId, setEditingCourseId] = useState(null);
 
   // Video upload state
   const [uploading, setUploading] = useState(false);
@@ -527,8 +528,10 @@ function TeacherPanel() {
     e.preventDefault();
     setFormStatus("saving");
     try {
-      const res = await authFetch("/api/courses/", {
-        method: "POST",
+      const url = editingCourseId ? `/api/courses/${editingCourseId}` : "/api/courses/";
+      const method = editingCourseId ? "PUT" : "POST";
+      const res = await authFetch(url, {
+        method: method,
         body: JSON.stringify({
           title: form.title,
           description: form.description,
@@ -540,11 +543,31 @@ function TeacherPanel() {
       if (!res.ok) throw new Error((await res.json()).detail || "Failed");
       setFormStatus("success");
       setForm({ title: "", description: "", pass_threshold: 70, quiz_threshold: 70, thumbnail: "" });
+      setEditingCourseId(null);
       loadCourses();
+      setActiveTab("courses");
       setTimeout(() => setFormStatus(""), 3000);
     } catch (err) {
       setFormStatus("error:" + err.message);
     }
+  };
+
+  const handleEditCourse = (course) => {
+    setEditingCourseId(course.id);
+    setForm({
+      title: course.title || "",
+      description: course.description || "",
+      pass_threshold: course.pass_threshold !== undefined ? course.pass_threshold : 70,
+      quiz_threshold: course.quiz_threshold !== undefined ? course.quiz_threshold : 70,
+      thumbnail: course.thumbnail || "",
+    });
+    setActiveTab("create");
+  };
+
+  const handleCancelEditCourse = () => {
+    setEditingCourseId(null);
+    setForm({ title: "", description: "", pass_threshold: 70, quiz_threshold: 70, thumbnail: "" });
+    setActiveTab("courses");
   };
 
   const handleAddChapter = async (e) => {
@@ -702,7 +725,7 @@ function TeacherPanel() {
     { key: "overview", label: "Overview" },
     { key: "courses", label: "My Courses" },
     { key: "modules", label: "Add Modules" },
-    { key: "create", label: "Add Course" },
+    { key: "create", label: editingCourseId ? "Edit Course" : "Add Course" },
   ];
 
   const handleCheckApproval = async () => {
@@ -1040,6 +1063,10 @@ function TeacherPanel() {
                   setActiveTab(t.key);
                   setSelectedCourseForStudents(null);
                   setSelectedStudentForInterviews(null);
+                  if (t.key !== "create") {
+                    setEditingCourseId(null);
+                    setForm({ title: "", description: "", pass_threshold: 70, quiz_threshold: 70, thumbnail: "" });
+                  }
                 }}
               >
                 {t.label}
@@ -1221,13 +1248,21 @@ function TeacherPanel() {
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
                       Students
                     </button>
-                    <button
+                     <button
                       className="btn btn-secondary btn-sm"
                       onClick={() => { setSelectedCourseId(c.id); setActiveTab("modules"); }}
                       style={{ display: "flex", alignItems: "center", gap: "6px" }}
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2" /><polyline points="2 17 12 22 22 17" /><polyline points="2 12 12 17 22 12" /></svg>
                       Modules
+                    </button>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => handleEditCourse(c)}
+                      style={{ display: "flex", alignItems: "center", gap: "6px" }}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4z" /></svg>
+                      Edit
                     </button>
                     <button
                       className="btn btn-secondary btn-sm"
@@ -1662,7 +1697,7 @@ function TeacherPanel() {
           {activeTab === "create" && (
             <div className="card" style={{ maxWidth: 680, margin: "0 auto", backgroundColor: "var(--bg-surface)" }}>
               <h3 style={{ fontSize: "14px", fontWeight: "700", color: "var(--text-title)", marginBottom: "20px", textTransform: "uppercase", letterSpacing: "0.08em", fontFamily: "JetBrains Mono" }}>
-                Create New Course
+                {editingCourseId ? `Edit Course: ${form.title}` : "Create New Course"}
               </h3>
 
               {formStatus === "success" && (
@@ -1670,7 +1705,7 @@ function TeacherPanel() {
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                     <polyline points="20 6 9 17 4 12" />
                   </svg>
-                  Course created successfully!
+                  {editingCourseId ? "Course updated successfully!" : "Course created successfully!"}
                 </div>
               )}
               {formStatus.startsWith("error:") && (
@@ -1739,12 +1774,17 @@ function TeacherPanel() {
                   />
                 </div>
                 <div style={{ display: "flex", justifyContent: "flex-end", gap: "12px", marginTop: "12px" }}>
-                  <button type="button" className="btn btn-secondary" onClick={() => setForm({ title: "", description: "", pass_threshold: 70, quiz_threshold: 70, thumbnail: "" })}>
-
-                    Clear
-                  </button>
+                  {editingCourseId ? (
+                    <button type="button" className="btn btn-secondary" onClick={handleCancelEditCourse}>
+                      Cancel
+                    </button>
+                  ) : (
+                    <button type="button" className="btn btn-secondary" onClick={() => setForm({ title: "", description: "", pass_threshold: 70, quiz_threshold: 70, thumbnail: "" })}>
+                      Clear
+                    </button>
+                  )}
                   <button type="submit" className="btn btn-primary" disabled={formStatus === "saving"}>
-                    {formStatus === "saving" ? "Creating…" : "Create Course"}
+                    {formStatus === "saving" ? (editingCourseId ? "Saving…" : "Creating…") : (editingCourseId ? "Save Changes" : "Create Course")}
                   </button>
                 </div>
               </form>

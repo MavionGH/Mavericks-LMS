@@ -3,7 +3,7 @@ import Navbar from "@/components/Navbar";
 import Skeleton, { SkeletonClassroom } from "@/components/Skeleton";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
 import { getYouTubeEmbedUrl, renderArticleHtml } from "@/lib/courseUtils";
@@ -20,7 +20,7 @@ function LearnPage() {
   const [quizStatus, setQuizStatus] = useState({ attempted: false, passed: false, score: null });
   const [activeTab, setActiveTab] = useState("video");
   const [chapterLoading, setChapterLoading] = useState(false); // lightweight per-chapter inline loader
-  
+
   const [syllabusExpanded, setSyllabusExpanded] = useState(false);
 
   const [hasPlayedVideo, setHasPlayedVideo] = useState(false);
@@ -29,6 +29,14 @@ function LearnPage() {
   const [videoSuccessMsg, setVideoSuccessMsg] = useState("");
   const [articleSaving, setArticleSaving] = useState(false);
   const [articleSuccessMsg, setArticleSuccessMsg] = useState("");
+
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [ytCurrentTime, setYtCurrentTime] = useState(0);
+  const [ytDuration, setYtDuration] = useState(0);
+  const [ytVolume, setYtVolume] = useState(100);
+  const [ytMuted, setYtMuted] = useState(false);
+  const videoRef = useRef(null);
+  const iframeRef = useRef(null);
 
   useEffect(() => {
     // Reset play detection state when the chapter changes
@@ -39,14 +47,35 @@ function LearnPage() {
 
   useEffect(() => {
     const handleMessage = (event) => {
-      if (event.origin.includes("youtube.com")) {
-        try {
-          const data = JSON.parse(event.data);
-          if (data.event === "onStateChange" && data.info === 1) {
+      if (!event.origin.includes("youtube.com")) return;
+      
+      try {
+        const data = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
+        
+        if (data.event === "onStateChange") {
+          if (data.info === 1) {
             setHasPlayedVideo(true);
+            setIsPlaying(true);
+          } else if (data.info === 2 || data.info === 0 || data.info === -1) {
+            setIsPlaying(false);
           }
-        } catch (e) { }
-      }
+        }
+        
+        if (data.event === "infoDelivery" && data.info) {
+          if (data.info.currentTime !== undefined) {
+            setYtCurrentTime(data.info.currentTime);
+          }
+          if (data.info.duration !== undefined) {
+            setYtDuration(data.info.duration);
+          }
+          if (data.info.volume !== undefined) {
+            setYtVolume(data.info.volume);
+          }
+          if (data.info.muted !== undefined) {
+            setYtMuted(data.info.muted);
+          }
+        }
+      } catch (e) { }
     };
 
     const handleBlur = () => {
@@ -197,6 +226,117 @@ function LearnPage() {
 
   const embedUrl = getYouTubeEmbedUrl(viewingChapter.youtube_url);
   const isDirectVideo = viewingChapter.youtube_url?.match(/\.(mp4|mov|webm|mkv)/i);
+
+  const handleTogglePlay = () => {
+    if (isDirectVideo && videoRef.current) {
+      if (videoRef.current.paused) {
+        videoRef.current.play();
+      } else {
+        videoRef.current.pause();
+      }
+    } else if (iframeRef.current && iframeRef.current.contentWindow) {
+      const command = isPlaying ? "pauseVideo" : "playVideo";
+      iframeRef.current.contentWindow.postMessage(
+        JSON.stringify({ event: "command", func: command, args: [] }),
+        "*"
+      );
+      setIsPlaying(!isPlaying);
+    }
+  };
+
+  const handleRewind10 = () => {
+    if (isDirectVideo && videoRef.current) {
+      videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime - 10);
+    } else if (iframeRef.current && iframeRef.current.contentWindow) {
+      const targetTime = Math.max(0, ytCurrentTime - 10);
+      iframeRef.current.contentWindow.postMessage(
+        JSON.stringify({ event: "command", func: "seekTo", args: [targetTime, true] }),
+        "*"
+      );
+      setYtCurrentTime(targetTime);
+    }
+  };
+
+  const handleForward10 = () => {
+    if (isDirectVideo && videoRef.current) {
+      videoRef.current.currentTime = Math.min(videoRef.current.duration || 0, videoRef.current.currentTime + 10);
+    } else if (iframeRef.current && iframeRef.current.contentWindow) {
+      const targetTime = Math.min(ytDuration || 9999, ytCurrentTime + 10);
+      iframeRef.current.contentWindow.postMessage(
+        JSON.stringify({ event: "command", func: "seekTo", args: [targetTime, true] }),
+        "*"
+      );
+      setYtCurrentTime(targetTime);
+    }
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (activeTab !== "video") return;
+
+      // Ignore if user is typing in inputs or editing content
+      if (
+        document.activeElement &&
+        (document.activeElement.tagName === "INPUT" ||
+          document.activeElement.tagName === "TEXTAREA" ||
+          document.activeElement.isContentEditable)
+      ) {
+        return;
+      }
+
+      if (e.key === " ") {
+        e.preventDefault();
+        handleTogglePlay();
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        handleForward10();
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        handleRewind10();
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        if (isDirectVideo && videoRef.current) {
+          videoRef.current.volume = Math.min(1, videoRef.current.volume + 0.1);
+        } else if (iframeRef.current && iframeRef.current.contentWindow) {
+          const targetVolume = Math.min(100, ytVolume + 10);
+          iframeRef.current.contentWindow.postMessage(
+            JSON.stringify({ event: "command", func: "setVolume", args: [targetVolume] }),
+            "*"
+          );
+          setYtVolume(targetVolume);
+        }
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        if (isDirectVideo && videoRef.current) {
+          videoRef.current.volume = Math.max(0, videoRef.current.volume - 0.1);
+        } else if (iframeRef.current && iframeRef.current.contentWindow) {
+          const targetVolume = Math.max(0, ytVolume - 10);
+          iframeRef.current.contentWindow.postMessage(
+            JSON.stringify({ event: "command", func: "setVolume", args: [targetVolume] }),
+            "*"
+          );
+          setYtVolume(targetVolume);
+        }
+      } else if (e.key.toLowerCase() === "m") {
+        e.preventDefault();
+        if (isDirectVideo && videoRef.current) {
+          videoRef.current.muted = !videoRef.current.muted;
+        } else if (iframeRef.current && iframeRef.current.contentWindow) {
+          const command = ytMuted ? "unMute" : "mute";
+          iframeRef.current.contentWindow.postMessage(
+            JSON.stringify({ event: "command", func: command, args: [] }),
+            "*"
+          );
+          setYtMuted(!ytMuted);
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [activeTab, isDirectVideo, isPlaying, ytCurrentTime, ytDuration, ytVolume, ytMuted]);
   const unlockedCount = currentIndex + 1;
   const progressPct = chapters.length ? Math.round((unlockedCount / chapters.length) * 100) : 0;
 
@@ -244,16 +384,7 @@ function LearnPage() {
             {/* Sidebar Mobile Header */}
             <div className="sidebar-header-mobile">
               <span className="sidebar-title-mobile">Course Syllabus</span>
-              <button
-                type="button"
-                onClick={() => setSyllabusExpanded(false)}
-                aria-label="Close Course Syllabus"
-              >
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
+
             </div>
 
             <div className="sidebar-title">{course?.title || "Course"}</div>
@@ -349,13 +480,21 @@ function LearnPage() {
                 <div className="video-container" style={{ position: "relative", width: "100%", aspectRatio: "16/9", backgroundColor: "#000", borderRadius: "var(--radius-md)", overflow: "hidden" }}>
                   {isDirectVideo ? (
                     <video
+                      ref={videoRef}
                       src={viewingChapter.youtube_url}
                       controls
-                      onPlay={() => setHasPlayedVideo(true)}
+                      onPlay={() => {
+                        setHasPlayedVideo(true);
+                        setIsPlaying(true);
+                      }}
+                      onPause={() => setIsPlaying(false)}
+                      onEnded={() => setIsPlaying(false)}
                       style={{ width: "100%", height: "100%", objectFit: "contain" }}
                     />
                   ) : embedUrl ? (
                     <iframe
+                      ref={iframeRef}
+                      id="youtube-player"
                       src={embedUrl}
                       title={viewingChapter.title}
                       allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
@@ -368,6 +507,85 @@ function LearnPage() {
                     </div>
                   )}
                 </div>
+
+                {(isDirectVideo || embedUrl) && (
+                  <>
+                    {/* Custom Video Controls Bar */}
+                    <div style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: "16px",
+                      marginTop: "12px",
+                      padding: "10px 16px",
+                      backgroundColor: "var(--bg-card, #1e1e24)",
+                      border: "1px solid var(--border-muted, #2e2e38)",
+                      borderRadius: "var(--radius-sm, 8px)",
+                      color: "var(--text-main, #f5f5f7)"
+                    }}>
+                      <button
+                        className="btn btn-secondary"
+                        style={{ display: "flex", alignItems: "center", gap: "6px", padding: "8px 12px" }}
+                        onClick={handleRewind10}
+                        title="Rewind 10 seconds (Left Arrow)"
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M2.5 2v6h6M2.66 15.57a10 10 0 1 0-.57-8.38l.57 1.31" />
+                        </svg>
+                        <span>-10s</span>
+                      </button>
+
+                      <button
+                        className="btn btn-primary"
+                        style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "40px", height: "40px", borderRadius: "50%", padding: 0 }}
+                        onClick={handleTogglePlay}
+                        title="Play/Pause (Space)"
+                      >
+                        {isPlaying ? (
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2">
+                            <rect x="6" y="4" width="4" height="16" rx="1" />
+                            <rect x="14" y="4" width="4" height="16" rx="1" />
+                          </svg>
+                        ) : (
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" style={{ marginLeft: "2px" }}>
+                            <polygon points="5 3 19 12 5 21 5 3" />
+                          </svg>
+                        )}
+                      </button>
+
+                      <button
+                        className="btn btn-secondary"
+                        style={{ display: "flex", alignItems: "center", gap: "6px", padding: "8px 12px" }}
+                        onClick={handleForward10}
+                        title="Forward 10 seconds (Right Arrow)"
+                      >
+                        <span>+10s</span>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1 .57-8.38l-.57 1.31" />
+                        </svg>
+                      </button>
+                    </div>
+
+                    {/* Keyboard shortcut helper */}
+                    <div style={{
+                      display: "flex",
+                      justifyContent: "center",
+                      gap: "12px",
+                      marginTop: "8px",
+                      fontSize: "11px",
+                      color: "var(--text-muted, #86868b)",
+                      fontFamily: "JetBrains Mono, monospace"
+                    }}>
+                      <span>Space: Play/Pause</span>
+                      <span>•</span>
+                      <span>← / →: Seek 10s</span>
+                      <span>•</span>
+                      <span>↑ / ↓: Volume</span>
+                      <span>•</span>
+                      <span>M: Mute</span>
+                    </div>
+                  </>
+                )}
                 {isCurrentChapter && (
                   !videoWatched ? (
                     <div style={{ marginTop: "16px" }}>

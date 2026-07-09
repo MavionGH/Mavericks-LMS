@@ -129,13 +129,20 @@ def list_courses(
 
 
 @router.get("/{course_id}", response_model=CourseResponse)
-def get_course(course_id: str, db: Session = Depends(get_db)):
+def get_course(
+    course_id: str,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
+):
     """Public — returns course details."""
     course = db.query(Course).options(
         joinedload(Course.chapters)
     ).filter(Course.id == course_id).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
+    if not course.is_published:
+        if not current_user or (current_user.role != UserRole.ADMIN and course.teacher_id != current_user.id):
+            raise HTTPException(status_code=403, detail="This course is not published")
     return CourseResponse.model_validate(course)
 
 
