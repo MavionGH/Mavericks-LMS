@@ -199,7 +199,7 @@ function JobInterviewWorkspace() {
     if (!stage) return;
 
     let score = passed ? 85.0 : 45.0;
-    let feedback = passed 
+    let feedback = passed
       ? `Demonstrated excellent skills matching the requirements for this stage of ${job?.job_title}.`
       : `Struggled to provide solid details. Needs improvement.`;
 
@@ -242,13 +242,13 @@ function JobInterviewWorkspace() {
       <Navbar />
       <div className="page-container" style={{ backgroundColor: "var(--bg-canvas)", minHeight: "100vh" }}>
         <div className="container" style={{ padding: "32px 16px" }}>
-          
+
           {/* Breadcrumbs / Back button */}
-          <Link href="/hiring" style={{ 
-            display: "inline-flex", 
-            alignItems: "center", 
-            gap: "8px", 
-            color: "var(--text-muted)", 
+          <Link href="/hiring" style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "8px",
+            color: "var(--text-muted)",
             textDecoration: "none",
             marginBottom: "24px",
             fontSize: "14px",
@@ -279,16 +279,17 @@ function JobInterviewWorkspace() {
                   <div style={{ fontSize: "11px", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
                     Current Progress
                   </div>
-                  <div style={{ fontSize: "15px", fontWeight: "700", textTransform: "capitalize", color: 
-                    state.progress?.status === "passed" ? "var(--color-success)" : 
-                    state.progress?.status === "failed" ? "var(--color-danger)" : "var(--brand)"
+                  <div style={{
+                    fontSize: "15px", fontWeight: "700", textTransform: "capitalize", color:
+                      state.progress?.status === "passed" ? "var(--color-success)" :
+                        state.progress?.status === "failed" ? "var(--color-danger)" : "var(--brand)"
                   }}>
                     {state.progress ? `${state.progress.current_stage.replace("_", " ")} (${state.progress.status.replace("_", " ")})` : "Not Attempted"}
                   </div>
                 </div>
 
-                <button 
-                  className="btn btn-primary" 
+                <button
+                  className="btn btn-primary"
                   onClick={() => setShowAddModal(true)}
                   style={{ display: "flex", alignItems: "center", gap: "6px" }}
                 >
@@ -304,10 +305,10 @@ function JobInterviewWorkspace() {
 
           {/* Main workspace layout */}
           <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: "32px", alignItems: "start" }}>
-            
+
             {/* Left Sidebar: Attempt Selection and Stage Progress Locking */}
             <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
-              
+
               {/* Stages List inside selected Attempt */}
               {activeAttempt ? (
                 <div className="card" style={{ backgroundColor: "var(--bg-surface)", padding: "24px" }}>
@@ -322,7 +323,7 @@ function JobInterviewWorkspace() {
                     ].map((stg) => {
                       const dbStage = activeAttempt.stages.find((s) => s.stage_type === stg.type);
                       const isSelected = selectedStageType === stg.type;
-                      
+
                       let statusBadge = "Locked";
                       let badgeColor = "var(--text-subtle)";
                       let badgeBg = "var(--bg-canvas)";
@@ -425,11 +426,11 @@ function JobInterviewWorkspace() {
                             <span style={{ fontSize: "13px", fontWeight: "700", color: "var(--text-title)" }}>
                               Attempt #{state.attempts.length - idx}
                             </span>
-                            <span style={{ 
-                              fontSize: "11px", 
+                            <span style={{
+                              fontSize: "11px",
                               fontWeight: "600",
-                              color: att.status === "passed" ? "var(--color-success)" : 
-                                     att.status === "failed" ? "var(--color-danger)" : "var(--brand)"
+                              color: att.status === "passed" ? "var(--color-success)" :
+                                att.status === "failed" ? "var(--color-danger)" : "var(--brand)"
                             }}>
                               {att.status.toUpperCase()}
                             </span>
@@ -448,9 +449,9 @@ function JobInterviewWorkspace() {
             {/* Right Panel: Selected Stage Playground */}
             <div style={{ minHeight: "450px" }}>
               {!activeAttempt ? (
-                <div className="card" style={{ 
-                  backgroundColor: "var(--bg-surface)", 
-                  padding: "48px", 
+                <div className="card" style={{
+                  backgroundColor: "var(--bg-surface)",
+                  padding: "48px",
                   textAlign: "center",
                   display: "flex",
                   flexDirection: "column",
@@ -469,21 +470,21 @@ function JobInterviewWorkspace() {
                 </div>
               ) : isLocked ? (
                 // Locked screen
-                <div className="card" style={{ 
-                  backgroundColor: "var(--bg-surface)", 
-                  padding: "48px", 
+                <div className="card" style={{
+                  backgroundColor: "var(--bg-surface)",
+                  padding: "48px",
                   textAlign: "center",
                   display: "flex",
                   flexDirection: "column",
                   alignItems: "center"
                 }}>
-                  <div style={{ 
-                    width: "64px", 
-                    height: "64px", 
-                    borderRadius: "50%", 
-                    backgroundColor: "var(--bg-danger)", 
-                    display: "flex", 
-                    alignItems: "center", 
+                  <div style={{
+                    width: "64px",
+                    height: "64px",
+                    borderRadius: "50%",
+                    backgroundColor: "var(--bg-danger)",
+                    display: "flex",
+                    alignItems: "center",
                     justifyContent: "center",
                     marginBottom: "24px"
                   }}>
@@ -502,7 +503,7 @@ function JobInterviewWorkspace() {
               ) : (
                 // Active / Completed Playgrounds
                 <div>
-                  
+
                   {/* Complete stage simulator banner (helpful since AI is placeholder for now) */}
                   <div style={{
                     backgroundColor: "var(--brand-muted)",
@@ -562,8 +563,8 @@ function JobInterviewWorkspace() {
                         marginBottom: "20px"
                       }}>
                         {hrChat.map((msg, idx) => (
-                          <div 
-                            key={idx} 
+                          <div
+                            key={idx}
                             style={{
                               alignSelf: msg.speaker === "hr" ? "flex-start" : "flex-end",
                               maxWidth: "80%",
@@ -607,7 +608,7 @@ function JobInterviewWorkspace() {
                   {/* CODING TEST PLAYGROUND (Leetcode style!) */}
                   {selectedStageType === "coding" && (
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px", alignItems: "start" }}>
-                      
+
                       {/* Left: Question panel */}
                       <div className="card" style={{ backgroundColor: "var(--bg-surface)", padding: "24px", height: "650px", overflowY: "auto" }}>
                         <h2 style={{ fontSize: "18px", fontWeight: "700", color: "var(--text-title)", marginBottom: "12px" }}>
@@ -645,12 +646,12 @@ function JobInterviewWorkspace() {
 
                       {/* Right: Code editor and Output panel */}
                       <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
-                        
+
                         {/* Editor card */}
                         <div className="card" style={{ backgroundColor: "var(--bg-surface)", padding: "20px", height: "400px", display: "flex", flexDirection: "column" }}>
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
                             <span style={{ fontSize: "13px", fontWeight: "700", color: "var(--text-title)" }}>Code Editor</span>
-                            
+
                             <select
                               value={selectedLanguage}
                               onChange={(e) => handleLanguageChange(e.target.value)}
@@ -774,8 +775,8 @@ function JobInterviewWorkspace() {
                       </div>
 
                       <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                        <button 
-                          className="btn btn-primary" 
+                        <button
+                          className="btn btn-primary"
                           onClick={() => {
                             setSubmittingPs(true);
                             setTimeout(() => {
@@ -844,7 +845,7 @@ function JobInterviewWorkspace() {
               <h3 style={{ fontSize: "18px", fontWeight: "700", color: "var(--text-title)", margin: 0 }}>
                 Start New Interview Attempt
               </h3>
-              <button 
+              <button
                 onClick={() => setShowAddModal(false)}
                 style={{ background: "transparent", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: "24px", lineHeight: 1 }}
               >
@@ -853,7 +854,7 @@ function JobInterviewWorkspace() {
             </div>
 
             <form onSubmit={handleCreateAttempt} style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
-              
+
               <div>
                 <label style={{ display: "block", fontSize: "13px", fontWeight: "600", color: "var(--text-muted)", marginBottom: "6px" }}>
                   Upload CV (PDF, DOCX)

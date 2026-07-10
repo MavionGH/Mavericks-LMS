@@ -205,6 +205,15 @@ function looksLikeAnsweredTurn(text) {
 // goodbye can.
 const GOODBYE_RE = /\b(goodbye|good bye|take care|that'?s all for today|that concludes|assessment is complete|thanks? for (your time|joining|participating)|all the best|wish you (well|luck)|talk to you (soon|later))\b/i;
 
+// Detects Mav's language-rejection response. When the student speaks in a
+// non-English language, the system instructions tell Mav to say exactly
+// "I don't understand, please speak English" and re-ask the question WITHOUT
+// calling mark_question_answered. The fallback heuristic (looksLikeAnsweredTurn)
+// could still count a long romanized-foreign sentence as a genuine answer, so
+// we suppress the fallback counter whenever Mav's own reply signals a language
+// rejection — ensuring non-English answers NEVER advance the question counter.
+const LANGUAGE_REJECTION_RE = /i don'?t understand,?\s*please\s*speak\s*english/i;
+
 /**
  * Shared, voice-driven AI interview room used by both the (legacy) per-module
  * assessment and the course-wide final assessment. Conversation runs over the
@@ -425,6 +434,15 @@ export default function InterviewRoom({
       // preserving conversation order in the saved transcript.
       const studentText = userTextRef.current.trim();
       userTextRef.current = "";
+
+      // Peek at Mav's already-accumulated reply BEFORE running the fallback
+      // heuristic. If she rejected the student's language ("I don't understand,
+      // please speak English") we must NOT count this turn as progress — a
+      // non-English answer never advances the question counter regardless of
+      // how long or Latin-looking the transcribed text is.
+      const pendingAiText = aiTextRef.current.trim();
+      const mavRejectedLanguage = LANGUAGE_REJECTION_RE.test(pendingAiText);
+
       if (studentText) {
         // The student spoke (or typed) — cancel the silence-nudge escalation.
         silenceNudgeCountRef.current = 0;
@@ -433,12 +451,14 @@ export default function InterviewRoom({
         // call above. But LLM tool-calling isn't 100% reliable — verified live,
         // Mav sometimes moves on without calling it — so if it didn't fire this
         // turn, fall back to classifying the student's own words instead.
-        if (!turnToolFiredRef.current && looksLikeAnsweredTurn(studentText)) {
+        // EXCEPTION: if Mav explicitly rejected the student's language, suppress
+        // the fallback entirely — non-English speech must never count as progress.
+        if (!turnToolFiredRef.current && !mavRejectedLanguage && looksLikeAnsweredTurn(studentText)) {
           answersRef.current += 1;
         }
       }
       turnToolFiredRef.current = false;
-      const aiText = aiTextRef.current.trim();
+      const aiText = pendingAiText;
       aiTextRef.current = "";
       if (aiText) {
         pushTranscript({ speaker: "ai", text: aiText });
