@@ -228,3 +228,82 @@ class Certificate(Base):
     course = relationship("Course", back_populates="certificates")
 
 
+# ─── HIRING MODULE MODELS ───
+
+class HiringTemplate(Base):
+    __tablename__ = "hiring_templates"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    job_title = Column(String(255), nullable=False)
+    teacher_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    teacher = relationship("User", foreign_keys=[teacher_id])
+    attempts = relationship("InterviewAttempt", back_populates="hiring_template", cascade="all, delete-orphan")
+    progresses = relationship("StudentInterviewProgress", back_populates="hiring_template", cascade="all, delete-orphan")
+
+
+class InterviewAttempt(Base):
+    __tablename__ = "interview_attempts"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    hiring_template_id = Column(String, ForeignKey("hiring_templates.id", ondelete="CASCADE"), nullable=False, index=True)
+    cv_url = Column(String(500), nullable=True)
+    cv_name = Column(String(255), nullable=True)
+    job_description = Column(Text, nullable=True)
+    status = Column(String, default="in_progress")  # in_progress | passed | failed
+    current_stage = Column(String, default="hr")  # hr | coding | problem_solving | completed
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User")
+    hiring_template = relationship("HiringTemplate", back_populates="attempts")
+    stages = relationship("InterviewStage", back_populates="attempt", cascade="all, delete-orphan")
+
+
+class InterviewStage(Base):
+    __tablename__ = "interview_stages"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    attempt_id = Column(String, ForeignKey("interview_attempts.id", ondelete="CASCADE"), nullable=False, index=True)
+    stage_type = Column(String, nullable=False)  # hr | coding | problem_solving
+    status = Column(String, default="locked")  # locked | in_progress | passed | failed
+    score = Column(Float, nullable=True)
+    feedback = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    attempt = relationship("InterviewAttempt", back_populates="stages")
+    submissions = relationship("CodingSubmission", back_populates="stage", cascade="all, delete-orphan")
+
+
+class StudentInterviewProgress(Base):
+    __tablename__ = "student_interview_progress"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    hiring_template_id = Column(String, ForeignKey("hiring_templates.id", ondelete="CASCADE"), nullable=False, index=True)
+    current_stage = Column(String, default="hr")  # hr | coding | problem_solving | completed
+    status = Column(String, default="in_progress")  # in_progress | passed | failed
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User")
+    hiring_template = relationship("HiringTemplate", back_populates="progresses")
+
+
+class CodingSubmission(Base):
+    __tablename__ = "coding_submissions"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    stage_id = Column(String, ForeignKey("interview_stages.id", ondelete="CASCADE"), nullable=False, index=True)
+    language = Column(String(50), nullable=False)
+    code = Column(Text, nullable=False)
+    status = Column(String, default="submitted")  # submitted | compiled | passed | failed
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    stage = relationship("InterviewStage", back_populates="submissions")
+
+
+

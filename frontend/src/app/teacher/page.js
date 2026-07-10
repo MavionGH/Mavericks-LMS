@@ -6,6 +6,7 @@ import { API_BASE, useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
 import CustomSelect from "@/components/CustomSelect";
 import ImageCropperModal from "@/components/ImageCropperModal";
+import { TeacherHiringTemplates } from "./hiring-templates/page";
 
 // Player for interview recordings.
 // MediaRecorder (WebM) files lack a duration header, so the browser reports
@@ -543,6 +544,17 @@ function TeacherPanel() {
     loadCourses();
   }, [loadCourses]);
 
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const tab = params.get("tab");
+      if (tab && ["overview", "courses", "modules", "create", "hiring"].includes(tab)) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setActiveTab(tab);
+      }
+    }
+  }, []);
+
   const loadRecordings = useCallback(async (studentId = null) => {
     setRecordings([]);
     setRecordingsLoading(true);
@@ -779,6 +791,7 @@ function TeacherPanel() {
     { key: "courses", label: "My Courses" },
     { key: "modules", label: "Add Modules" },
     { key: "create", label: editingCourseId ? "Edit Course" : "Add Course" },
+    { key: "hiring", label: "Hiring Templates" },
   ];
 
   const handleCheckApproval = async () => {
@@ -1216,6 +1229,11 @@ function TeacherPanel() {
                 </div>
               </div>
             </div>
+          )}
+
+          {/* Hiring Templates */}
+          {activeTab === "hiring" && (
+            <TeacherHiringTemplates hideNavbar={true} />
           )}
 
           {/* My Courses - Level 1 (Courses List) */}
