@@ -913,7 +913,10 @@ def llm_generate_mock_transcript(title: str) -> str:
 # ─── QUIZ GENERATION (dynamic, grounded in module video transcript + articles) ───
 
 QUIZ_QUESTION_COUNT = 10
-_QUIZ_BATCH_CHARS = 6000
+# gpt-4o-mini supports a 128 K-token context window (~512 KB of text).
+# 80 K chars fits the vast majority of modules in a single LLM call,
+# eliminating the need for multiple sequential batch round-trips.
+_QUIZ_BATCH_CHARS = 80_000
 
 # Randomized prompt facets — varied per request so each quiz feels fresh.
 _QUIZ_FOCUS_AREAS = [
@@ -934,29 +937,54 @@ _QUIZ_DIFFICULTIES = [
 ]
 
 
+# PERF FIX: The old _get_quiz_llm() called ChatOpenAI(...) on EVERY quiz
+# request, rebuilding the underlying httpx connection pool each time and adding
+# 5-15 s of cold-connection overhead per call.
+# Now the client is cached process-wide (same pattern as _get_question_llm/
+# get_llm) and per-call temperature randomness is applied via .bind() so quiz
+# variety is fully preserved without the pool-rebuild penalty.
+_quiz_llm_client = None
+_quiz_llm_resolved = False
+
+
 def _get_quiz_llm():
     """
-    LLM tuned for diverse quiz generation. A fresh random temperature (0.9-1.1)
-    and top_p (0.95) are drawn every call so repeated generations on the same
-    module diverge, while a small presence_penalty nudges the model to reach for
-    different facts/wording rather than the most obvious ones. The range is kept
-    moderate so the single generation call stays fast and the JSON stays valid.
+    Return the cached quiz-generation LLM (gpt-4o-mini, warm HTTP pool).
+
+    A fresh random temperature (0.9-1.1) and top_p (0.95) are applied via
+    .bind() on every call so repeated generations on the same module diverge,
+    while presence_penalty nudges the model toward different facts/wording.
+    The client itself is only constructed once per process lifetime.
     """
-    temperature = round(random.uniform(0.9, 1.1), 2)
+    global _quiz_llm_client, _quiz_llm_resolved
+    if _quiz_llm_resolved:
+        # Apply per-call temperature via .bind() — no HTTP pool rebuild.
+        if _quiz_llm_client is not None and not is_reasoning_model(OPENAI_MODEL):
+            return _quiz_llm_client.bind(
+                temperature=round(random.uniform(0.9, 1.1), 2)
+            )
+        return _quiz_llm_client
+
     if OPENAI_API_KEY:
         try:
             from langchain_openai import ChatOpenAI
-            return ChatOpenAI(
+            _quiz_llm_client = ChatOpenAI(
                 model=OPENAI_MODEL,
-                temperature=temperature,
+                temperature=0.9,   # default; overridden per-call via .bind()
                 top_p=0.95,
                 presence_penalty=0.4,
                 api_key=OPENAI_API_KEY,
             )
         except Exception:
-            pass
+            _quiz_llm_client = None
 
-    return None
+    _quiz_llm_resolved = True
+    # Apply per-call temperature on first call too.
+    if _quiz_llm_client is not None and not is_reasoning_model(OPENAI_MODEL):
+        return _quiz_llm_client.bind(
+            temperature=round(random.uniform(0.9, 1.1), 2)
+        )
+    return _quiz_llm_client
 
 
 def _extract_json_list(text: str) -> list:
@@ -1164,14 +1192,43 @@ def llm_generate_quiz(
     # Ask each batch for a few extra so we have spares for dedup/selection.
     per_batch = max(4, math.ceil(QUIZ_QUESTION_COUNT / len(batches)) + 2)
 
+    # Pre-compute randomized prompt facets for every batch up-front so each
+    # concurrent call gets its own independent focus/difficulty/nonce even
+    # when the ThreadPoolExecutor runs them in parallel threads.
+    batch_args = [
+        (
+            batch,
+            random.sample(_QUIZ_FOCUS_AREAS, k=min(3, len(_QUIZ_FOCUS_AREAS))),
+            random.choice(_QUIZ_DIFFICULTIES),
+            random.randint(1000, 9999),
+        )
+        for batch in batches
+    ]
+
     candidates = []
-    for batch in batches:
-        focus = random.sample(_QUIZ_FOCUS_AREAS, k=min(3, len(_QUIZ_FOCUS_AREAS)))
-        difficulty = random.choice(_QUIZ_DIFFICULTIES)
-        nonce = random.randint(1000, 9999)
+    if len(batch_args) == 1:
+        # Fast path: single batch — no thread overhead, straight call.
+        batch, focus, difficulty, nonce = batch_args[0]
         candidates.extend(
             _generate_quiz_batch(llm, chapter_title, batch, per_batch, focus, difficulty, nonce)
         )
+    else:
+        # Multiple batches (content > _QUIZ_BATCH_CHARS): run in parallel so
+        # total latency is ~max(single batch time) rather than sum of all.
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=len(batch_args)) as executor:
+            futures = [
+                executor.submit(
+                    _generate_quiz_batch,
+                    llm, chapter_title, batch, per_batch, focus, difficulty, nonce
+                )
+                for batch, focus, difficulty, nonce in batch_args
+            ]
+            for future in as_completed(futures):
+                try:
+                    candidates.extend(future.result())
+                except Exception:
+                    pass  # individual batch failure is non-fatal; dedup/fallback handles it
 
     # Drop exact AND near-duplicate (reworded) questions so a single quiz never
     # shows the same thing twice, then randomize which of the survivors are kept.
