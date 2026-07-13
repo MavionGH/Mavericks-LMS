@@ -518,10 +518,10 @@ function LearnPage() {
                       gap: "16px",
                       marginTop: "12px",
                       padding: "10px 16px",
-                      backgroundColor: "var(--bg-card, #1e1e24)",
-                      border: "1px solid var(--border-muted, #2e2e38)",
-                      borderRadius: "var(--radius-sm, 8px)",
-                      color: "var(--text-main, #f5f5f7)"
+                      backgroundColor: "var(--bg-surface)",
+                      border: "1px solid var(--border-muted)",
+                      borderRadius: "var(--radius-md, 6px)",
+                      color: "var(--text-main)"
                     }}>
                       <button
                         className="btn btn-secondary"
@@ -573,7 +573,7 @@ function LearnPage() {
                       gap: "12px",
                       marginTop: "8px",
                       fontSize: "11px",
-                      color: "var(--text-muted, #86868b)",
+                      color: "var(--text-muted)",
                       fontFamily: "JetBrains Mono, monospace"
                     }}>
                       <span>Space: Play/Pause</span>
