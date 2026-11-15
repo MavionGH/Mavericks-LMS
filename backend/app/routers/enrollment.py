@@ -48,7 +48,12 @@ def my_courses(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_student),
 ):
-    enrollments = db.query(Enrollment).filter(Enrollment.user_id == current_user.id).all()
+    enrollments = (
+        db.query(Enrollment)
+        .join(Course)
+        .filter(Enrollment.user_id == current_user.id, Course.is_published == True)
+        .all()
+    )
     return [EnrollmentResponse.model_validate(e) for e in enrollments]
 
 
@@ -64,6 +69,8 @@ def get_course_enrollment(
     ).first()
     if not enrollment:
         raise HTTPException(status_code=404, detail="Not enrolled in this course")
+    if not enrollment.course.is_published:
+        raise HTTPException(status_code=403, detail="This course is currently drafted/unpublished by the teacher.")
     return EnrollmentResponse.model_validate(enrollment)
 
 
