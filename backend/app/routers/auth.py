@@ -1,5 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
-from app.services.storage import upload_avatar
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from sqlalchemy.orm import Session
 import bcrypt
@@ -96,37 +95,6 @@ def login(data: UserLogin, db: Session = Depends(get_db)):
 @router.get("/me", response_model=UserResponse)
 def get_me(current_user: User = Depends(get_current_user)):
     """Return the authenticated user's profile from the JWT."""
-    return UserResponse.model_validate(current_user)
-
-
-@router.put("/profile", response_model=UserResponse)
-def update_profile(
-    name: str = Form(...),
-    certificate_name: Optional[str] = Form(None),
-    password: Optional[str] = Form(None),
-    avatar_file: Optional[UploadFile] = File(None),
-    remove_avatar: bool = Form(False),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Update user profile: name, certificate name, password, and avatar."""
-    current_user.name = name.strip()
-
-    if certificate_name is not None:
-        current_user.certificate_name = certificate_name.strip() or None
-
-    if password and password.strip():
-        current_user.password = hash_password(password.strip())
-
-    if avatar_file is not None and avatar_file.filename:
-        # Use our upload helper
-        avatar_url = upload_avatar(avatar_file)
-        current_user.avatar = avatar_url
-    elif remove_avatar:
-        current_user.avatar = None
-
-    db.commit()
-    db.refresh(current_user)
     return UserResponse.model_validate(current_user)
 
 

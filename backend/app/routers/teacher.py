@@ -6,16 +6,15 @@ everything. Ownership is resolved through the interview session's course — eit
 directly (course-wide final interview) or via its chapter (per-module interview).
 """
 import logging
-from typing import Optional, List
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
 from app.models.models import (
     Chapter, Course, Evaluation, InterviewSession, User, UserRole, Enrollment,
 )
-from app.schemas.schemas import CourseResponse
 from app.auth.dependencies import require_teacher
 
 logger = logging.getLogger(__name__)
@@ -34,7 +33,6 @@ def _owned_course_ids(db: Session, current_user: User) -> set:
 @router.get("/recordings")
 def list_interview_recordings(
     student_id: Optional[str] = None,
-    course_id: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_teacher),
 ):
@@ -61,34 +59,12 @@ def list_interview_recordings(
     if student_id:
         query = query.filter(InterviewSession.user_id == student_id)
 
-    sessions = query.order_by(InterviewSession.created_at.asc()).all()
-    if not sessions:
-        return []
+    sessions = query.order_by(InterviewSession.created_at.desc()).all()
 
-    # Collect student IDs
-    student_ids = {s.user_id for s in sessions if s.user_id}
-
-    # Fetch all evaluations for these students
-    evals = (
-        db.query(Evaluation)
-        .filter(Evaluation.user_id.in_(list(student_ids)))
-        .order_by(Evaluation.created_at.asc())
-        .all()
-    )
-
-    from collections import defaultdict
-    from datetime import datetime
-
-    # Group evaluations by student and scope (chapter_id or course_id)
-    evals_by_student_scope = defaultdict(list)
-    for ev in evals:
-        if ev.chapter_id:
-            evals_by_student_scope[(ev.user_id, f"chapter_{ev.chapter_id}")].append(ev)
-        elif ev.course_id:
-            evals_by_student_scope[(ev.user_id, f"course_{ev.course_id}")].append(ev)
-
-    # Group sessions by student and scope
-    sessions_by_student_scope = defaultdict(list)
+    # Pre-load evaluations for these students/chapters in one pass would be ideal,
+    # but the volume here is small (one row per finished interview); a per-session
+    # lookup keyed on the same (user, chapter) is clear and fast enough.
+    results = []
     for s in sessions:
         # Resolve the owning course (chapter path takes precedence over course path).
         if s.chapter and s.chapter.course:
@@ -97,39 +73,16 @@ def list_interview_recordings(
             course = s.course
         if not course or course.id not in owned:
             continue
-        if course_id and course.id != course_id:
-            continue
 
-        if s.chapter_id:
-            sessions_by_student_scope[(s.user_id, f"chapter_{s.chapter_id}")].append(s)
-        else:
-            sessions_by_student_scope[(s.user_id, f"course_{course.id}")].append(s)
-
-    # Match each session to its chronological evaluation
-    session_eval_map = {}
-    for key, scope_sessions in sessions_by_student_scope.items():
-        scope_evals = evals_by_student_scope.get(key, [])
-        for idx, s in enumerate(scope_sessions):
-            if idx < len(scope_evals):
-                session_eval_map[s.id] = scope_evals[idx]
-            elif len(scope_evals) > 0:
-                session_eval_map[s.id] = scope_evals[-1]
-
-    # Build results sorted by newest session first
-    sessions_desc = sorted(sessions, key=lambda s: s.created_at or datetime.min, reverse=True)
-    results = []
-    for s in sessions_desc:
-        # Resolve course again for output filtering
-        if s.chapter and s.chapter.course:
-            course = s.chapter.course
-        else:
-            course = s.course
-        if not course or course.id not in owned:
-            continue
-        if course_id and course.id != course_id:
-            continue
-
-        evaluation = session_eval_map.get(s.id)
+        evaluation = (
+            db.query(Evaluation)
+            .filter(
+                Evaluation.user_id == s.user_id,
+                Evaluation.chapter_id == s.chapter_id,
+            )
+            .order_by(Evaluation.created_at.desc())
+            .first()
+        )
 
         results.append({
             "session_id": s.id,
@@ -151,10 +104,8 @@ def list_interview_recordings(
     return results
 
 
-
 @router.get("/students")
 def list_enrolled_students(
-    course_id: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_teacher),
 ):
@@ -166,12 +117,7 @@ def list_enrolled_students(
     published_course_ids = [row[0] for row in q.all()]
     if not published_course_ids:
         return []
-    if course_id:
-        if course_id not in published_course_ids:
-            return []
-        target_course_ids = [course_id]
-    else:
-        target_course_ids = published_course_ids
+
     # Find all enrollments in these courses
     enrollments = (
         db.query(Enrollment)
@@ -179,7 +125,7 @@ def list_enrolled_students(
             joinedload(Enrollment.user),
             joinedload(Enrollment.course)
         )
-        .filter(Enrollment.course_id.in_(target_course_ids))
+        .filter(Enrollment.course_id.in_(published_course_ids))
         .all()
     )
 

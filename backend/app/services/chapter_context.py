@@ -7,13 +7,13 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Cap raw fallback context so a large multi-module course never blows the prompt.
-_MAX_COURSE_CONTEXT_CHARS = 500000
+_MAX_COURSE_CONTEXT_CHARS = 12000
 
 
 # A single chapter's article + transcript is small enough to hand to the LLM
 # whole, so we never need vector retrieval here. Cap it so a pathologically long
 # transcript can't blow the prompt (the LLM prompt builders also slice further).
-_MAX_CHAPTER_CONTEXT_CHARS = 500000
+_MAX_CHAPTER_CONTEXT_CHARS = 12000
 
 
 def build_chapter_context(
@@ -27,9 +27,13 @@ def build_chapter_context(
     A per-module interview only concerns ONE chapter, whose article + transcript
     already fit comfortably in the prompt, so we use the raw text directly.
 
-    This performs NO embedding/vector search — the raw module text is the single
-    source of truth. `query`/`db` are accepted for backward compatibility and
-    intentionally unused.
+    This deliberately performs NO embedding/vector search: the embedding model is
+    a ~90 MB lazy-loaded download whose first call dominated interview startup,
+    and the pgvector `chunk_embeddings` table it queried is never populated (module
+    content is indexed into Pinecone at upload time, not pgvector) — so retrieval
+    always fell back to this same raw text anyway. Skipping it is behaviour-
+    preserving and removes the cold-load entirely. `query`/`db` are accepted for
+    backward compatibility and intentionally unused.
     """
     parts = [
         f"# Module: {chapter.title}",
@@ -54,17 +58,6 @@ def _raw_course_context(course: Course) -> str:
     return text[:_MAX_COURSE_CONTEXT_CHARS]
 
 
-def build_course_context_no_vector(course: Course) -> str:
-    """Raw, length-bounded concatenation of every module's article + transcript.
-
-    Used by the Realtime interview, which deliberately skips vector retrieval
-    entirely (per requirement): the candidate's name, the course name, and this
-    raw module text are all the interviewer needs, and the Realtime model holds
-    it in session context for the whole call.
-    """
-    return _raw_course_context(course)
-
-
 def build_course_context(
     course: Course,
     query: Optional[str] = None,
@@ -74,10 +67,25 @@ def build_course_context(
     Build a context string spanning ALL modules of a course for the final,
     course-wide AI interview.
 
-    Uses a length-bounded concatenation of every module's raw article +
-    transcript, so the interviewer always has the full course knowledge base.
-    No embedding/vector search is performed — the raw module text is the single
-    source of truth. `query`/`db` are accepted for backward compatibility and
-    intentionally unused.
+    Strategy:
+      1. Semantic search across the course's Pinecone namespace (every module's
+         embedded video transcript + article) for the chunks most relevant to
+         the query.
+      2. Fall back to a length-bounded concatenation of every module's raw
+         article + transcript when vector search is unavailable or returns
+         nothing — so the interviewer always has the full course knowledge base.
     """
+    try:
+        from app.services.pinecone_store import query_course_content
+        chunks = query_course_content(course.id, query or course.title)
+        if chunks:
+            return (
+                f"# Course: {course.title}\n\n"
+                "The following are the most relevant excerpts drawn from across "
+                "all modules of this course (video transcripts and articles):\n\n"
+                + "\n\n---\n\n".join(chunks)
+            )
+    except Exception as exc:
+        logger.warning("Course-wide vector search failed, using raw fallback: %s", exc)
+
     return _raw_course_context(course)

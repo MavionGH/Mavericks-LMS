@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.models import (
-    Chapter, Enrollment, EnrollmentStatus, QuizAttempt, QuizQuestion, User, UserRole
+    Chapter, Enrollment, EnrollmentStatus, QuizAttempt, QuizQuestion, User,
 )
 from app.schemas.schemas import (
     QuizQuestionsResponse, QuizQuestionItem,
@@ -19,23 +19,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/quiz", tags=["Quiz"])
 
 
-def _check_quiz_access(chapter: Chapter, user: User) -> None:
-    if chapter.course and not chapter.course.is_published:
-        if user.role != UserRole.ADMIN and chapter.course.teacher_id != user.id:
-            raise HTTPException(status_code=403, detail="This course is not published")
-
-
 @router.get("/{chapter_id}/my-status", response_model=QuizStatusResponse)
 def get_quiz_status(
     chapter_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
-    if not chapter:
-        raise HTTPException(status_code=404, detail="Chapter not found")
-    _check_quiz_access(chapter, current_user)
-
     latest = (
         db.query(QuizAttempt)
         .filter(QuizAttempt.user_id == current_user.id, QuizAttempt.chapter_id == chapter_id)
@@ -57,12 +46,9 @@ def get_quiz(
     chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
-    _check_quiz_access(chapter, current_user)
 
     # Always regenerate — questions are NOT cached, so each request is different.
     # Built directly from the module's video transcript + article (no vector search).
-    # Variety across attempts comes from randomized prompt facets + temperature
-    # inside llm_generate_quiz (no per-student question history is stored).
     raw_qs = llm_generate_quiz(
         chapter.title, chapter.video_transcript, chapter.article_content
     )
@@ -94,7 +80,6 @@ def submit_quiz(
     chapter = db.query(Chapter).filter(Chapter.id == data.chapter_id).first()
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
-    _check_quiz_access(chapter, current_user)
 
     cached = db.query(QuizQuestion).filter(QuizQuestion.chapter_id == data.chapter_id).first()
     if not cached:
@@ -103,7 +88,7 @@ def submit_quiz(
             detail="No quiz questions found — call GET /api/quiz/{chapter_id} first",
         )
 
-    threshold = (chapter.course.quiz_threshold if chapter.course else None) or 70
+    threshold = chapter.course.pass_threshold if chapter.course else 70
     questions = cached.questions
     correct_count = 0
     result_items = []
@@ -161,12 +146,11 @@ def submit_quiz(
                     enrollment.video_watched = False
                     enrollment.article_read = False
                     next_chapter_unlocked = True
+                else:
                     # Passed the final module — all learning content is complete.
-                    pass
-            
-            # Check certificate eligibility whenever any quiz is passed (handles out of order / retakes)
-            from app.services.certificate import issue_certificate_if_eligible
-            issue_certificate_if_eligible(db, current_user.id, chapter.course_id)
+                    enrollment.status = EnrollmentStatus.COMPLETED
+                    enrollment.completed_at = datetime.utcnow()
+                    course_completed = True
 
     db.commit()
     db.refresh(attempt)

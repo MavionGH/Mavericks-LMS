@@ -4,225 +4,75 @@ import Link from "next/link";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
-import { GoogleGenAI, Modality, Type } from "@google/genai";
-// AI avatar closed mouth frame (fallback for when AI is not speaking)
+// AI avatar frames (in frontend/local). Swapping between them while the AI
+// speaks makes the avatar look like it's talking.
 import avatarClosed from "../../local/closed.png";
+import avatarOpened from "../../local/opened.png";
 
-// ── Gemini Live API (speech-to-speech) ──────────────────────────────────────────
-// The browser opens ONE WebSocket connection straight to Gemini and streams the
-// mic audio continuously (16kHz PCM16); Gemini streams Mav's voice back as she
-// speaks (24kHz PCM16). There is no per-turn record→upload→STT→LLM→TTS round-trip
-// through our backend. The only backend calls are:
-//   • POST /api/interview/realtime/start  → ephemeral token + context (once)
-//   • POST /api/interview/realtime/finish → grade the transcript (once, at end)
+// Handoff gap between TTS ending and the mic opening. speechSynthesis needs a tick
+// to release the audio session before we start recording. Small and deterministic.
+const MIC_HANDOFF_MS = 150;
+
+// ── Voice capture (MediaRecorder + local VAD) ──────────────────────────────────
+// The browser Web Speech API (Google cloud STT) is unreachable on many networks,
+// so we record the answer locally and transcribe it server-side (Groq Whisper).
+// A lightweight Voice Activity Detector watches the mic level to auto-stop on
+// silence — no cloud dependency, works everywhere the backend can reach Groq.
 //
-// Ephemeral tokens require the v1alpha API surface (see also realtime.py).
-const GEMINI_API_VERSION = "v1alpha";
+// VAD_THRESHOLD : normalized RMS above which we consider the student to be speaking
+// SILENCE_MS    : trailing silence (after speech) that triggers auto-submit
+// MAX_RECORD_MS : hard cap on a single answer's recording length
+// MIN_SPEECH_MS : minimum voiced time before a silence is allowed to auto-submit
+const VAD_THRESHOLD = 0.02;
+const SILENCE_MS = 2500;
+const MAX_RECORD_MS = 60000;
+const MIN_SPEECH_MS = 300;
 
-// Gemini Live's required audio wire format: mono PCM16, 16kHz in, 24kHz out.
-const MIC_SAMPLE_RATE = 16000;
-const PLAYBACK_SAMPLE_RATE = 24000;
-// RMS above which the student's own mic is treated as "speaking" — mirrors the
-// AI_VOICE_RMS_THRESHOLD approach below since Gemini Live (unlike OpenAI) has no
-// discrete speech_started/speech_stopped server event to key off of.
-const MIC_RMS_THRESHOLD = 0.02;
-const MIC_VOICE_HOLD_MS = 500;
-
-// RMS above which we treat Mav's incoming audio as "actively speaking" — drives
-// the avatar lip-sync and the "AI SPEAKING" label without depending on any
-// particular server event name.
-const AI_VOICE_RMS_THRESHOLD = 0.01;
-// Hold "speaking" true for this long after the level drops, so the natural
-// sub-second gaps between words don't make the avatar/status/bar flicker.
-const AI_VOICE_HOLD_MS = 600;
-
-// The interview is capped at exactly this many questions. The model is also
-// instructed to stop at this count, but we enforce it client-side (count the
-// student's answers) so a free-flowing realtime session can never run long.
-const MAX_QUESTIONS = 5;
-
-// Once Mav has finished speaking, Gemini Live never speaks again on its own —
-// so if the student says nothing at all, the interview would sit in silence
-// forever. After this long with no sound from either side we send Mav a hidden
-// system note (clientContent — never transcribed as student speech) telling
-// her to re-engage.
-const SILENCE_NUDGE_MS = 5000;
-// On the first nudge for a question Mav gently checks in and repeats the
-// question; from this many consecutive unanswered nudges onward she is told to
-// treat the question as skipped and move on, so a fully silent student can
-// never stall the interview indefinitely.
-const MAX_SILENCE_NUDGES = 2;
-
-// Mav calls this tool exactly once per genuine answer or explicit skip — never
-// for a repeat/clarify request or off-topic chitchat (see the system
-// instructions built server-side in realtime.py). It's the ONLY signal we use
-// to advance the question counter and decide when to wrap up, since Gemini
-// Live's transcription has no notion of "this reply counted as progress" on
-// its own the way a discrete per-turn event would.
-const MARK_ANSWERED_TOOL = {
-  functionDeclarations: [
-    {
-      name: "mark_question_answered",
-      description:
-        "Call this exactly once, right after the candidate gives a complete " +
-        "response to the CURRENT interview question — either a genuine attempt " +
-        "(right or wrong) or an explicit 'I don't know' / skip / move on. Do NOT " +
-        "call this when repeating/clarifying the question, or when answering an " +
-        "off-topic/personal/chitchat remark before re-asking the same question.",
-      parameters: { type: Type.OBJECT, properties: {} },
-    },
-  ],
-};
-
-// TEMP instrumentation: timestamped logs across the realtime pipeline. Flip off
-// to silence.
+// TEMP instrumentation: timestamped logs across the whole voice pipeline so the
+// exact latency of every stage (TTS end → mic → audiostart → first word →
+// caption) is measurable in the console. Flip to false to silence.
 const VOICE_DEBUG = true;
 function tlog(label) {
   if (!VOICE_DEBUG || typeof console === "undefined") return;
   const now = typeof performance !== "undefined" ? performance.now() : Date.now();
-  console.log(`[realtime ${now.toFixed(0)}ms] ${label}`);
+  console.log(`[voice ${now.toFixed(0)}ms] ${label}`);
+}
+
+// Known FEMALE TTS voice names across Windows / Chrome / macOS / Android. The
+// Web Speech API exposes no gender field, so name-matching is the reliable way to
+// keep Mav's voice female regardless of the device's installed voices.
+const FEMALE_VOICE_HINTS = /(zira|aria|jenny|jessa|michelle|female|samantha|victoria|karen|moira|tessa|fiona|serena|allison|ava|susan|google us english|google uk english female|libby|sonia|natasha|clara|amber|emma|hazel|catherine|linda|heera|hoda|salli|joanna|kimberly|ivy|kendra)/i;
+
+// Filler words to detect and penalise in scoring
+const FILLER_REGEX = /\b(um+|uh+|m+hm+|h+m+|err+|erm+|like|you know|basically|literally|right\?|i mean|kind of|sort of)\b/gi;
+
+function countFillers(text) {
+  const matches = text.match(FILLER_REGEX);
+  return matches ? matches.length : 0;
+}
+
+// Strip filler words from answer text before sending (keeps them counted but not submitted verbatim)
+function cleanAnswer(text) {
+  return text.replace(FILLER_REGEX, "").replace(/\s{2,}/g, " ").trim();
 }
 
 // Turn a raw fetch/network rejection into a calm, actionable message for the UI.
 function friendlyNetworkError(err) {
   if (err?.name === "AbortError") {
-    return "The connection took too long — please try again.";
+    return "The server took too long to respond — please try answering again.";
   }
   if (/failed to fetch|networkerror|load failed|fetch failed/i.test(err?.message || "")) {
-    return "Couldn't reach the interview service. Check your connection and try again.";
+    return "Couldn't reach the server. Check your connection, then tap the mic and answer again.";
   }
   return err?.message || "Something went wrong — please try again.";
 }
 
-// ── PCM16 <-> base64 helpers for the raw audio Gemini Live expects ──────────────
-// Convert Float32 samples (Web Audio's native format) to little-endian Int16 PCM.
-function floatTo16BitPCM(float32Array) {
-  const out = new Int16Array(float32Array.length);
-  for (let i = 0; i < float32Array.length; i++) {
-    const s = Math.max(-1, Math.min(1, float32Array[i]));
-    out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-  }
-  return out;
-}
-
-// Average-based downsample from the mic's native rate to Gemini's required 16kHz.
-function downsampleTo16k(float32Array, inputSampleRate) {
-  if (inputSampleRate === MIC_SAMPLE_RATE) return float32Array;
-  const ratio = inputSampleRate / MIC_SAMPLE_RATE;
-  const newLength = Math.round(float32Array.length / ratio);
-  const result = new Float32Array(newLength);
-  let offsetResult = 0;
-  let offsetBuffer = 0;
-  while (offsetResult < newLength) {
-    const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
-    let accum = 0;
-    let count = 0;
-    for (let i = offsetBuffer; i < nextOffsetBuffer && i < float32Array.length; i++) {
-      accum += float32Array[i];
-      count++;
-    }
-    result[offsetResult] = count ? accum / count : 0;
-    offsetResult++;
-    offsetBuffer = nextOffsetBuffer;
-  }
-  return result;
-}
-
-function arrayBufferToBase64(buffer) {
-  let binary = "";
-  const bytes = new Uint8Array(buffer);
-  const chunkSize = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
-  }
-  return btoa(binary);
-}
-
-function base64ToInt16Array(base64) {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return new Int16Array(bytes.buffer);
-}
-
-// ── Fallback progress classifier ────────────────────────────────────────────────
-// `mark_question_answered` (see MARK_ANSWERED_TOOL below) is the primary signal
-// for question progress, but LLM tool-calling isn't 100% reliable — verified
-// live, Mav sometimes does the right conversational thing (moves on) without
-// actually calling the tool. This mirrors the same fast-path regexes the
-// graph-based interview already uses server-side (see llm.py's
-// _GREETING_PATTERNS/_PERSONAL_PATTERNS/_CLARIFICATION_PATTERNS/_OFFTOPIC_PATTERNS)
-// as a safety net: only consulted when the tool didn't fire for a given turn.
-const SKIP_PHRASES = [
-  "i don't know", "i dont know", "i do not know", "not sure", "no idea",
-  "no experience", "skip", "pass", "move on", "move to next", "next question",
-  "i'm not sure", "i am not sure", "don't know", "dont know",
-];
-const REPEAT_RE = /\b(repeat|say (that|it) again|come again|didn'?t (catch|hear)|one more time|repeat (that|it|the question)|say (that )?once more|what was the question|what'?s the question again)\b/i;
-const CLARIFY_RE = /\b(what do you mean|can you (explain|clarify|elaborate|rephrase)|i don'?t understand|could you (explain|clarify|repeat)|what is meant by|please (explain|clarify|repeat))\b/i;
-const GREETING_RE = /^\s*(hi+|hello+|hey+|good (morning|afternoon|evening|day)|howdy|sup|yo|greetings)\b/i;
-const PERSONAL_RE = /\b(how are you|how do you do|you doing|are you (ok|good|fine|well|alright)|what('s| is) up|how'?s it going)\b/i;
-const OFFTOPIC_RE = /\b(weather|the time|what time|today'?s date|who (are|is) you|your name|tell me a joke|joke|news|sports|music|movie|song|recipe|food|cook|are you (real|human|a robot))\b/i;
-
-// Regex that matches one or more characters from a non-Latin script block
-// (Arabic, Urdu, Hindi/Devanagari, CJK, Cyrillic, etc.). A word is "non-Latin"
-// if it contains at least one such character. If the majority of words in the
-// student's turn are non-Latin, the fallback heuristic treats it as a foreign-
-// language utterance and does NOT count it as progress — only Mav's own
-// `mark_question_answered` tool call can advance the counter for those turns.
-const NON_LATIN_CHAR_RE = /[\u0600-\u06FF\u0750-\u077F\u0900-\u097F\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF\u0400-\u04FF\u0080-\u024F]/;
-
-function looksLikeAnsweredTurn(text) {
-  const t = (text || "").trim().toLowerCase();
-  if (!t) return false;
-  if (SKIP_PHRASES.some((p) => t.includes(p))) return true;
-  if (REPEAT_RE.test(t) || CLARIFY_RE.test(t)) return false;
-  if (GREETING_RE.test(t) || PERSONAL_RE.test(t) || OFFTOPIC_RE.test(t)) return false;
-  // Short, ambiguous utterances ("what?", "sorry?", a stray word) are NOT
-  // treated as genuine answers by default — only a clear skip phrase or
-  // substantive text (roughly a sentence or more) counts. Mirrors llm.py's
-  // _is_obvious_answer fast-path, and matters most on the LAST question: a
-  // false "answered" here would otherwise end the interview right then.
-  if (t.split(/\s+/).length < 6) return false;
-  // If the majority of words contain non-Latin/non-ASCII characters (e.g. Urdu,
-  // Arabic, Hindi, Chinese) treat it as a foreign-language utterance. The system
-  // instructions tell Mav to NOT call `mark_question_answered` in this case, so
-  // the fallback heuristic must also refuse to count it. This prevents a student
-  // speaking a long sentence in another language from accidentally advancing the
-  // question counter via the fallback path.
-  const words = t.split(/\s+/);
-  const nonLatinCount = words.filter((w) => NON_LATIN_CHAR_RE.test(w)).length;
-  if (nonLatinCount > words.length / 2) return false; // majority non-Latin → skip
-  return true; // substantive English text → treat as a genuine answer
-}
-
-// Mav is told (see realtime.py's wrap-up instructions) to include a clear
-// closing word only once the 5th question has actually been answered/skipped.
-// Gating the actual "leave the meeting" trigger on detecting this phrase in
-// her own reply — rather than purely on the answer counter above — means a
-// mis-fired tool call or heuristic on a repeat/chitchat aside during the LAST
-// question can never end the interview by itself; only Mav's own real
-// goodbye can.
-const GOODBYE_RE = /\b(goodbye|good bye|take care|that'?s all for today|that concludes|assessment is complete|thanks? for (your time|joining|participating)|all the best|wish you (well|luck)|talk to you (soon|later))\b/i;
-
-// Detects Mav's language-rejection response. When the student speaks in a
-// non-English language, the system instructions tell Mav to say exactly
-// "I don't understand, please speak English" and re-ask the question WITHOUT
-// calling mark_question_answered. The fallback heuristic (looksLikeAnsweredTurn)
-// could still count a long romanized-foreign sentence as a genuine answer, so
-// we suppress the fallback counter whenever Mav's own reply signals a language
-// rejection — ensuring non-English answers NEVER advance the question counter.
-const LANGUAGE_REJECTION_RE = /i don'?t understand,?\s*please\s*speak\s*english/i;
-
 /**
  * Shared, voice-driven AI interview room used by both the (legacy) per-module
- * assessment and the course-wide final assessment. Conversation runs over the
- * Gemini Live API directly from the browser; the backend only mints the
- * token and grades the result.
+ * assessment and the course-wide final assessment.
  *
  * Props:
- *   doStart       async () => realtime start payload
- *                 { session_id, client_secret, model, course_name, ... }
+ *   doStart       async () => start-turn response { session_id, text, question_number, chapter_title }
  *                 (throws Error with a message on failure / ineligibility)
  *   heading       header title text
  *   panelLabel    label under the AI panel (e.g. "Course Host")
@@ -246,17 +96,22 @@ export default function InterviewRoom({
   const { user, authFetch } = useAuth();
 
   const [sessionId, setSessionId] = useState(null);
+  const [titleText, setTitleText] = useState("");
+  const [transcript, setTranscript] = useState([]);
   const [currentAIText, setCurrentAIText] = useState("");
-  const [micActive, setMicActive] = useState(false);       // student currently speaking (server VAD)
-  const [micMuted, setMicMuted] = useState(false);
+  const [waitingForStudent, setWaitingForStudent] = useState(false);
+  const [micActive, setMicActive] = useState(false);
   const [showCaptions, setShowCaptions] = useState(true);
   const [isFinished, setIsFinished] = useState(false);
-  const [isGrading, setIsGrading] = useState(false); // ended the call, waiting on /finish's grading
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [liveTranscript, setLiveTranscript] = useState("");
+  const [questionNum, setQuestionNum] = useState(1);
   const [status, setStatus] = useState("CONNECTING");
+  const [fillerCount, setFillerCount] = useState(0);
   const [typedAnswer, setTypedAnswer] = useState("");
+  const [avatarMouthOpen, setAvatarMouthOpen] = useState(false);
   const [aiVoiceActive, setAiVoiceActive] = useState(false);
   const [cameraOn, setCameraOn] = useState(false);
   const [cameraError, setCameraError] = useState("");
@@ -264,37 +119,34 @@ export default function InterviewRoom({
   const [hasStarted, setHasStarted] = useState(false);   // consent gate passed
   const [preparing, setPreparing] = useState(false);     // acquiring screen share
   const [recordingNotice, setRecordingNotice] = useState(""); // non-fatal warning
-  // True from connect until the student first speaks — shows the "greeting" label.
-  const [isGreeting, setIsGreeting] = useState(false);
 
   const studentVideoRef = useRef(null);
   const cameraStreamRef = useRef(null);
-  const aiVideoRef = useRef(null);
+  const speakWatchdogRef = useRef(null);
+  const questionStartRef = useRef(null);
+  const pauseCountRef = useRef(0);
+  const longPauseMsRef = useRef(0);
+  const submittingRef = useRef(false);
+  const fillerCountRef = useRef(0);
+  const startListeningRef = useRef(null);  // ref to break circular dep
+  const waitingForStudentRef = useRef(false); // live mirror of waitingForStudent
 
-  // ── Realtime (Gemini Live) refs ──
-  const sessionRef = useRef(null);            // Gemini Live Session (ai.live.connect())
-  const pcMicStreamRef = useRef(null);        // mic track streamed to Gemini
-  const micCtxRef = useRef(null);             // AudioContext capturing + downsampling the mic
-  const micProcessorRef = useRef(null);       // ScriptProcessorNode doing the PCM16 encode
-  const micActiveRef = useRef(false);         // mirrors micActive state for the audio callback
-  const playCtxRef = useRef(null);            // AudioContext playing Mav's voice (24kHz PCM16)
-  const playGainRef = useRef(null);           // gain node all played chunks route through
-  const playAnalyserRef = useRef(null);       // analyser on the playback chain, drives lip-sync
-  const aiVoiceActiveRef = useRef(false);     // mirrors aiVoiceActive for the mic audio callback
-  const nextPlayTimeRef = useRef(0);          // scheduling cursor for gapless chunk playback
-  const voiceIntervalRef = useRef(null);      // RMS polling interval for lip-sync
-  const transcriptRef = useRef([]);           // source of truth sent to /finish
-  const aiTextRef = useRef("");               // assistant transcript accumulator
-  const userTextRef = useRef("");             // student transcript accumulator
-  const answersRef = useRef(0);               // count of answers the student has given
-  const turnToolFiredRef = useRef(false);     // did mark_question_answered fire this turn?
-  const autoEndTriggeredRef = useRef(false);  // guard: auto-finish fires once
-  const teardownDoneRef = useRef(false);
-  const silenceTimerRef = useRef(null);       // pending silence-nudge timeout
-  const silenceNudgeCountRef = useRef(0);     // consecutive nudges on the current question
-  const [shouldEnd, setShouldEnd] = useState(false); // 5 answers given → wrap up
+  // ── Recording / VAD refs ──
+  const micStreamRef = useRef(null);       // held mic capture (reused each turn)
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);       // recorded blob chunks for this answer
+  const audioCtxRef = useRef(null);        // AudioContext for VAD analysis
+  const vadIntervalRef = useRef(null);     // VAD polling interval
+  const speechDetectedRef = useRef(false); // any voiced audio captured this turn
+  const speechStartedAtRef = useRef(0);    // when voice first detected this turn
+  const lastVoiceRef = useRef(0);          // last moment voice was above threshold
+  const recordStartRef = useRef(0);        // when recording began
+  const transcribingRef = useRef(false);   // awaiting server transcription
 
-  // ── Whole-session recorder refs (independent of the realtime mic) ──
+  // ── Whole-session recorder refs (independent of the per-answer mic capture) ──
+  // We record the ENTIRE interview — the shared screen, Mav's TTS voice (captured
+  // from the tab/system audio of the screen share) and the student's mic — into a
+  // single file, then upload it to Cloudflare R2 when the interview ends.
   const sessionIdRef = useRef(null);          // live mirror of sessionId for late callbacks
   const sessionRecorderRef = useRef(null);    // MediaRecorder for the full session
   const sessionChunksRef = useRef([]);        // recorded blob chunks
@@ -304,412 +156,227 @@ export default function InterviewRoom({
   const recordingActiveRef = useRef(false);   // true while the session recorder is running
   const recordingPreparedRef = useRef(false); // devices acquired + recorder built, not yet started
   const recordingUploadedRef = useRef(false); // guard: upload/stop runs exactly once
+  // Stable handle to the latest finalizer so the (once-registered) screen-share
+  // "ended" listener and the unmount cleanup always call the current version.
   const finalizeSessionRecordingRef = useRef(null);
 
   const studentInitials = user?.name
     ? user.name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2)
     : "ST";
 
-  // "Thinking/talking" — used for the panel activity indicator.
-  const isAISpeaking = aiVoiceActive || status === "AI PROCESSING" || status === "AI SPEAKING";
-  const connected = !!sessionId && !isFinished && status !== "CONNECTING";
-  const yourTurn = connected && !aiVoiceActive && !isFinished;
+  // "Thinking/talking" — used only for the panel activity indicator, NOT for the
+  // avatar mouth (the avatar must move only while Mav's voice is actually playing).
+  const isAISpeaking =
+    status === "AI PROCESSING" ||
+    status === "AI SPEAKING" ||
+    (!waitingForStudent && !micActive && !isFinished);
 
-  // Append a finalized line to the transcript ref sent to /finish.
-  const pushTranscript = useCallback((entry) => {
-    transcriptRef.current = [...transcriptRef.current, entry];
-  }, []);
-
-  // Watch Mav's incoming audio level so the avatar lip-syncs and the status label
-  // flips to "AI SPEAKING" only while sound is actually playing — independent of
-  // any particular server event name. `analyser` is already wired into the
-  // playback graph by connectRealtime (Gemini streams raw PCM chunks, not a
-  // MediaStream, so there's no <audio>/ontrack to hang an analyser off of here).
-  const setupVoiceAnalyser = useCallback((analyser) => {
-    const buf = new Uint8Array(analyser.fftSize);
-    // Hysteresis: go active immediately when the level rises, but only fall
-    // back to idle after AI_VOICE_HOLD_MS of continuous silence. Since React
-    // skips a re-render when the state value is unchanged, holding `true`
-    // across the word gaps stops the bottom-bar/avatar flicker.
-    let lastLoudAt = 0;
-    voiceIntervalRef.current = setInterval(() => {
-      analyser.getByteTimeDomainData(buf);
-      let sum = 0;
-      for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
-      const rms = Math.sqrt(sum / buf.length);
-      const now = Date.now();
-      if (rms > AI_VOICE_RMS_THRESHOLD) {
-        lastLoudAt = now;
-        // Mark Mav as speaking BEFORE the state update so the mic callback (which
-        // reads the ref, not the async state) gates immediately on this same tick.
-        aiVoiceActiveRef.current = true;
-        setAiVoiceActive(true);
-      } else if (now - lastLoudAt > AI_VOICE_HOLD_MS) {
-        aiVoiceActiveRef.current = false;
-        setAiVoiceActive(false);
-      }
-    }, 100);
-  }, []);
-
-  // Schedule one 24kHz PCM16 chunk of Mav's voice for gapless playback, queued
-  // back-to-back on the shared AudioContext clock.
-  const playPcmChunk = useCallback((base64Pcm) => {
-    const ctx = playCtxRef.current;
-    const gain = playGainRef.current;
-    if (!ctx || !gain) return;
-    const int16 = base64ToInt16Array(base64Pcm);
-    const float32 = new Float32Array(int16.length);
-    for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 0x8000;
-    const buffer = ctx.createBuffer(1, float32.length, PLAYBACK_SAMPLE_RATE);
-    buffer.copyToChannel(float32, 0);
-    const src = ctx.createBufferSource();
-    src.buffer = buffer;
-    src.connect(gain);
-    const startAt = Math.max(ctx.currentTime, nextPlayTimeRef.current);
-    src.start(startAt);
-    nextPlayTimeRef.current = startAt + buffer.duration;
-  }, []);
-
-  // Handle one Gemini Live server message. Unlike OpenAI, Gemini has no discrete
-  // speech_started/response.created-style events — each message just carries
-  // whatever text/audio/transcription is ready, and `turnComplete` marks the end
-  // of Mav's spoken turn. The student's "speaking" indicator is driven
-  // separately from local mic RMS (see startMicCapture) since Gemini's input
-  // transcription isn't tied to a start/stop boundary either.
-  const handleRealtimeEvent = useCallback((message) => {
-    if (message.setupComplete) {
-      tlog("Gemini Live setup complete");
-      return;
+  // Speak `text` via TTS. Audio is the single source of truth for timing:
+  // `aiVoiceActive` flips on only when the voice ACTUALLY starts (utterance
+  // `onstart`, or the watchdog detecting real playback) — never before audio
+  // begins — and off the instant it ends. `onEnd` is guaranteed to fire exactly
+  // once, even when the browser's `onstart`/`onend` are flaky, so the mic always
+  // reopens after Mav finishes.
+  const speakText = useCallback((text, onEnd) => {
+    if (speakWatchdogRef.current) {
+      clearInterval(speakWatchdogRef.current);
+      speakWatchdogRef.current = null;
     }
-
-    // Mav calling `mark_question_answered` is the sole signal that the current
-    // question counted as answered — see MARK_ANSWERED_TOOL and the system
-    // instructions built in realtime.py for exactly when she's told to call it.
-    if (message.toolCall?.functionCalls?.length) {
-      for (const call of message.toolCall.functionCalls) {
-        if (call.name === "mark_question_answered") {
-          turnToolFiredRef.current = true;
-          answersRef.current += 1;
-          // New question coming up — the silence-nudge escalation starts over.
-          silenceNudgeCountRef.current = 0;
-        }
-        // Every tool call must get a response or Gemini stalls generation —
-        // acknowledge unconditionally, even for an unexpected function name.
-        try {
-          sessionRef.current?.sendToolResponse({
-            functionResponses: { id: call.id, name: call.name, response: { output: "ok" } },
-          });
-        } catch (e) {
-          tlog("sendToolResponse failed: " + (e?.message || e));
-        }
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      if (speakWatchdogRef.current) {
+        clearInterval(speakWatchdogRef.current);
+        speakWatchdogRef.current = null;
       }
-    }
-
-    const sc = message.serverContent;
-    if (!sc) return;
-
-    const inputText = sc.inputTranscription?.text;
-    if (inputText) {
-      userTextRef.current += inputText;
-    }
-
-    const outputText = sc.outputTranscription?.text;
-    if (outputText) {
-      if (!aiTextRef.current) setStatus("AI SPEAKING");
-      aiTextRef.current += outputText;
-      setCurrentAIText(aiTextRef.current);
-    }
-
-    for (const part of sc.modelTurn?.parts || []) {
-      if (part.inlineData?.data) playPcmChunk(part.inlineData.data);
-    }
-
-    if (sc.interrupted) {
-      tlog("Gemini Live turn interrupted by the student");
-    }
-
-    if (sc.turnComplete) {
-      // Flush whatever accumulated since the last turn: the student's spoken
-      // answer (if any — the opening turn has none) first, then Mav's reply,
-      // preserving conversation order in the saved transcript.
-      const studentText = userTextRef.current.trim();
-      userTextRef.current = "";
-
-      // Peek at Mav's already-accumulated reply BEFORE running the fallback
-      // heuristic. If she rejected the student's language ("I don't understand,
-      // please speak English") we must NOT count this turn as progress — a
-      // non-English answer never advances the question counter regardless of
-      // how long or Latin-looking the transcribed text is.
-      const pendingAiText = aiTextRef.current.trim();
-      const mavRejectedLanguage = LANGUAGE_REJECTION_RE.test(pendingAiText);
-
-      if (studentText) {
-        // The student spoke (or typed) — cancel the silence-nudge escalation.
-        silenceNudgeCountRef.current = 0;
-        pushTranscript({ speaker: "student", text: studentText });
-        // Progress is normally driven solely by the mark_question_answered tool
-        // call above. But LLM tool-calling isn't 100% reliable — verified live,
-        // Mav sometimes moves on without calling it — so if it didn't fire this
-        // turn, fall back to classifying the student's own words instead.
-        // EXCEPTION: if Mav explicitly rejected the student's language, suppress
-        // the fallback entirely — non-English speech must never count as progress.
-        if (!turnToolFiredRef.current && !mavRejectedLanguage && looksLikeAnsweredTurn(studentText)) {
-          answersRef.current += 1;
-        }
-      }
-      turnToolFiredRef.current = false;
-      const aiText = pendingAiText;
-      aiTextRef.current = "";
-      if (aiText) {
-        pushTranscript({ speaker: "ai", text: aiText });
-        setCurrentAIText(aiText);
-      }
-      // Flag the interview to end (after Mav finishes speaking, handled in an
-      // effect) ONLY when she's actually said a real goodbye — not purely on
-      // the answer counter. This is deliberate: if a repeat/clarify or
-      // chitchat aside during the LAST question were ever misclassified as an
-      // answer (mis-fired tool call, or a heuristic miss), the counter alone
-      // would end the meeting right then, even though Mav just re-asked the
-      // question. Requiring her own closing language as well means only an
-      // actual wrap-up can end the session.
-      if (aiText && GOODBYE_RE.test(aiText) && answersRef.current >= MAX_QUESTIONS - 1) {
-        setShouldEnd(true);
-      } else {
-        setStatus("WAITING FOR YOU");
-      }
-    }
-  }, [pushTranscript, playPcmChunk]);
-
-  // Kick Mav off right after connecting — Gemini Live (unlike OpenAI) won't
-  // speak first on its own, so we send a scripted turn asking her to begin.
-  // This goes in as `clientContent`, not spoken audio, so it never reaches
-  // input transcription and can't leak into the saved transcript as something
-  // the student "said".
-  const configureSession = useCallback((session) => {
-    try {
-      session.sendClientContent({
-        turns: [{ role: "user", parts: [{ text: "Let's begin the interview." }] }],
-        turnComplete: true,
-      });
-    } catch (e) {
-      tlog("configureSession failed: " + (e?.message || e));
-    }
-  }, []);
-
-  // Tear down the Gemini Live session + mic capture + playback graph. Idempotent.
-  const teardownRealtime = useCallback(() => {
-    if (teardownDoneRef.current) return;
-    teardownDoneRef.current = true;
-    if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
-    if (voiceIntervalRef.current) { clearInterval(voiceIntervalRef.current); voiceIntervalRef.current = null; }
-    if (micProcessorRef.current) { try { micProcessorRef.current.disconnect(); } catch { /* noop */ } micProcessorRef.current = null; }
-    if (micCtxRef.current) { try { micCtxRef.current.close(); } catch { /* noop */ } micCtxRef.current = null; }
-    if (pcMicStreamRef.current) { pcMicStreamRef.current.getTracks().forEach((tr) => tr.stop()); pcMicStreamRef.current = null; }
-    if (sessionRef.current) { try { sessionRef.current.close(); } catch { /* noop */ } sessionRef.current = null; }
-    if (playCtxRef.current) { try { playCtxRef.current.close(); } catch { /* noop */ } playCtxRef.current = null; }
-    playGainRef.current = null;
-    playAnalyserRef.current = null;
-    nextPlayTimeRef.current = 0;
-    micActiveRef.current = false;
-    aiVoiceActiveRef.current = false;
-    setAiVoiceActive(false);
-    setMicActive(false);
-  }, []);
-
-  // Capture the student's mic, downsample to 16kHz PCM16, and stream it to
-  // Gemini continuously. Also drives the local "LISTENING" indicator from mic
-  // RMS, since Gemini's automatic voice-activity detection doesn't surface a
-  // discrete speech_started/speech_stopped event to the client the way OpenAI did.
-  const startMicCapture = useCallback((stream, session) => {
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    const ctx = new AudioCtx();
-    micCtxRef.current = ctx;
-    if (ctx.state === "suspended") ctx.resume().catch(() => { });
-    const source = ctx.createMediaStreamSource(stream);
-    const processor = ctx.createScriptProcessor(4096, 1, 1);
-    micProcessorRef.current = processor;
-    const inputSampleRate = ctx.sampleRate;
-    let lastLoudAt = 0;
-
-    processor.onaudioprocess = (e) => {
-      // While Mav is speaking, ignore the mic entirely: don't run local VAD and
-      // don't stream anything to Gemini. This is the fix for Mav "hearing"
-      // herself (speaker echo) or a student talking over her mid-turn and
-      // hallucinating / interrupting her own answer. The mic goes live again the
-      // instant she stops (aiVoiceActive is held AI_VOICE_HOLD_MS past her last
-      // word so the sub-second gaps between words don't reopen it early). The
-      // whole-session recorder uses a SEPARATE mic stream (recordMicStreamRef),
-      // so gating here never affects what the teacher reviews later.
-      if (aiVoiceActiveRef.current) {
-        if (micActiveRef.current) {
-          micActiveRef.current = false;
-          setMicActive(false);
-        }
-        return;
-      }
-
-      const input = e.inputBuffer.getChannelData(0);
-      let sum = 0;
-      for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
-      const rms = Math.sqrt(sum / input.length);
-      const now = Date.now();
-      if (rms > MIC_RMS_THRESHOLD) {
-        lastLoudAt = now;
-        if (!micActiveRef.current) {
-          micActiveRef.current = true;
-          setIsGreeting(false);
-          setMicActive(true);
-          setStatus("LISTENING");
-        }
-      } else if (micActiveRef.current && now - lastLoudAt > MIC_VOICE_HOLD_MS) {
-        micActiveRef.current = false;
-        setMicActive(false);
-      }
-
-      const downsampled = downsampleTo16k(input, inputSampleRate);
-      const pcm16 = floatTo16BitPCM(downsampled);
-      const b64 = arrayBufferToBase64(pcm16.buffer);
-      try {
-        session.sendRealtimeInput({ audio: { data: b64, mimeType: `audio/pcm;rate=${MIC_SAMPLE_RATE}` } });
-      } catch {
-        // Session already closing — drop the chunk.
-      }
+      tlog("TTS finished (audio playback ended, avatar stops)");
+      setAiVoiceActive(false);
+      if (onEnd) onEnd();
     };
 
-    source.connect(processor);
-    // A ScriptProcessorNode only fires while connected into the graph; route it
-    // through a muted gain so the student never hears their own mic looped back.
-    const mute = ctx.createGain();
-    mute.gain.value = 0;
-    processor.connect(mute);
-    mute.connect(ctx.destination);
+    if (typeof window === "undefined" || !window.speechSynthesis) {
+      finish();
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.rate = 0.95;
+    utter.pitch = 1.1; // slightly higher → reads as a female voice on generic engines
+    utter.volume = 1;
+    // Mav is female, so prefer a FEMALE en-US voice. There is no standard gender
+    // field, so we match the well-known female voice names across Windows / Chrome
+    // / macOS / Android, preferring a local (low-latency) one. Falls back to any
+    // en voice so the greeting is never skipped.
+    const voices = window.speechSynthesis.getVoices();
+    const en = voices.filter((v) => /^en(-|_|$)/i.test(v.lang));
+    const isFemale = (v) => FEMALE_VOICE_HINTS.test(v.name);
+    const preferred =
+      en.find((v) => isFemale(v) && v.localService && /en-US/i.test(v.lang)) ||
+      en.find((v) => isFemale(v) && /en-US/i.test(v.lang)) ||
+      en.find((v) => isFemale(v)) ||
+      en.find((v) => v.localService && /en-US/i.test(v.lang)) ||
+      en.find((v) => /en-US/i.test(v.lang)) ||
+      en[0] ||
+      voices[0];
+    if (preferred) utter.voice = preferred;
+    tlog(`TTS voice: ${preferred ? `${preferred.name} (${preferred.lang})` : "default"}`);
+
+    // Audio events are the ONLY thing that turns the avatar/captions on, so they
+    // can never appear before sound. `onstart` (and `onboundary`, which fires as
+    // words are actually spoken) signal real playback; the watchdog below is used
+    // solely to detect the END and to bail out if speech never starts — it does
+    // NOT switch the avatar on from the queued `speaking` flag.
+    let loggedFirstAudio = false;
+    const markSpeaking = () => {
+      if (!loggedFirstAudio) { loggedFirstAudio = true; tlog("TTS first audio (onstart/onboundary)"); }
+      setAiVoiceActive(true);
+    };
+    utter.onstart = markSpeaking;
+    utter.onboundary = markSpeaking;
+    utter.onend = finish;
+    utter.onerror = finish;
+
+    tlog("TTS speak() called");
+    window.speechSynthesis.speak(utter);
+
+    // Watchdog: detect real end-of-speech even when `onend` never fires, and bail
+    // out if speech never starts. `everSpoke` is for END detection only.
+    let ticks = 0;
+    let everSpoke = false;
+    speakWatchdogRef.current = setInterval(() => {
+      ticks += 1;
+      if (window.speechSynthesis.speaking) everSpoke = true;
+      const reallyEnded = everSpoke && !window.speechSynthesis.speaking && !window.speechSynthesis.pending;
+      const neverStarted = !everSpoke && ticks > 8; // ~2s with no speech at all
+      if (reallyEnded || neverStarted) finish();
+    }, 250);
   }, []);
 
-  // Open the Gemini Live session using the ephemeral token, wire up playback for
-  // Mav's voice, then start streaming the student's mic.
-  const connectRealtime = useCallback(async (startData) => {
-    const clientSecret = startData.client_secret;
-    const model = startData.model;
-    const voice = startData.voice;
-    const instructions = startData.instructions;
-    if (!clientSecret) throw new Error("No realtime token returned — cannot start the interview.");
-    teardownDoneRef.current = false;
+  const submitAnswer = useCallback(async (answerText) => {
+    if (submittingRef.current || !sessionId) return;
+    const trimmed = answerText.trim();
+    if (!trimmed) return;
 
-    // Playback graph for Mav's voice (Gemini streams raw 24kHz PCM16, not a
-    // MediaStream, so we build our own AudioContext instead of an <audio> el).
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    const playCtx = new AudioCtx({ sampleRate: PLAYBACK_SAMPLE_RATE });
-    playCtxRef.current = playCtx;
-    const gain = playCtx.createGain();
-    const analyser = playCtx.createAnalyser();
-    analyser.fftSize = 512;
-    gain.connect(analyser);
-    analyser.connect(playCtx.destination);
-    playGainRef.current = gain;
-    playAnalyserRef.current = analyser;
-    nextPlayTimeRef.current = 0;
-    setupVoiceAnalyser(analyser);
-
-    const ai = new GoogleGenAI({ apiKey: clientSecret, apiVersion: GEMINI_API_VERSION });
-    const session = await ai.live.connect({
-      model,
-      config: {
-        responseModalities: [Modality.AUDIO],
-        systemInstruction: instructions,
-        speechConfig: voice
-          ? { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } }
-          : undefined,
-        inputAudioTranscription: {},
-        outputAudioTranscription: {},
-        tools: [MARK_ANSWERED_TOOL],
-      },
-      callbacks: {
-        onopen: () => tlog("Gemini Live session open"),
-        onmessage: (message) => handleRealtimeEvent(message),
-        onerror: (e) => tlog("Gemini Live error: " + (e?.message || e)),
-        onclose: () => tlog("Gemini Live session closed"),
-      },
-    });
-    sessionRef.current = session;
-    // `connect()` only resolves once the socket is open, so it's safe to kick
-    // off the conversation immediately rather than waiting on the onopen callback.
-    configureSession(session);
-
-    // Stream the student's mic to Gemini.
-    const mic = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      video: false,
-    });
-    pcMicStreamRef.current = mic;
-    startMicCapture(mic, session);
-
-    tlog("Gemini Live connected");
-  }, [configureSession, handleRealtimeEvent, setupVoiceAnalyser, startMicCapture]);
-
-  // Send a typed answer (the accessibility fallback when the student would
-  // rather type than speak) as a scripted client-content turn. Rather than
-  // pushing to the transcript / counting progress here, it's written into
-  // userTextRef so it flows through the exact same turnComplete handling as a
-  // spoken answer — one shared place decides the tool-call-or-heuristic count.
-  const sendTypedAnswer = useCallback((text) => {
-    const session = sessionRef.current;
-    const trimmed = (text || "").trim();
-    if (!session || !trimmed) return;
-    userTextRef.current = trimmed;
-    try {
-      session.sendClientContent({
-        turns: [{ role: "user", parts: [{ text: trimmed }] }],
-        turnComplete: true,
-      });
-    } catch (e) {
-      tlog("sendTypedAnswer failed: " + (e?.message || e));
-    }
+    submittingRef.current = true;
     setStatus("AI PROCESSING");
-  }, []);
+    setWaitingForStudent(false);
+    setMicActive(false);
 
-  // Send a hidden system note to Mav when the student has said nothing for
-  // SILENCE_NUDGE_MS ms after her last spoken turn. Sent as clientContent (not
-  // audio) so it never leaks into input transcription or counts as student speech.
-  // After MAX_SILENCE_NUDGES consecutive nudges on the same question, Mav is told
-  // to treat the question as skipped so the interview can still progress.
-  const sendSilenceNudge = useCallback(() => {
-    const session = sessionRef.current;
-    if (!session || teardownDoneRef.current) return;
-    const count = silenceNudgeCountRef.current + 1;
-    silenceNudgeCountRef.current = count;
-    const nudgeText = count >= MAX_SILENCE_NUDGES
-      ? "[SYSTEM: The student has not responded after multiple prompts. " +
-        "Please acknowledge warmly, silently call mark_question_answered to count " +
-        "this question as skipped, then ask the next question or say goodbye if " +
-        "all questions have been answered.]"
-      : "[SYSTEM: The student has not spoken yet. Gently check if they are still " +
-        "there and re-ask the current question.]";
+    const responseTime = questionStartRef.current ? Date.now() - questionStartRef.current : 0;
+    const pauseCount = pauseCountRef.current;
+    const longPauseMs = longPauseMsRef.current;
+    const fillerWordCount = fillerCountRef.current;
+
+    // Show the raw (filler-included) answer in the UI transcript. Keep it visible
+    // as the caption (don't clear liveTranscript) until Mav starts speaking, so the
+    // student sees what was transcribed.
+    setTranscript((prev) => [...prev, { speaker: "student", text: trimmed }]);
+    setLiveTranscript(trimmed);
+    setFillerCount(0);
+
+    // Send cleaned answer (fillers removed) to backend for fairer technical scoring
+    const cleaned = cleanAnswer(trimmed);
+
+    // Resilient POST: each attempt has a timeout, and transient network failures
+    // (brief connection drop, slow LLM turn) are retried so a raw "Failed to fetch"
+    // never lands on screen.
+    const postAnswer = async (payload) => {
+      let lastErr = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 45000);
+        try {
+          const r = await authFetch("/api/interview/answer", {
+            method: "POST",
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+          });
+          clearTimeout(timer);
+          return r; // got an HTTP response (even if non-2xx) — stop retrying
+        } catch (e) {
+          clearTimeout(timer);
+          lastErr = e;
+          if (attempt < 2) await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+        }
+      }
+      throw lastErr || new Error("Network error");
+    };
+
     try {
-      session.sendClientContent({
-        turns: [{ role: "user", parts: [{ text: nudgeText }] }],
-        turnComplete: true,
+      const res = await postAnswer({
+        session_id: sessionId,
+        answer_text: cleaned || trimmed,
+        response_time_ms: responseTime,
+        pause_count: pauseCount,
+        long_pause_ms: longPauseMs,
+        filler_word_count: fillerWordCount,
       });
-      setStatus("AI PROCESSING");
-    } catch (e) {
-      tlog("sendSilenceNudge failed: " + (e?.message || e));
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Failed to submit answer");
+      }
+      const data = await res.json();
+
+      // Reset metrics for next answer
+      pauseCountRef.current = 0;
+      longPauseMsRef.current = 0;
+      fillerCountRef.current = 0;
+
+      if (data.passed !== undefined) {
+        // Interview is over, but DON'T jump to the results page yet. Mav must say
+        // her goodbye *during* the interview (avatar still on screen, lip-syncing),
+        // and only once her voice actually finishes do we switch to the results
+        // page. This avoids the jarring "goodbye plays over the results screen".
+        const goodbye = data.passed
+          ? "Congratulations! You passed the assessment. Thank you for completing the interview. Take care and goodbye!"
+          : "Thank you for participating. You can review the material and try the assessment again anytime. Take care and goodbye!";
+        setResults(data);
+        setWaitingForStudent(false);
+        setMicActive(false);
+        setStatus("AI SPEAKING");
+        setCurrentAIText(goodbye);
+        setTranscript((prev) => [...prev, { speaker: "ai", text: goodbye }]);
+        speakText(goodbye, () => {
+          // Mav has finished speaking → now end the interview and show results.
+          setIsFinished(true);
+          setStatus("COMPLETE");
+        });
+      } else {
+        setCurrentAIText(data.text);
+        // Only advance question counter if it was a real interview answer, not chitchat
+        if (!data.is_chitchat) {
+          setQuestionNum(data.question_number);
+        }
+        setTranscript((prev) => [...prev, { speaker: "ai", text: data.text }]);
+        setStatus("AI SPEAKING");
+        setWaitingForStudent(false);
+        // Auto-open mic after Mav finishes speaking
+        speakText(data.text, () => {
+          setTimeout(() => {
+            setWaitingForStudent(true);
+            setStatus("WAITING FOR YOU");
+            questionStartRef.current = Date.now();
+            tlog("handoff: opening mic for student answer");
+            if (startListeningRef.current) startListeningRef.current();
+          }, MIC_HANDOFF_MS);
+        });
+      }
+    } catch (err) {
+      // Friendly, recoverable: keep the student in the flow so they can simply
+      // tap the mic and answer again (or type) — no dead "ERROR" state.
+      setError(friendlyNetworkError(err));
+      setWaitingForStudent(true);
+      setStatus("WAITING FOR YOU");
+    } finally {
+      submittingRef.current = false;
     }
-  }, []);
+  }, [authFetch, sessionId, speakText]);
 
-  // Toggle the local mic on/off (mute). Realtime streams continuously, so muting
-  // simply disables the outgoing track.
-  const toggleMute = useCallback(() => {
-    const stream = pcMicStreamRef.current;
-    if (!stream) return;
-    setMicMuted((prev) => {
-      const nextMuted = !prev;
-      stream.getAudioTracks().forEach((tr) => { tr.enabled = !nextMuted; });
-      return nextMuted;
-    });
-  }, []);
-
-  // ── Whole-session recording (screen + Mav's voice + student mic → R2) ──
   // Begin recording the whole interview: screen + system/tab audio (which carries
-  // Mav's voice from the tab) mixed with the student's mic. Returns true if running.
+  // Mav's TTS voice) from getDisplayMedia, mixed with the student's mic. Returns
+  // true if recording is running, false if the student declined / it's unsupported
+  // (the interview still proceeds in that case — recording is best-effort).
   const startSessionRecording = useCallback(async () => {
     if (recordingActiveRef.current) return true;
     if (
@@ -722,6 +389,8 @@ export default function InterviewRoom({
       return false;
     }
 
+    // 1) Screen + audio. The browser shows its screen-share picker here; the
+    //    student must tick "share tab/system audio" so Mav's voice is captured.
     let display;
     try {
       display = await navigator.mediaDevices.getDisplayMedia({
@@ -729,10 +398,11 @@ export default function InterviewRoom({
         audio: true,
       });
     } catch {
-      return false; // declined / dismissed
+      return false; // declined / dismissed — caller decides what to do next
     }
     displayStreamRef.current = display;
 
+    // 2) Student mic (separate from the per-answer STT mic so the two never fight).
     let mic = null;
     try {
       mic = await navigator.mediaDevices.getUserMedia({
@@ -741,9 +411,10 @@ export default function InterviewRoom({
       });
       recordMicStreamRef.current = mic;
     } catch {
-      // No mic → still record the screen + Mav's voice.
+      // No mic → we still record the screen + Mav's voice (student audio missing).
     }
 
+    // 3) Mix the screen audio and the mic into one track via an AudioContext.
     const videoTrack = display.getVideoTracks()[0];
     const tracks = [];
     if (videoTrack) tracks.push(videoTrack);
@@ -761,12 +432,14 @@ export default function InterviewRoom({
       const mixed = dest.stream.getAudioTracks()[0];
       if (mixed) tracks.push(mixed);
     } catch {
+      // Mixing failed → fall back to the raw screen audio track alone.
       const a = display.getAudioTracks()[0];
       if (a) tracks.push(a);
     }
 
     const combined = new MediaStream(tracks);
 
+    // 4) Record the combined stream for the whole session.
     let recorder;
     try {
       const mime = window.MediaRecorder.isTypeSupported?.("video/webm;codecs=vp9,opus")
@@ -784,24 +457,32 @@ export default function InterviewRoom({
     recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) sessionChunksRef.current.push(e.data); };
     sessionRecorderRef.current = recorder;
 
+    // If the student stops the screen share from the browser's own UI, end the
+    // recording gracefully (the interview itself keeps going).
     if (videoTrack) {
       videoTrack.addEventListener("ended", () => {
         if (recordingActiveRef.current) finalizeSessionRecordingRef.current?.();
       });
     }
 
+    // NOTE: we do NOT call recorder.start() here. The screen-share permission must
+    // be acquired during the user's click (above), but the model can take 1-2 min
+    // to return the first question, and we don't want that loading time in the
+    // recording. beginSessionCapture() actually starts the recorder once the
+    // interview screen is ready.
     recordingPreparedRef.current = true;
     tlog("session recording prepared (waiting for interview screen)");
     return true;
   }, []);
 
-  // Start the prepared recorder once the interview screen is ready.
+  // Start the prepared recorder. Called the moment the interview screen is ready
+  // (first question received) so the model-loading wait is never recorded.
   const beginSessionCapture = useCallback(() => {
     if (!recordingPreparedRef.current || recordingActiveRef.current) return;
     const rec = sessionRecorderRef.current;
     if (!rec) return;
     try {
-      rec.start(1000);
+      rec.start(1000); // gather data every second so nothing is lost on stop
       recordingActiveRef.current = true;
       tlog("session recording started (interview screen visible)");
     } catch (e) {
@@ -809,12 +490,15 @@ export default function InterviewRoom({
     }
   }, []);
 
-  // Stop the full-session recorder, upload the file to R2, release devices.
-  // Idempotent — safe to call from finish, end-call, and unmount.
+  // Stop the full-session recorder, upload the resulting file to R2, and release
+  // the screen/mic devices. Idempotent — safe to call from finish, end-call, and
+  // unmount; only the first call does the work.
   const finalizeSessionRecording = useCallback(async () => {
     if (recordingUploadedRef.current) return;
     const recorder = sessionRecorderRef.current;
     if (!recorder || !recordingActiveRef.current) {
+      // Recorder was never started (e.g. prepared, then the interview aborted
+      // before the screen appeared). Just release the captured devices.
       recordingActiveRef.current = false;
       recordingPreparedRef.current = false;
       if (recordAudioCtxRef.current) { try { recordAudioCtxRef.current.close(); } catch { /* noop */ } recordAudioCtxRef.current = null; }
@@ -825,12 +509,14 @@ export default function InterviewRoom({
     recordingUploadedRef.current = true;
     recordingActiveRef.current = false;
 
+    // Wait for the recorder to flush its final chunk before building the blob.
     const stopped = new Promise((resolve) => {
       recorder.onstop = () => resolve();
       try { recorder.stop(); } catch { resolve(); }
     });
     await stopped;
 
+    // Tear down capture devices now that recording has ended.
     if (recordAudioCtxRef.current) { try { recordAudioCtxRef.current.close(); } catch { /* noop */ } recordAudioCtxRef.current = null; }
     if (displayStreamRef.current) { displayStreamRef.current.getTracks().forEach((t) => t.stop()); displayStreamRef.current = null; }
     if (recordMicStreamRef.current) { recordMicStreamRef.current.getTracks().forEach((t) => t.stop()); recordMicStreamRef.current = null; }
@@ -852,6 +538,8 @@ export default function InterviewRoom({
       if (!res.ok) throw new Error("upload failed");
       tlog("interview recording uploaded");
     } catch (e) {
+      // Non-fatal: the student already has their result; the recording just won't
+      // appear in the teacher panel.
       tlog("interview recording upload failed: " + (e?.message || e));
     }
   }, [authFetch]);
@@ -860,97 +548,140 @@ export default function InterviewRoom({
     finalizeSessionRecordingRef.current = finalizeSessionRecording;
   }, [finalizeSessionRecording]);
 
-  // Start the interview: fetch the ephemeral token + context, start the recorder,
-  // then open the Gemini Live session. Mav greets and the conversation begins.
   const startSession = useCallback(async () => {
     setLoading(true);
     setError("");
-    setIsGreeting(true);
     try {
       const data = await doStart();
       setSessionId(data.session_id);
       sessionIdRef.current = data.session_id;
-      setStatus("CONNECTING");
+      setTitleText(data.chapter_title || "");
+      setQuestionNum(data.question_number);
 
-      // Start recording now so the connection wait isn't captured; the greeting
-      // and the whole conversation that follow ARE recorded.
+      const msg = data.text;
+      setTranscript([{ speaker: "ai", text: msg }]);
+      setCurrentAIText(msg);
+      setStatus("AI SPEAKING");
+      setWaitingForStudent(false);
+
+      // The interview screen is now ready — START recording here so the (often
+      // 1-2 min) model-loading wait above is never captured. The greeting and the
+      // whole conversation that follow ARE recorded.
       beginSessionCapture();
 
-      await connectRealtime(data);
-
-      setStatus("AI SPEAKING");
+      speakText(msg, () => {
+        setTimeout(() => {
+          setWaitingForStudent(true);
+          setStatus("WAITING FOR YOU");
+          questionStartRef.current = Date.now();
+          tlog("handoff: opening mic after greeting");
+          if (startListeningRef.current) startListeningRef.current();
+        }, MIC_HANDOFF_MS);
+      });
     } catch (err) {
-      setIsGreeting(false);
       setError(friendlyNetworkError(err));
+      // The interview never started — release the prepared (never-recorded) screen
+      // share so the student isn't left sharing their screen for nothing.
       if (!recordingActiveRef.current) finalizeSessionRecordingRef.current?.();
     } finally {
       setLoading(false);
     }
-  }, [doStart, connectRealtime, beginSessionCapture]);
+  }, [doStart, speakText, beginSessionCapture]);
 
-  // Consent gate: camera + mic + screen-share are mandatory (screen-share is what
-  // lets us record Mav's voice + the student for the teacher to review later).
+  // Warm the TTS voice list on mount. Browsers load voices asynchronously, so
+  // touching getVoices() (and listening for "voiceschanged") here means the list
+  // is ready by the time the start-interview network call returns — the greeting
+  // then speaks with the preferred voice and is never skipped due to loading.
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    window.speechSynthesis.getVoices();
+    const onVoices = () => window.speechSynthesis.getVoices();
+    window.speechSynthesis.addEventListener?.("voiceschanged", onVoices);
+    return () => window.speechSynthesis.removeEventListener?.("voiceschanged", onVoices);
+  }, []);
+
+  // Begin the recorded interview once the student has consented to screen sharing.
+  // We acquire the screen+audio capture FIRST (needs the click's user gesture),
+  // then kick off the interview turn. If sharing is declined the student can still
+  // continue without a recording.
   const beginInterview = useCallback(async () => {
     setPreparing(true);
     setRecordingNotice("");
-
-    try {
-      const camTest = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-      camTest.getTracks().forEach((t) => t.stop());
-    } catch {
-      setPreparing(false);
-      setRecordingNotice("⚠️ Camera access is required. Please allow camera permission in your browser and try again.");
-      return;
-    }
-
-    try {
-      const micTest = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      micTest.getTracks().forEach((t) => t.stop());
-    } catch {
-      setPreparing(false);
-      setRecordingNotice("⚠️ Microphone access is required. Please allow microphone permission in your browser and try again.");
-      return;
-    }
-
     const ok = await startSessionRecording();
     setPreparing(false);
     if (ok) {
       setHasStarted(true);
     } else {
       setRecordingNotice(
-        "⚠️ Screen sharing is required to start the interview. Click the button again and select your screen or this tab — make sure to tick \"Share tab audio\" so Mav's voice is captured."
+        "Screen sharing wasn't enabled, so this interview can't be recorded. Click “Share screen & begin” to try again, or continue without recording."
       );
     }
   }, [startSessionRecording]);
 
-  // Kick off the interview only AFTER the consent gate is passed.
+  const continueWithoutRecording = useCallback(() => {
+    setRecordingNotice("");
+    setHasStarted(true);
+  }, []);
+
   useEffect(() => {
+    // Kick off the interview turn only AFTER the consent gate is passed.
     if (!hasStarted) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     startSession();
     return () => {
+      // Flush/upload the recording if the student leaves mid-interview.
       finalizeSessionRecordingRef.current?.();
-      teardownRealtime();
+      if (vadIntervalRef.current) clearInterval(vadIntervalRef.current);
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        try { mediaRecorderRef.current.stop(); } catch { /* noop */ }
+      }
+      if (audioCtxRef.current) { try { audioCtxRef.current.close(); } catch { /* noop */ } audioCtxRef.current = null; }
+      if (micStreamRef.current) {
+        micStreamRef.current.getTracks().forEach((t) => t.stop());
+        micStreamRef.current = null;
+      }
+      if (typeof window !== "undefined") window.speechSynthesis?.cancel();
+      if (speakWatchdogRef.current) clearInterval(speakWatchdogRef.current);
     };
-  }, [hasStarted, startSession, teardownRealtime]);
+  }, [hasStarted, startSession]);
 
-  // Play/pause the AI avatar video based on voice activity.
+  // Animate the avatar's mouth ONLY while Mav's voice is actually playing
+  // (asking/answering aloud) by swapping closed/opened frames. When the voice is
+  // not playing we simply don't run the interval; the render gates the open frame
+  // on `aiVoiceActive`, so the avatar shows the closed frame at every other time
+  // (including while the AI processes the student's answer) — no reset setState.
   useEffect(() => {
-    const video = aiVideoRef.current;
-    if (!video) return;
-    if (aiVoiceActive) {
-      video.play().catch((err) => {
-        tlog("Failed to play AI avatar video: " + (err?.message || err));
-      });
-    } else {
-      video.pause();
+    if (!aiVoiceActive) return;
+    const interval = setInterval(() => {
+      setAvatarMouthOpen((prev) => !prev);
+    }, 200);
+    return () => clearInterval(interval);
+  }, [aiVoiceActive]);
+
+  // Mirror waitingForStudent into a ref so recognition's late `onend` reads the
+  // CURRENT value, not the value captured when the (stale) callback was built.
+  useEffect(() => {
+    waitingForStudentRef.current = waitingForStudent;
+  }, [waitingForStudent]);
+
+  // Prime the mic PERMISSION once up front, then immediately release the device so
+  // the permission prompt is resolved before the first question. startListening()
+  // acquires (and then holds) its own stream for recording when the mic opens.
+  useEffect(() => {
+    let cancelled = false;
+    async function primeMicPermission() {
+      if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) return;
       try {
-        video.currentTime = 0;
-      } catch (e) {
-        // Ignore if video is not ready
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        stream.getTracks().forEach((t) => t.stop());
+        if (!cancelled) tlog("mic permission primed");
+      } catch {
+        // The recorder will request permission later; non-fatal.
       }
     }
-  }, [aiVoiceActive]);
+    primeMicPermission();
+    return () => { cancelled = true; };
+  }, []);
 
   // Keep the student's camera on for the duration of the interview.
   useEffect(() => {
@@ -985,7 +716,7 @@ export default function InterviewRoom({
     };
   }, []);
 
-  // Release the camera once the assessment is complete.
+  // Release the camera AND microphone once the assessment is complete.
   useEffect(() => {
     if (!isFinished) return;
     if (cameraStreamRef.current) {
@@ -993,17 +724,29 @@ export default function InterviewRoom({
       cameraStreamRef.current = null;
       setCameraOn(false);
     }
-    teardownRealtime();
-  }, [isFinished, teardownRealtime]);
+    if (vadIntervalRef.current) { clearInterval(vadIntervalRef.current); vadIntervalRef.current = null; }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.onstop = null;
+      try { mediaRecorderRef.current.stop(); } catch { /* noop */ }
+    }
+    if (audioCtxRef.current) { try { audioCtxRef.current.close(); } catch { /* noop */ } audioCtxRef.current = null; }
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach((t) => t.stop());
+      micStreamRef.current = null;
+    }
+  }, [isFinished]);
 
   // Once the interview is over, stop the full-session recorder and upload it to R2.
+  // Idempotent (covers normal completion, "end early", and the unmount path).
   useEffect(() => {
     if (!isFinished) return;
     finalizeSessionRecording();
   }, [isFinished, finalizeSessionRecording]);
 
-  // Stable callback ref for the student's <video> so the camera doesn't flicker
-  // when the component re-renders (e.g. the 200ms avatar swap).
+  // Stable callback ref for the student's <video>. Must NOT be an inline arrow:
+  // an inline ref is re-invoked on every render (e.g. the 200ms avatar swap),
+  // which would re-assign srcObject and make the camera flicker/jump. Here we
+  // only (re)attach the stream when the element or stream actually changes.
   const attachStudentVideo = useCallback((el) => {
     studentVideoRef.current = el;
     if (el && cameraStreamRef.current && el.srcObject !== cameraStreamRef.current) {
@@ -1011,113 +754,276 @@ export default function InterviewRoom({
     }
   }, []);
 
-  // End the interview: close the realtime connection, then grade the transcript.
-  // isGrading swaps the whole screen to a "Calculating your results…" page for
-  // the (few-second) grading round-trip, instead of leaving the meet UI up.
-  const handleEndCall = useCallback(async () => {
-    if (!sessionId) return;
-    teardownRealtime();
-    setStatus("AI PROCESSING");
-    setIsGrading(true);
+  // Stop the active recorder + VAD. The recorder's onstop handler then builds the
+  // blob, transcribes it server-side, and submits. Idempotent.
+  const stopRecording = useCallback(() => {
+    if (vadIntervalRef.current) { clearInterval(vadIntervalRef.current); vadIntervalRef.current = null; }
+    if (audioCtxRef.current) { try { audioCtxRef.current.close(); } catch { /* noop */ } audioCtxRef.current = null; }
+    const rec = mediaRecorderRef.current;
+    if (rec && rec.state !== "inactive") {
+      try { rec.stop(); } catch { /* noop */ }
+    }
+  }, []);
+
+  // Open the mic and RECORD the student's answer, then transcribe it server-side
+  // (Groq Whisper). The browser Web Speech API is unreliable/blocked on many
+  // networks, so we never depend on it. A local Voice Activity Detector watches
+  // the mic level and auto-stops after a trailing silence; the student can also
+  // tap the mic to submit immediately.
+  const startListening = useCallback(async () => {
+    if (
+      typeof navigator === "undefined" ||
+      !navigator.mediaDevices?.getUserMedia ||
+      typeof window === "undefined" ||
+      !window.MediaRecorder
+    ) {
+      setError("Voice recording isn't supported in this browser. Please type your answer below.");
+      setMicActive(false);
+      return;
+    }
+
+    // Stop TTS so Mav's voice isn't recorded into the answer.
+    window.speechSynthesis?.cancel();
+
+    // Acquire (or reuse) a held mic stream.
+    let stream = micStreamRef.current;
     try {
-      const res = await authFetch("/api/interview/realtime/finish", {
-        method: "POST",
-        body: JSON.stringify({ session_id: sessionId, transcript: transcriptRef.current }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || "Failed to finish interview");
+      if (!stream || !stream.active) {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          video: false,
+        });
+        micStreamRef.current = stream;
       }
+    } catch {
+      setError("Couldn't access your microphone. Allow mic permission, or type your answer below.");
+      setMicActive(false);
+      return;
+    }
+
+    // Reset per-answer state.
+    fillerCountRef.current = 0;
+    pauseCountRef.current = 0;
+    longPauseMsRef.current = 0;
+    speechDetectedRef.current = false;
+    speechStartedAtRef.current = 0;
+    audioChunksRef.current = [];
+    recordStartRef.current = Date.now();
+    lastVoiceRef.current = Date.now();
+    setLiveTranscript("");
+    setFillerCount(0);
+
+    // Build the recorder.
+    let recorder;
+    try {
+      const mime = window.MediaRecorder.isTypeSupported?.("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : (window.MediaRecorder.isTypeSupported?.("audio/webm") ? "audio/webm" : "");
+      recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+    } catch {
+      setError("Couldn't start the recorder. Please type your answer below.");
+      setMicActive(false);
+      return;
+    }
+    mediaRecorderRef.current = recorder;
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data); };
+
+    recorder.onstop = async () => {
+      if (vadIntervalRef.current) { clearInterval(vadIntervalRef.current); vadIntervalRef.current = null; }
+      if (audioCtxRef.current) { try { audioCtxRef.current.close(); } catch { /* noop */ } audioCtxRef.current = null; }
+      setMicActive(false);
+
+      const chunks = audioChunksRef.current;
+      audioChunksRef.current = [];
+      // Transcribe whenever we have audio. We intentionally do NOT gate on the VAD
+      // (speechDetected): the recorder captures audio independently, so a manual
+      // mic-off always submits even if VAD/AudioContext misbehaves. Pure silence
+      // simply transcribes to "" and is handled below.
+      if (!chunks.length) {
+        tlog("recording stopped — no audio captured, not submitting");
+        setLiveTranscript("");
+        if (waitingForStudentRef.current && !submittingRef.current) setStatus("WAITING FOR YOU");
+        return;
+      }
+
+      const blob = new Blob(chunks, { type: chunks[0].type || "audio/webm" });
+      tlog(`transcribing ${(blob.size / 1024).toFixed(0)}KB audio`);
+      transcribingRef.current = true;
+      setStatus("TRANSCRIBING");
+      setLiveTranscript("");
+      try {
+        const form = new FormData();
+        form.append("audio", blob, "answer.webm");
+        const res = await authFetch("/api/interview/transcribe", { method: "POST", body: form });
+        if (!res.ok) throw new Error("Transcription failed");
+        const data = await res.json();
+        const text = (data.text || "").trim();
+        transcribingRef.current = false;
+        tlog("transcript: " + JSON.stringify(text));
+        if (!text) {
+          setLiveTranscript("");
+          setError("I couldn't hear that clearly — tap the mic to try again, or type your answer below.");
+          setStatus("WAITING FOR YOU");
+          return;
+        }
+        fillerCountRef.current = countFillers(text);
+        submitAnswer(text);
+      } catch (err) {
+        transcribingRef.current = false;
+        setLiveTranscript("");
+        setError(friendlyNetworkError(err));
+        setStatus("WAITING FOR YOU");
+      }
+    };
+
+    try {
+      recorder.start();
+    } catch {
+      setError("Couldn't start recording. Please type your answer below.");
+      setMicActive(false);
+      return;
+    }
+    setMicActive(true);
+    setStatus("LISTENING");
+    tlog("MediaRecorder.start() — recording answer");
+
+    // ── Voice Activity Detection: auto-submit on trailing silence ──
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      const ctx = new AudioCtx();
+      audioCtxRef.current = ctx;
+      // The context can start "suspended" under autoplay policy → resume so the
+      // analyser actually receives samples (otherwise VAD reads constant silence).
+      if (ctx.state === "suspended") ctx.resume().catch(() => {});
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      source.connect(analyser);
+      const buf = new Uint8Array(analyser.fftSize);
+
+      vadIntervalRef.current = setInterval(() => {
+        analyser.getByteTimeDomainData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
+        const rms = Math.sqrt(sum / buf.length);
+        const now = Date.now();
+
+        if (rms > VAD_THRESHOLD) {
+          if (!speechDetectedRef.current) {
+            speechDetectedRef.current = true;
+            speechStartedAtRef.current = now;
+            tlog("VAD: speech detected");
+          }
+          lastVoiceRef.current = now;
+        } else if (speechDetectedRef.current) {
+          const voiced = lastVoiceRef.current - speechStartedAtRef.current;
+          const silence = now - lastVoiceRef.current;
+          if (silence >= SILENCE_MS && voiced >= MIN_SPEECH_MS) {
+            tlog(`VAD: ${SILENCE_MS}ms trailing silence → auto-submitting`);
+            stopRecording();
+            return;
+          }
+        }
+        if (now - recordStartRef.current >= MAX_RECORD_MS) {
+          tlog("VAD: max record length reached → auto-submitting");
+          stopRecording();
+        }
+      }, 100);
+    } catch (e) {
+      // VAD is best-effort; without it the student can still submit via the mic button.
+      tlog("VAD init failed (non-fatal): " + (e?.message || e));
+    }
+  }, [submitAnswer, authFetch, stopRecording]);
+
+  // Always keep the ref current so speakText onEnd callbacks don't go stale
+  useEffect(() => {
+    startListeningRef.current = startListening;
+  }, [startListening]);
+
+  const stopListeningAndSubmit = useCallback(() => {
+    // Manual stop: finalize the recording. Its onstop handler transcribes + submits
+    // (or returns to WAITING if nothing was actually spoken).
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      tlog("manual stop → finalizing answer");
+      stopRecording();
+    } else {
+      setMicActive(false);
+      setStatus("WAITING FOR YOU");
+    }
+  }, [stopRecording]);
+
+  const handleToggleMic = () => {
+    if (!waitingForStudent || submittingRef.current || transcribingRef.current) return;
+    if (micActive) {
+      stopListeningAndSubmit();
+    } else {
+      startListening();
+    }
+  };
+
+  const handleEndCall = async () => {
+    if (!sessionId) return;
+    if (vadIntervalRef.current) { clearInterval(vadIntervalRef.current); vadIntervalRef.current = null; }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.onstop = null; // don't transcribe/submit a half answer
+      try { mediaRecorderRef.current.stop(); } catch { /* noop */ }
+    }
+    if (audioCtxRef.current) { try { audioCtxRef.current.close(); } catch { /* noop */ } audioCtxRef.current = null; }
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach((t) => t.stop());
+      micStreamRef.current = null;
+    }
+    try {
+      const res = await authFetch(`/api/interview/end/${sessionId}`, { method: "POST" });
+      if (!res.ok) throw new Error("Failed to end interview");
       const data = await res.json();
       setResults(data);
       setIsFinished(true);
       setStatus("COMPLETE");
+      if (typeof window !== "undefined") window.speechSynthesis?.cancel();
     } catch (err) {
-      setError(friendlyNetworkError(err));
-      setStatus("WAITING FOR YOU");
-    } finally {
-      setIsGrading(false);
+      setError(err.message);
     }
-  }, [authFetch, sessionId, teardownRealtime]);
+  };
 
-  // After the student has answered all MAX_QUESTIONS, end the interview once Mav
-  // has finished speaking her closing remark (so we don't cut her off), then grade.
-  useEffect(() => {
-    if (!shouldEnd || isFinished || aiVoiceActive) return;
-    if (autoEndTriggeredRef.current) return;
-    autoEndTriggeredRef.current = true;
-    handleEndCall();
-  }, [shouldEnd, aiVoiceActive, isFinished, handleEndCall]);
-
-  // Arm a silence-nudge timer whenever the ball is in the student's court. If
-  // the student speaks, status flips to "LISTENING" which cancels this effect
-  // automatically. If Mav starts speaking, aiVoiceActive flips to true which
-  // also cancels it. The timer itself calls sendSilenceNudge, which prompts Mav
-  // to re-engage or (after MAX_SILENCE_NUDGES) to skip and move on.
-  useEffect(() => {
-    if (silenceTimerRef.current) {
-      clearTimeout(silenceTimerRef.current);
-      silenceTimerRef.current = null;
-    }
-    if (status !== "WAITING FOR YOU" || aiVoiceActive || isFinished || !sessionId) return;
-    const timer = setTimeout(() => {
-      silenceTimerRef.current = null;
-      sendSilenceNudge();
-    }, SILENCE_NUDGE_MS);
-    silenceTimerRef.current = timer;
-    return () => {
-      clearTimeout(timer);
-      if (silenceTimerRef.current === timer) silenceTimerRef.current = null;
-    };
-  }, [status, aiVoiceActive, isFinished, sessionId, sendSilenceNudge]);
-
-  // ── Consent gate (screen share + camera + mic are mandatory) ────────────────────
+  // ── Consent gate ──────────────────────────────────────────────────────────
+  // Screen capture can only be requested from a user gesture, and recording the
+  // interview requires the student's explicit consent, so we gate the whole
+  // session behind a single "Share screen & begin" click.
   if (!hasStarted) {
     return (
       <>
         <Navbar />
         <div className="page-container" style={{ display: "grid", placeItems: "center", minHeight: "100vh", backgroundColor: "var(--bg-canvas)" }}>
-          <div className="card" style={{ maxWidth: 540, padding: "40px", textAlign: "center", backgroundColor: "var(--bg-surface)" }}>
+          <div className="card" style={{ maxWidth: 520, padding: "40px", textAlign: "center", backgroundColor: "#ffffff" }}>
             <h2 style={{ fontSize: "22px", fontWeight: "700", color: "var(--text-title)", marginBottom: "12px" }}>{heading}</h2>
-
-            <div style={{ backgroundColor: "var(--bg-canvas)", borderRadius: "10px", padding: "16px 20px", marginBottom: "20px", textAlign: "left" }}>
-              <p style={{ fontSize: "13px", fontWeight: "700", color: "var(--text-title)", marginBottom: "10px" }}>📋 Required before starting:</p>
-              <ul style={{ margin: 0, padding: "0 0 0 18px", fontSize: "13.5px", lineHeight: "2", color: "var(--text-muted)" }}>
-                <li>🖥️ <strong>Screen sharing</strong> — select this tab and tick <em>&ldquo;Share tab audio&rdquo;</em> so Mav&apos;s voice is captured</li>
-                <li>📷 <strong>Camera</strong> — your video must be visible during the interview</li>
-                <li>🎙️ <strong>Microphone</strong> — your voice must be accessible to answer questions</li>
-              </ul>
-            </div>
-
-            <p style={{ color: "var(--text-muted)", fontSize: "13px", lineHeight: "1.6", marginBottom: "20px" }}>
-              This oral interview is <strong>recorded</strong> (your screen, the AI interviewer&apos;s voice and your microphone) so your teacher can review it afterwards.
-              The interview <strong>cannot begin</strong> without all three permissions granted.
+            <p style={{ color: "var(--text-muted)", fontSize: "14px", lineHeight: "1.6", marginBottom: "20px" }}>
+              This oral interview is <strong>recorded</strong> (your screen, the
+              interviewer&apos;s voice and your microphone) so your teacher can review it
+              afterwards. When you click below, choose your screen or this tab and
+              <strong> tick “Share tab/system audio”</strong> so the interviewer&apos;s voice is captured.
             </p>
-
             {recordingNotice && (
-              <div style={{
-                backgroundColor: "var(--bg-warning)",
-                border: "1px solid var(--border-warning)",
-                borderRadius: "8px",
-                padding: "12px 16px",
-                marginBottom: "16px",
-                fontSize: "13px",
-                color: "var(--color-warning)",
-                textAlign: "left",
-              }}>
-                {recordingNotice}
-              </div>
+              <p style={{ color: "var(--color-warning)", fontSize: "13px", marginBottom: "16px" }}>{recordingNotice}</p>
             )}
-
             <button
               className="btn btn-primary"
               style={{ width: "100%" }}
               onClick={beginInterview}
               disabled={preparing}
             >
-              {preparing ? "Checking permissions…" : "📸 Share Screen, Camera & Mic — Begin Interview"}
+              {preparing ? "Waiting for screen permission…" : "Share screen & begin"}
             </button>
-
+            {recordingNotice && (
+              <button
+                className="btn btn-secondary"
+                style={{ width: "100%", marginTop: "12px" }}
+                onClick={continueWithoutRecording}
+                disabled={preparing}
+              >
+                Continue without recording
+              </button>
+            )}
             <Link href={backHref} style={{ display: "inline-block", marginTop: "16px", fontSize: "13px", color: "var(--text-muted)" }}>
               Cancel
             </Link>
@@ -1132,7 +1038,7 @@ export default function InterviewRoom({
       <>
         <Navbar />
         <div className="page-container" style={{ padding: "120px 32px", textAlign: "center" }}>
-          <p style={{ color: "var(--text-muted)" }}>Connecting to your AI interviewer…</p>
+          <p style={{ color: "var(--text-muted)" }}>Initializing AI oral assessment…</p>
         </div>
       </>
     );
@@ -1152,34 +1058,8 @@ export default function InterviewRoom({
     );
   }
 
-  if (isGrading) {
-    return (
-      <>
-        <Navbar />
-        <div className="page-container" style={{ display: "grid", placeItems: "center", minHeight: "100vh", backgroundColor: "var(--bg-canvas)" }}>
-          <div style={{ textAlign: "center" }}>
-            <div style={{
-              width: 36, height: 36,
-              margin: "0 auto 20px",
-              border: "3px solid var(--border-muted)",
-              borderTopColor: "var(--brand)",
-              borderRadius: "50%",
-              animation: "spin 0.7s linear infinite",
-            }} />
-            <p style={{ color: "var(--text-title)", fontSize: "16px", fontWeight: "600", marginBottom: "8px" }}>
-              Calculating your results…
-            </p>
-            <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>
-              Grading your responses on technical accuracy, communication, and confidence.
-            </p>
-          </div>
-        </div>
-      </>
-    );
-  }
-
   if (isFinished && results) {
-    const passThreshold = results.pass_threshold ?? 70;
+    const passThreshold = 70;
     return (
       <>
         <Navbar />
@@ -1199,21 +1079,21 @@ export default function InterviewRoom({
             </div>
 
             <div className="score-grid">
-              <div className="card score-card" style={{ backgroundColor: "var(--bg-surface)" }}>
+              <div className="card score-card" style={{ backgroundColor: "#ffffff" }}>
                 <div className="score-number">{Math.round(results.technical_score)}%</div>
                 <div className="score-label">Technical Precision</div>
               </div>
-              <div className="card score-card" style={{ backgroundColor: "var(--bg-surface)" }}>
+              <div className="card score-card" style={{ backgroundColor: "#ffffff" }}>
                 <div className="score-number">{Math.round(results.communication_score)}%</div>
                 <div className="score-label">Speech Structure</div>
               </div>
-              <div className="card score-card" style={{ backgroundColor: "var(--bg-surface)" }}>
+              <div className="card score-card" style={{ backgroundColor: "#ffffff" }}>
                 <div className="score-number">{Math.round(results.confidence_score)}%</div>
                 <div className="score-label">Confidence Index</div>
               </div>
             </div>
 
-            <div className="card" style={{ padding: "24px", marginBottom: "24px", backgroundColor: "var(--bg-surface)" }}>
+            <div className="card" style={{ padding: "24px", marginBottom: "24px", backgroundColor: "#ffffff" }}>
               <div className="flex-between" style={{ marginBottom: "12px" }}>
                 <span style={{ fontWeight: "700", fontSize: "15px" }}>Composite Score</span>
                 <span className="mono" style={{ fontSize: "18px", fontWeight: "700", color: results.passed ? "var(--color-success)" : "var(--color-warning)" }}>
@@ -1236,7 +1116,7 @@ export default function InterviewRoom({
             </div>
 
             {!results.passed && results.suggested_review?.length > 0 && (
-              <div className="card" style={{ padding: "24px", marginBottom: "24px", backgroundColor: "var(--bg-warning)", border: "1px solid var(--color-warning)" }}>
+              <div className="card" style={{ padding: "24px", marginBottom: "24px", backgroundColor: "#fff8f0", border: "1px solid var(--color-warning)" }}>
                 <h4 style={{ color: "var(--color-warning)", fontSize: "13px", fontWeight: "700", marginBottom: "12px" }}>Suggested Review</h4>
                 <ul style={{ fontSize: "13.5px", paddingLeft: "16px" }}>
                   {results.suggested_review.map((s, i) => <li key={i}>{s}</li>)}
@@ -1248,13 +1128,13 @@ export default function InterviewRoom({
             )}
 
             <div className="grid-2" style={{ marginBottom: "32px" }}>
-              <div className="card" style={{ padding: "24px", backgroundColor: "var(--bg-surface)" }}>
+              <div className="card" style={{ padding: "24px", backgroundColor: "#ffffff" }}>
                 <h4 style={{ color: "var(--color-success)", fontSize: "13px", fontWeight: "700", marginBottom: "12px", textTransform: "uppercase" }}>Key Strengths</h4>
                 <ul style={{ fontSize: "13.5px", paddingLeft: "16px", lineHeight: "1.7" }}>
                   {(results.strengths || []).map((s, i) => <li key={i}>{s}</li>)}
                 </ul>
               </div>
-              <div className="card" style={{ padding: "24px", backgroundColor: "var(--bg-surface)" }}>
+              <div className="card" style={{ padding: "24px", backgroundColor: "#ffffff" }}>
                 <h4 style={{ color: "var(--color-warning)", fontSize: "13px", fontWeight: "700", marginBottom: "12px", textTransform: "uppercase" }}>Areas to Refine</h4>
                 <ul style={{ fontSize: "13.5px", paddingLeft: "16px", lineHeight: "1.7" }}>
                   {(results.weak_areas || []).map((s, i) => <li key={i}>{s}</li>)}
@@ -1277,13 +1157,20 @@ export default function InterviewRoom({
   }
 
   // Captions follow whoever is *actively* talking:
-  //  • Mav's voice playing → show her line. The student's own words are never
-  //    captioned — voice only.
+  //  • Mav's voice playing       → show her line
+  //  • mic recording             → "Listening…" prompt (server STT isn't live)
+  //  • transcribing / transcript → show the student's transcribed answer
   let captionText = "";
   let captionSpeaker = "";
   if (aiVoiceActive && currentAIText) {
     captionText = currentAIText;
     captionSpeaker = "AI Assessor";
+  } else if (micActive) {
+    captionText = liveTranscript.trim() ? liveTranscript : "🎙 Listening… speak your answer";
+    captionSpeaker = "You (Speaking)";
+  } else if (liveTranscript.trim()) {
+    captionText = liveTranscript;
+    captionSpeaker = "You";
   }
 
   return (
@@ -1295,11 +1182,19 @@ export default function InterviewRoom({
           {/* Header bar */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
+              <span className="badge badge-accent" style={{ backgroundColor: "rgba(255,255,255,0.1)", borderColor: "rgba(255,255,255,0.2)", color: "#8ab4f8", marginBottom: "6px" }}>
+                LIVE AI INTERVIEW — {questionNum === 0 ? "GREETING" : `Q${questionNum}/5`}
+              </span>
               <h1 style={{ fontSize: "20px", fontWeight: "600", color: "#ffffff", margin: 0 }}>
                 {heading}
               </h1>
             </div>
             <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+              {micActive && fillerCount > 0 && (
+                <span style={{ fontSize: "11px", color: "#f28b82", backgroundColor: "rgba(242,139,130,0.15)", padding: "4px 10px", borderRadius: "12px", fontFamily: "JetBrains Mono", border: "1px solid rgba(242,139,130,0.3)" }}>
+                  {fillerCount} filler word{fillerCount !== 1 ? "s" : ""}
+                </span>
+              )}
               <span style={{ fontSize: "12px", color: "#e8eaed", backgroundColor: "#202124", padding: "6px 12px", borderRadius: "16px", border: "1px solid #3c4043", fontFamily: "JetBrains Mono" }}>
                 {status}
               </span>
@@ -1309,35 +1204,20 @@ export default function InterviewRoom({
           {/* Video panels */}
           <div className="meet-grid">
             <div className={`meet-panel ${isAISpeaking ? "speaking" : ""}`}>
-              <video
-                ref={aiVideoRef}
-                src="/avatar.mp4"
-                loop
-                muted
-                playsInline
-                style={{
-                  position: "absolute",
-                  inset: 0,
-                  width: "100%",
-                  height: "100%",
-                  objectFit: "cover",
-                  userSelect: "none",
-                  display: aiVoiceActive ? "block" : "none",
-                }}
-              />
-              {/* eslint-disable-next-line @next/next/no-img-element -- custom static avatar fallback */}
+              {/* eslint-disable-next-line @next/next/no-img-element -- two tiny
+                  local avatar frames swapped every 200ms; next/image's optimizer
+                  pipeline would add latency/flicker to the lip-sync animation. */}
               <img
-                src={avatarClosed.src}
+                src={(aiVoiceActive && avatarMouthOpen ? avatarOpened : avatarClosed).src}
                 alt="Mav — AI Assessor avatar"
                 draggable={false}
                 style={{
-                  position: "absolute",
-                  inset: 0,
-                  width: "100%",
-                  height: "100%",
+                  width: 168,
+                  height: 168,
+                  borderRadius: "50%",
                   objectFit: "cover",
+                  boxShadow: "var(--shadow-lg)",
                   userSelect: "none",
-                  display: aiVoiceActive ? "none" : "block",
                 }}
               />
               <div className="meet-nametag">
@@ -1424,24 +1304,24 @@ export default function InterviewRoom({
             <div style={{ color: "#f28b82", fontSize: "13px", textAlign: "center", marginTop: "8px" }}>{error}</div>
           )}
 
-          {/* Live hint */}
-          {connected && !aiVoiceActive && (
+          {/* Auto-submit hint */}
+          {micActive && (
             <div style={{ textAlign: "center", marginTop: "8px", fontSize: "12px", color: "#9aa0a6" }}>
-              Just speak naturally — Mav listens continuously and replies in real time.
+              Speak your answer — it submits automatically after a short pause, or click 🎤 to submit now
             </div>
           )}
 
-          {/* Fallback text input (type instead of speak) */}
-          {yourTurn && (
+          {/* Fallback text input */}
+          {waitingForStudent && !micActive && (
             <div style={{ marginTop: "16px", display: "flex", gap: "8px", maxWidth: "600px", margin: "16px auto 0" }}>
               <input
                 className="form-input"
-                placeholder="Prefer to type? Enter your answer here…"
+                placeholder="Type your answer here (or use the mic above)…"
                 value={typedAnswer}
                 onChange={(e) => setTypedAnswer(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && typedAnswer.trim()) {
-                    sendTypedAnswer(typedAnswer);
+                    submitAnswer(typedAnswer);
                     setTypedAnswer("");
                   }
                 }}
@@ -1449,7 +1329,7 @@ export default function InterviewRoom({
               />
               <button
                 className="btn btn-secondary btn-sm"
-                onClick={() => { if (typedAnswer.trim()) { sendTypedAnswer(typedAnswer); setTypedAnswer(""); } }}
+                onClick={() => { if (typedAnswer.trim()) { submitAnswer(typedAnswer); setTypedAnswer(""); } }}
               >
                 Send
               </button>
@@ -1459,30 +1339,30 @@ export default function InterviewRoom({
           {/* Bottom control bar */}
           <div className="meet-bottom-bar">
             <div className="meet-bar-info">
-              {micActive ? (
+              {status === "TRANSCRIBING" ? (
+                <span style={{ color: "#8ab4f8" }}>📝 Transcribing your answer…</span>
+              ) : micActive ? (
                 <span style={{ color: "#81c995", fontWeight: "600" }}>
-                  🎙 Listening… speak your answer, Mav replies when you pause
+                  🎙 Listening… speak your answer. Click 🎤 to submit, or just pause when done
                 </span>
-              ) : aiVoiceActive && isGreeting ? (
-                <span style={{ color: "#8ab4f8" }}>👋 Mav is greeting you…</span>
-              ) : aiVoiceActive ? (
-                <span style={{ color: "#8ab4f8" }}>🔊 Mav is speaking… your mic is paused — please wait for her to finish</span>
-              ) : status === "AI PROCESSING" ? (
-                <span style={{ color: "#9aa0a6" }}>⏳ Thinking…</span>
-              ) : connected ? (
-                <span style={{ color: "#81c995", fontWeight: "600" }}>🎤 Your turn — just speak</span>
+              ) : status === "AI SPEAKING" ? (
+                <span style={{ color: "#8ab4f8" }}>🔊 Mav is speaking… mic opens automatically when done</span>
+              ) : waitingForStudent ? (
+                <span style={{ color: "#81c995", fontWeight: "600" }}>🎤 Mic is open — speak your answer or click 🎤 to submit manually</span>
               ) : (
-                <span style={{ color: "#9aa0a6" }}>⏳ Connecting…</span>
+                <span style={{ color: "#9aa0a6" }}>I am processing your response…</span>
               )}
             </div>
 
             <div className="meet-bar-actions">
               <button
-                onClick={toggleMute}
-                className={`meet-action-btn ${micMuted ? "" : "mic-active"}`}
-                title={micMuted ? "Unmute microphone" : "Mute microphone"}
+                onClick={handleToggleMic}
+                className={`meet-action-btn ${micActive ? "mic-active" : ""}`}
+                title={micActive ? "Stop & submit answer" : "Start speaking"}
+                disabled={!waitingForStudent && !micActive}
+                style={{ opacity: (!waitingForStudent && !micActive) ? 0.4 : 1 }}
               >
-                {micMuted ? "🔇" : "🎤"}
+                {micActive ? "🎤" : "🔇"}
               </button>
               <button
                 onClick={() => setShowCaptions((p) => !p)}

@@ -24,7 +24,6 @@ class UserResponse(BaseModel):
     role: str
     is_approved: bool = True
     avatar: Optional[str] = None
-    certificate_name: Optional[str] = None
     created_at: datetime
 
     class Config:
@@ -91,8 +90,7 @@ class CourseCreate(BaseModel):
     title: str
     description: str
     thumbnail: Optional[str] = None
-    pass_threshold: int = 70   # interview / oral assessment pass %
-    quiz_threshold: int = 70   # quiz pass %
+    pass_threshold: int = 70
 
 
 class CourseResponse(BaseModel):
@@ -101,7 +99,6 @@ class CourseResponse(BaseModel):
     description: str
     thumbnail: Optional[str] = None
     pass_threshold: int
-    quiz_threshold: int = 70
     teacher_id: Optional[str] = None
     is_published: bool
     is_approved: bool = False
@@ -121,8 +118,6 @@ class CourseListResponse(BaseModel):
     thumbnail: Optional[str] = None
     is_published: bool
     chapter_count: int = 0
-    teacher_name: Optional[str] = None
-    enrollment_status: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -231,48 +226,10 @@ class InterviewAnswerRequest(BaseModel):
     filler_word_count: int = 0
 
 
-class InterviewTTSRequest(BaseModel):
-    # Text for Mav's TTS voice (OpenAI). Optional voice override.
-    text: str
-    voice: Optional[str] = None
-
-
 class InterviewMessage(BaseModel):
     speaker: str  # ai | student
     text: str
     timestamp: Optional[str] = None
-
-
-# ─── REALTIME (speech-to-speech) interview ───
-# The browser connects directly to Gemini's Live API; the backend only mints
-# the ephemeral token, supplies the context, and saves the result at the end.
-class RealtimeStartRequest(BaseModel):
-    # Exactly one of these identifies the assessment scope:
-    #   course_id → course-wide final interview (spans every module)
-    #   chapter_id → single-module interview
-    course_id: Optional[str] = None
-    chapter_id: Optional[str] = None
-
-
-class RealtimeStartResponse(BaseModel):
-    session_id: str
-    # The ephemeral auth token + Gemini's raw token payload. The frontend uses
-    # `client_secret` as the apiKey for @google/genai's `ai.live.connect()`.
-    client_secret: str
-    realtime_session: dict
-    # The Live model + voice the session was created with — the browser passes
-    # these to `ai.live.connect()` so the call uses the same configuration.
-    model: str
-    voice: str = ""
-    instructions: str
-    course_name: str
-    student_name: str
-
-
-class RealtimeFinishRequest(BaseModel):
-    session_id: str
-    # Full conversation captured by the browser: [{speaker: "ai"|"student", text}].
-    transcript: List[InterviewMessage]
 
 
 class InterviewTurnResponse(BaseModel):
@@ -301,7 +258,6 @@ class InterviewResultResponse(BaseModel):
     transcript: list
     next_chapter_unlocked: bool = False
     chapter_title: str = ""
-    pass_threshold: int = 70   # interview pass % for this course
 
 
 class InterviewEligibilityResponse(BaseModel):
@@ -338,8 +294,6 @@ class CertificateResponse(BaseModel):
     course_id: str
     issue_date: datetime
     verify_code: str
-    course_title: Optional[str] = None
-    pdf_url: Optional[str] = None  # Cloudflare R2 public URL for the stored certificate PDF
 
     class Config:
         from_attributes = True
@@ -366,7 +320,6 @@ class DashboardCourse(BaseModel):
     currentChapter: str
     status: str
     icon: str
-    thumbnail: Optional[str] = None
 
 
 class DashboardEvaluation(BaseModel):
@@ -378,7 +331,6 @@ class DashboardEvaluation(BaseModel):
     technical: int
     communication: int
     confidence: int
-    recording_url: Optional[str] = None
 
 
 class DashboardStats(BaseModel):
@@ -387,95 +339,4 @@ class DashboardStats(BaseModel):
     oral_assessments: int
     earned_credentials: int
     enrolled_courses: List[DashboardCourse]
-
-
-# ─── HIRING SCHEMAS ───
-
-class HiringTemplateCreate(BaseModel):
-    job_title: str
-
-
-class HiringTemplateResponse(BaseModel):
-    id: str
-    job_title: str
-    teacher_id: str
-    created_at: datetime
-    teacher_name: Optional[str] = None
-
-    class Config:
-        from_attributes = True
-
-
-class CodingSubmissionCreate(BaseModel):
-    language: str
-    code: str
-
-
-class CodingSubmissionResponse(BaseModel):
-    id: str
-    stage_id: str
-    language: str
-    code: str
-    status: str
-    created_at: datetime
-
-    class Config:
-        from_attributes = True
-
-
-class InterviewStageResponse(BaseModel):
-    id: str
-    attempt_id: str
-    stage_type: str
-    status: str
-    score: Optional[float] = None
-    feedback: Optional[str] = None
-    created_at: datetime
-    submissions: List[CodingSubmissionResponse] = []
-
-    class Config:
-        from_attributes = True
-
-
-class InterviewAttemptResponse(BaseModel):
-    id: str
-    user_id: str
-    hiring_template_id: str
-    cv_url: Optional[str] = None
-    cv_name: Optional[str] = None
-    job_description: Optional[str] = None
-    status: str
-    current_stage: str
-    created_at: datetime
-    stages: List[InterviewStageResponse] = []
-    job_title: Optional[str] = None
-    student_name: Optional[str] = None
-
-    class Config:
-        from_attributes = True
-
-
-class StudentInterviewProgressResponse(BaseModel):
-    id: str
-    user_id: str
-    hiring_template_id: str
-    current_stage: str
-    status: str
-    updated_at: datetime
-    student_name: Optional[str] = None
-    student_email: Optional[str] = None
-
-    class Config:
-        from_attributes = True
-
-
-class StudentHiringDetailResponse(BaseModel):
-    student_id: str
-    student_name: str
-    student_email: str
-    progress_status: str  # in_progress, passed, failed
-    current_stage: str
-    attempts: List[InterviewAttemptResponse]
-
-
-
+    recent_evaluations: List[DashboardEvaluation]

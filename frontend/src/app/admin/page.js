@@ -1,6 +1,5 @@
 "use client";
 import Navbar from "@/components/Navbar";
-import Skeleton, { SkeletonMetrics } from "@/components/Skeleton";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
@@ -78,7 +77,6 @@ function AdminPanel() {
   // ready in parallel (one round-trip instead of three sequential ones).
   useEffect(() => {
     // Analytics
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setAnalyticsLoading(true);
     authFetch("/api/admin/analytics")
       .then((r) => r.json())
@@ -145,24 +143,23 @@ function AdminPanel() {
     <>
       <Navbar />
       <div className="page-container">
-        <div className="container admin-container">
+        <div className="container" style={{ padding: "48px 32px" }}>
 
           {/* Header */}
           <div style={{ marginBottom: "32px" }}>
-            <div className="admin-header-flex">
-              <h1 style={{ fontSize: "28px", fontWeight: "700", color: "var(--text-title)", letterSpacing: "-0.02em", margin: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "4px" }}>
+              <h1 style={{ fontSize: "28px", fontWeight: "700", color: "var(--text-title)", letterSpacing: "-0.02em" }}>
                 Operations Console
               </h1>
               <span style={{
                 fontSize: "11px", fontWeight: "600", padding: "3px 8px",
                 borderRadius: "4px", background: "var(--bg-warning)", color: "var(--color-warning)",
-                border: "1px solid var(--border-warning)", fontFamily: "JetBrains Mono",
-                display: "inline-block", width: "fit-content",
+                border: "1px solid rgba(245,158,11,0.2)", fontFamily: "JetBrains Mono",
               }}>
                 ADMIN
               </span>
             </div>
-            <p style={{ color: "var(--text-muted)", fontSize: "14px", margin: "4px 0 0" }}>
+            <p style={{ color: "var(--text-muted)", fontSize: "14px" }}>
               Logged in as <strong style={{ color: "var(--text-title)" }}>{user?.name}</strong> — full platform administration.
             </p>
           </div>
@@ -180,7 +177,7 @@ function AdminPanel() {
           {activeTab === "dashboard" && (
             <div>
               {analyticsLoading && (
-                <SkeletonMetrics count={4} />
+                <p style={{ color: "var(--text-muted)", fontSize: "13px", marginBottom: "16px" }}>Loading live data…</p>
               )}
               <div className="grid-4" style={{ marginBottom: "32px" }}>
                 {STATS.map((s, i) => (
@@ -192,7 +189,7 @@ function AdminPanel() {
               </div>
 
               <div className="grid-2">
-                <div className="card">
+                <div className="card" style={{ padding: "24px" }}>
                   <h3 style={{ fontSize: "14px", fontWeight: "600", color: "var(--text-title)", marginBottom: "16px", textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "JetBrains Mono" }}>
                     Evaluation Performance
                   </h3>
@@ -217,7 +214,7 @@ function AdminPanel() {
                     </div>
                   </div>
                 </div>
-                <div className="card">
+                <div className="card" style={{ padding: "24px" }}>
                   <h3 style={{ fontSize: "14px", fontWeight: "600", color: "var(--text-title)", marginBottom: "16px", textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "JetBrains Mono" }}>
                     Platform Summary
                   </h3>
@@ -235,7 +232,7 @@ function AdminPanel() {
           {/* ── Teachers (browse) ── */}
           {activeTab === "teachers" && (
             <div>
-              <div style={{ marginBottom: "16px", position: "relative", maxWidth: 360, width: "100%" }}>
+              <div style={{ marginBottom: "16px", position: "relative", maxWidth: 360 }}>
                 <svg style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }} width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                 <input type="text" placeholder="Search by name or email…" value={teacherSearch} onChange={(e) => setTeacherSearch(e.target.value)} style={{ width: "100%", padding: "9px 12px 9px 36px", background: "var(--bg-card)", border: "1px solid var(--border-muted)", borderRadius: "var(--radius-sm)", color: "var(--text-title)", fontSize: "13px", outline: "none", boxSizing: "border-box" }} />
                 {teacherSearch && <button onClick={() => setTeacherSearch("")} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "18px", lineHeight: 1, padding: 0 }}>×</button>}
@@ -249,15 +246,14 @@ function AdminPanel() {
                   </thead>
                   <tbody>
                     {teachersLoading ? (
-                      Array.from({ length: 5 }).map((_, i) => (
-                        <tr key={i}>
-                          <td><Skeleton variant="text" width="70%" height={13} /></td>
-                          <td><Skeleton variant="text" width="80%" height={13} /></td>
-                          <td><Skeleton variant="text" width="30px" height={13} /></td>
-                          <td><Skeleton variant="rectangular" width="60px" height={20} borderRadius="10px" /></td>
-                          <td><Skeleton variant="rectangular" width="90px" height={28} borderRadius="4px" /></td>
-                        </tr>
-                      ))
+                      <tr>
+                        <td colSpan={5} style={{ textAlign: "center", padding: "48px" }}>
+                          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
+                            <span className="spinner" style={{ width: 28, height: 28, border: "3px solid var(--text-muted)", borderTopColor: "var(--brand)", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
+                            <span style={{ color: "var(--text-muted)", fontSize: "14px", fontWeight: "500" }}>Loading teachers...</span>
+                          </div>
+                        </td>
+                      </tr>
                     ) : filteredTeachers.length === 0 ? (
                       <tr><td colSpan={5} style={{ textAlign: "center", color: "var(--text-muted)", padding: "32px" }}>{teacherSearch ? `No teachers match "${teacherSearch}"` : "No teachers registered yet."}</td></tr>
                     ) : filteredTeachers.map((t) => {
@@ -304,7 +300,7 @@ function AdminPanel() {
           {/* ── Students ── */}
           {activeTab === "students" && (
             <div>
-              <div style={{ marginBottom: "16px", position: "relative", maxWidth: 360, width: "100%" }}>
+              <div style={{ marginBottom: "16px", position: "relative", maxWidth: 360 }}>
                 <svg style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }} width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                 <input type="text" placeholder="Search by name or email…" value={studentSearch} onChange={(e) => setStudentSearch(e.target.value)} style={{ width: "100%", padding: "9px 12px 9px 36px", background: "var(--bg-card)", border: "1px solid var(--border-muted)", borderRadius: "var(--radius-sm)", color: "var(--text-title)", fontSize: "13px", outline: "none", boxSizing: "border-box" }} />
                 {studentSearch && <button onClick={() => setStudentSearch("")} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "18px", lineHeight: 1, padding: 0 }}>×</button>}
@@ -316,16 +312,12 @@ function AdminPanel() {
                   </thead>
                   <tbody>
                     {studentsLoading ? (
-                      Array.from({ length: 5 }).map((_, i) => (
-                        <tr key={i}>
-                          <td><Skeleton variant="text" width="70%" height={13} /></td>
-                          <td><Skeleton variant="text" width="80%" height={13} /></td>
-                          <td><Skeleton variant="text" width="30px" height={13} /></td>
-                          <td><Skeleton variant="text" width="40px" height={13} /></td>
-                          <td><Skeleton variant="text" width="60px" height={13} /></td>
-                          <td><Skeleton variant="rectangular" width="60px" height={28} borderRadius="4px" /></td>
-                        </tr>
-                      ))
+                      <tr><td colSpan={6} style={{ textAlign: "center", padding: "48px" }}>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
+                          <span className="spinner" style={{ width: 28, height: 28, border: "3px solid var(--text-muted)", borderTopColor: "var(--brand)", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
+                          <span style={{ color: "var(--text-muted)", fontSize: "14px", fontWeight: "500" }}>Loading students...</span>
+                        </div>
+                      </td></tr>
                     ) : filteredStudents.length === 0 ? (
                       <tr><td colSpan={6} style={{ textAlign: "center", color: "var(--text-muted)", padding: "32px" }}>{studentSearch ? `No students match "${studentSearch}"` : "No students yet."}</td></tr>
                     ) : filteredStudents.map((s) => {
@@ -355,12 +347,12 @@ function AdminPanel() {
           {activeTab === "approve" && (
             <div>
               {courseActionMsg && (
-                <div style={{ marginBottom: "16px", padding: "12px 16px", borderRadius: "var(--radius-sm)", background: courseActionMsg.includes("...") ? "var(--bg-warning)" : "var(--bg-success)", color: courseActionMsg.includes("...") ? "var(--color-warning)" : "var(--color-success)", fontSize: "13px", fontWeight: "600", border: courseActionMsg.includes("...") ? "1px solid var(--border-warning)" : "1px solid var(--border-success)", display: "flex", alignItems: "center", gap: "8px" }}>
+                <div style={{ marginBottom: "16px", padding: "12px 16px", borderRadius: "var(--radius-sm)", background: courseActionMsg.includes("...") ? "var(--bg-warning)" : "var(--bg-success)", color: courseActionMsg.includes("...") ? "var(--color-warning)" : "var(--color-success)", fontSize: "13px", fontWeight: "600", border: courseActionMsg.includes("...") ? "1px solid rgba(245,158,11,0.2)" : "1px solid rgba(16,185,129,0.2)", display: "flex", alignItems: "center", gap: "8px" }}>
                   {courseActionMsg.includes("...") && (<span className="spinner" style={{ width: 14, height: 14, border: "2px solid var(--color-warning)", borderTopColor: "transparent", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />)}
                   <span>{courseActionMsg}</span>
                 </div>
               )}
-              <div style={{ marginBottom: "16px", position: "relative", maxWidth: 360, width: "100%" }}>
+              <div style={{ marginBottom: "16px", position: "relative", maxWidth: 360 }}>
                 <svg style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }} width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                 <input type="text" placeholder="Search by name or email…" value={approveSearch} onChange={(e) => setApproveSearch(e.target.value)} style={{ width: "100%", padding: "9px 12px 9px 36px", background: "var(--bg-card)", border: "1px solid var(--border-muted)", borderRadius: "var(--radius-sm)", color: "var(--text-title)", fontSize: "13px", outline: "none", boxSizing: "border-box" }} />
                 {approveSearch && <button onClick={() => setApproveSearch("")} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "18px", lineHeight: 1, padding: 0 }}>×</button>}
@@ -372,16 +364,12 @@ function AdminPanel() {
                   </thead>
                   <tbody>
                     {teachersLoading ? (
-                      Array.from({ length: 5 }).map((_, i) => (
-                        <tr key={i}>
-                          <td><Skeleton variant="text" width="70%" height={13} /></td>
-                          <td><Skeleton variant="text" width="80%" height={13} /></td>
-                          <td><Skeleton variant="text" width="30px" height={13} /></td>
-                          <td><Skeleton variant="rectangular" width="60px" height={20} borderRadius="10px" /></td>
-                          <td><Skeleton variant="text" width="60px" height={13} /></td>
-                          <td><Skeleton variant="rectangular" width="80px" height={28} borderRadius="4px" /></td>
-                        </tr>
-                      ))
+                      <tr><td colSpan={6} style={{ textAlign: "center", padding: "48px" }}>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
+                          <span className="spinner" style={{ width: 28, height: 28, border: "3px solid var(--text-muted)", borderTopColor: "var(--brand)", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
+                          <span style={{ color: "var(--text-muted)", fontSize: "14px", fontWeight: "500" }}>Loading teachers...</span>
+                        </div>
+                      </td></tr>
                     ) : filteredApprove.length === 0 ? (
                       <tr><td colSpan={6} style={{ textAlign: "center", color: "var(--text-muted)", padding: "32px" }}>{approveSearch ? `No teachers match "${approveSearch}"` : "No teachers registered yet."}</td></tr>
                     ) : filteredApprove.map((t) => (

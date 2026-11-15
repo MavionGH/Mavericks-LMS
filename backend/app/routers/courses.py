@@ -3,7 +3,7 @@ import os
 import shutil
 import tempfile
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, File, UploadFile
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload, load_only
 from typing import List, Optional
@@ -14,9 +14,10 @@ from app.schemas.schemas import (
     CourseCreate, CourseResponse, CourseListResponse,
     ChapterCreate, ChapterResponse, ChapterMinResponse, ChapterDetailResponse
 )
-from app.auth.dependencies import get_current_user, require_teacher, require_admin, get_optional_current_user
+from app.auth.dependencies import get_current_user, require_teacher, require_admin
 from app.services.transcript import fetch_youtube_transcript
-from app.services.storage import upload_video_to_r2, upload_course_thumbnail
+from app.services.storage import upload_video_to_r2
+from app.services.pinecone_store import index_module_content
 from app.services.video_transcription import transcribe_video_bytes
 from app.services.document_parser import extract_text_from_document
 
@@ -86,35 +87,21 @@ def preview_youtube_transcript(
 # ─── PUBLIC LISTING ───
 
 @router.get("/", response_model=List[CourseListResponse])
-def list_courses(
-    db: Session = Depends(get_db),
-    current_user: Optional[User] = Depends(get_optional_current_user),
-):
+def list_courses(db: Session = Depends(get_db)):
     """Public — lists all courses published by an approved teacher."""
     query_results = db.query(
         Course,
-        func.count(Chapter.id).label("chapter_count"),
-        User.name.label("teacher_name")
+        func.count(Chapter.id).label("chapter_count")
     ).outerjoin(
         Chapter, Course.id == Chapter.course_id
-    ).outerjoin(
-        User, Course.teacher_id == User.id
     ).filter(
         Course.is_published == True,
     ).group_by(
-        Course.id, User.name
+        Course.id
     ).all()
 
-    # Fetch user's enrollments if logged in
-    enrollments_dict = {}
-    if current_user:
-        from app.models.models import Enrollment
-        user_enrollments = db.query(Enrollment).filter(Enrollment.user_id == current_user.id).all()
-        enrollments_dict = {e.course_id: e.status for e in user_enrollments}
-
     result = []
-    for c, count, teacher_name in query_results:
-        enroll_status = enrollments_dict.get(c.id, None)
+    for c, count in query_results:
         result.append(CourseListResponse(
             id=c.id,
             title=c.title,
@@ -122,27 +109,18 @@ def list_courses(
             thumbnail=c.thumbnail,
             is_published=c.is_published,
             chapter_count=count,
-            teacher_name=teacher_name,
-            enrollment_status=enroll_status.value if enroll_status else None
         ))
     return result
 
 
 @router.get("/{course_id}", response_model=CourseResponse)
-def get_course(
-    course_id: str,
-    db: Session = Depends(get_db),
-    current_user: Optional[User] = Depends(get_optional_current_user),
-):
+def get_course(course_id: str, db: Session = Depends(get_db)):
     """Public — returns course details."""
     course = db.query(Course).options(
         joinedload(Course.chapters)
     ).filter(Course.id == course_id).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
-    if not course.is_published:
-        if not current_user or (current_user.role != UserRole.ADMIN and course.teacher_id != current_user.id):
-            raise HTTPException(status_code=403, detail="This course is not published")
     return CourseResponse.model_validate(course)
 
 
@@ -159,7 +137,6 @@ def create_course(
         description=data.description,
         thumbnail=data.thumbnail,
         pass_threshold=data.pass_threshold,
-        quiz_threshold=data.quiz_threshold,
         teacher_id=current_user.id,
     )
     db.add(course)
@@ -184,7 +161,6 @@ def update_course(
     course.description = data.description
     course.thumbnail = data.thumbnail
     course.pass_threshold = data.pass_threshold
-    course.quiz_threshold = data.quiz_threshold
     db.commit()
     db.refresh(course)
     return CourseResponse.model_validate(course)
@@ -194,19 +170,13 @@ def update_course(
 def delete_course(
     course_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_teacher),
+    current_user: User = Depends(require_admin),
 ):
     course = db.query(Course).filter(Course.id == course_id).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
-    _assert_course_owner(course, current_user)
-    try:
-        db.delete(course)
-        db.commit()
-    except Exception as exc:
-        db.rollback()
-        logger.exception("Error deleting course")
-        raise HTTPException(status_code=400, detail=f"Failed to delete course: {exc}")
+    db.delete(course)
+    db.commit()
     return {"message": "Course deleted"}
 
 
@@ -265,6 +235,7 @@ def get_chapter(chapter_id: str, db: Session = Depends(get_db)):
 def add_chapter(
     course_id: str,
     data: ChapterCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_teacher),
 ):
@@ -292,28 +263,14 @@ def add_chapter(
     db.commit()
     db.refresh(chapter)
 
-    # The chapter's transcript + article text is persisted on the Chapter row
-    # above; it is the single source of truth used directly for quiz generation
-    # and interviews (no embedding / vector indexing step).
+    # Embed transcript + article with OpenAI and store the vectors in
+    # Pinecone (the single source of truth for vectors). The transcript/article
+    # text itself stays in Supabase (the Chapter row above) for quiz generation.
+    background_tasks.add_task(
+        index_module_content,
+        course_id, chapter.id, data.article_content, video_transcript,
+    )
 
-    return ChapterResponse.model_validate(chapter)
-
-
-@router.get("/manage/chapters/{chapter_id}", response_model=ChapterResponse)
-def get_chapter_for_edit(
-    chapter_id: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_teacher),
-):
-    """Get full details of a single chapter for the teacher editing view (includes transcript)."""
-    chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
-    if not chapter:
-        raise HTTPException(status_code=404, detail="Chapter not found")
-    course = db.query(Course).filter(Course.id == chapter.course_id).first()
-    if not course:
-        raise HTTPException(status_code=404, detail="Course not found")
-    if current_user.role != UserRole.ADMIN and course.teacher_id != current_user.id:
-        raise HTTPException(status_code=403, detail="You do not own this course")
     return ChapterResponse.model_validate(chapter)
 
 
@@ -321,6 +278,7 @@ def get_chapter_for_edit(
 def update_chapter(
     chapter_id: str,
     data: ChapterCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_teacher),
 ):
@@ -343,9 +301,14 @@ def update_chapter(
     chapter.video_transcript = video_transcript
     db.commit()
     db.refresh(chapter)
+    course_id = chapter.course_id
 
-    # The updated transcript/article text is persisted on the Chapter row above
-    # and used directly (no embedding / vector indexing step).
+    # Re-embed into Pinecone (vectors only live in Pinecone). The updated
+    # transcript/article text is already persisted on the Chapter row above.
+    background_tasks.add_task(
+        index_module_content,
+        course_id, chapter_id, data.article_content, video_transcript,
+    )
 
     return ChapterResponse.model_validate(chapter)
 
@@ -360,13 +323,8 @@ def delete_chapter(
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
     _assert_course_owner(chapter.course, current_user)
-    try:
-        db.delete(chapter)
-        db.commit()
-    except Exception as exc:
-        db.rollback()
-        logger.exception("Error deleting chapter")
-        raise HTTPException(status_code=400, detail=f"Failed to delete chapter: {exc}")
+    db.delete(chapter)
+    db.commit()
     return {"message": "Chapter deleted"}
 
 
@@ -376,55 +334,11 @@ MAX_FILE_SIZE = 100 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv"}
 
 
-def _run_transcription_job(job_id: str, data: bytes, filename: str) -> None:
-    """Background worker: transcribe `data` and store the result under `job_id`.
-
-    transcribe_video_bytes never raises (returns None on any failure), but we
-    still guard so an unexpected error is surfaced to the poller as 'error'
-    rather than leaving the job stuck 'pending' forever.
-    """
-    from app.services.transcription_jobs import set_result, set_error
-    try:
-        text = transcribe_video_bytes(data, filename) or ""
-        set_result(job_id, text)
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.warning("Async transcription job %s failed: %s", job_id, exc)
-        set_error(job_id, str(exc))
-
-
-@router.post("/upload-thumbnail")
-def upload_thumbnail(
-    file: UploadFile = File(...),
-    current_user: User = Depends(require_teacher),
-):
-    """Upload a course thumbnail image and return its public URL."""
-    ext = os.path.splitext(file.filename or "")[1].lower()
-    if ext not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid image format. Allowed: .png, .jpg, .jpeg, .webp, .gif"
-        )
-    url = upload_course_thumbnail(file)
-    return {"thumbnail_url": url}
-
-
 @router.post("/upload-video")
 def upload_video(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    async_transcript: bool = False,
     current_user: User = Depends(require_teacher),
 ):
-    """Upload a module video to R2 and (by default) return its Whisper transcript.
-
-    Two modes:
-      • Synchronous (default): upload + transcription run concurrently and the
-        response includes {video_url, transcript}. Unchanged legacy behaviour.
-      • Async opt-in (?async_transcript=1): upload only, then return immediately
-        with {video_url, transcript: "", transcript_job_id}. Transcription runs
-        in the background; the client polls GET /transcript-status/{job_id}. This
-        makes the upload feel done in seconds regardless of video length.
-    """
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
@@ -438,51 +352,12 @@ def upload_video(
         raise HTTPException(status_code=400, detail="File is too large. Max size is 100MB.")
     file.file.seek(0)
 
-    if async_transcript:
-        # Upload synchronously (the URL must be ready to return), then hand the
-        # already-read bytes to a background transcription job and return at once.
-        url = upload_video_to_r2(file)
-        from app.services.transcription_jobs import create_job
-        job_id = create_job()
-        background_tasks.add_task(_run_transcription_job, job_id, data, file.filename)
-        return {"video_url": url, "transcript": "", "transcript_job_id": job_id}
+    url = upload_video_to_r2(file)
 
-    # ── Synchronous path (default, unchanged response shape) ──
-    # The R2 upload (reads file.file) and the transcription (works from the
-    # in-memory `data`) are independent and both I/O-bound — ffmpeg is a
-    # subprocess and both R2 and Whisper are network calls, all of which release
-    # the GIL. Run them concurrently so the request waits ~max(upload, transcribe)
-    # instead of the sum.
-    import concurrent.futures
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        upload_future = executor.submit(upload_video_to_r2, file)
-        transcribe_future = executor.submit(transcribe_video_bytes, data, file.filename)
-        # upload_video_to_r2 raises HTTPException on failure — .result() re-raises
-        # it here so the endpoint still returns the same 500. transcribe returns
-        # None on any failure (never raises), so the teacher can fill it in manually.
-        url = upload_future.result()
-        transcript = transcribe_future.result() or ""
-
+    # Auto-generate the transcript from the uploaded video (OpenAI Whisper).
+    # Returns "" on any failure so the teacher can still fill it in manually.
+    transcript = transcribe_video_bytes(data, file.filename) or ""
     return {"video_url": url, "transcript": transcript}
-
-
-@router.get("/transcript-status/{job_id}")
-def transcript_status(
-    job_id: str,
-    current_user: User = Depends(require_teacher),
-):
-    """Poll the status of an async transcription job started by /upload-video.
-
-    Returns {status: "pending"|"done"|"error", transcript, error}. 404 once the
-    job is unknown or has expired (TTL) — the client should then fall back to
-    manual transcript entry.
-    """
-    from app.services.transcription_jobs import get_job
-    job = get_job(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Transcript job not found or expired")
-    return job
 
 
 # ─── ARTICLE DOCUMENT IMPORT ───

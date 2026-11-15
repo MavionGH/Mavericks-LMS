@@ -1,6 +1,5 @@
 "use client";
 import Navbar from "@/components/Navbar";
-import Skeleton, { SkeletonProfile } from "@/components/Skeleton";
 import { useState, useEffect } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
@@ -20,7 +19,6 @@ function TeacherCoursesPage() {
 
   useEffect(() => {
     if (!teacherId) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     authFetch(`/api/admin/teachers/${teacherId}`)
       .then((r) => {
@@ -47,7 +45,7 @@ function TeacherCoursesPage() {
     <>
       <Navbar />
       <div className="page-container" style={{ backgroundColor: "var(--bg-canvas)" }}>
-        <div className="container admin-container">
+        <div className="container" style={{ padding: "48px 32px" }}>
 
           {/* Back button — lands on Teachers tab */}
           <button
@@ -68,7 +66,10 @@ function TeacherCoursesPage() {
           </button>
 
           {loading ? (
-            <SkeletonProfile />
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "300px", gap: "16px" }}>
+              <span style={{ width: 36, height: 36, border: "3px solid var(--border-muted)", borderTopColor: "var(--brand)", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
+              <span style={{ color: "var(--text-muted)", fontSize: "14px" }}>Loading teacher data…</span>
+            </div>
           ) : error ? (
             <div style={{ padding: "20px", background: "var(--bg-danger)", border: "1px solid var(--border-danger)", borderRadius: "var(--radius-sm)", color: "var(--color-danger)", fontSize: "13px" }}>
               ❌ {error}
@@ -76,21 +77,21 @@ function TeacherCoursesPage() {
           ) : (
             <>
               {/* Teacher header card */}
-              <div className="card admin-identity-card" style={{ marginBottom: "32px" }}>
+              <div className="card" style={{ padding: "28px 32px", marginBottom: "32px", display: "flex", alignItems: "center", gap: "20px" }}>
                 <div style={{ width: 56, height: 56, borderRadius: "50%", background: "linear-gradient(135deg, var(--brand), #8b5cf6)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "22px", fontWeight: "700", color: "#fff", flexShrink: 0 }}>
                   {teacher?.name?.[0]?.toUpperCase() ?? "T"}
                 </div>
-                <div className="admin-identity-info">
+                <div style={{ flex: 1 }}>
                   <h1 style={{ fontSize: "22px", fontWeight: "700", color: "var(--text-title)", margin: 0, marginBottom: "4px" }}>{teacher?.name}</h1>
                   <p style={{ color: "var(--text-muted)", fontSize: "13px", margin: 0 }}>{teacher?.email}</p>
                 </div>
-                <div className="admin-identity-stats">
+                <div style={{ display: "flex", gap: "24px", textAlign: "center" }}>
                   {[
                     { label: "Total", value: courses.length, color: "var(--brand)" },
                     { label: "Published", value: published.length, color: "var(--color-success)" },
                     { label: "Drafts", value: drafts.length, color: "var(--color-warning)" },
                   ].map((s) => (
-                    <div key={s.label} style={{ minWidth: "60px" }}>
+                    <div key={s.label}>
                       <div style={{ fontSize: "24px", fontWeight: "700", color: s.color, fontFamily: "JetBrains Mono" }}>{s.value}</div>
                       <div style={{ fontSize: "11px", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{s.label}</div>
                     </div>

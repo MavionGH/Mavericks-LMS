@@ -1,12 +1,12 @@
 """Central OpenAI configuration — API key, model names, and shared raw client.
 
-Every AI feature except the Realtime voice interview runs on OpenAI (that one
-runs on Gemini Live — see gemini_config.py / services/realtime.py). Lighter,
-cost-efficient models are the defaults:
+Every AI feature in the app now runs on OpenAI (replacing the previous Groq /
+HuggingFace stack). Lighter, cost-efficient models are the defaults:
 
   • Dialog + Quiz   → gpt-4o-mini   (interview chat loop, MCQ generation)
   • Final grading   → gpt-4o        (premium evaluation; o3-mini = reasoning alt)
   • Speech-to-text  → whisper-1     (student answers + uploaded module videos)
+  • Embeddings      → text-embedding-3-small  (RAG vector search)
 
 The key may be stored in `.env` under the conventional ``OPENAI_API_KEY`` or the
 project's original ``Open_Al`` name — we accept either so nothing breaks.
@@ -28,15 +28,13 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_GRADING_MODEL = os.getenv("OPENAI_GRADING_MODEL", "gpt-4o")
 # Speech-to-text (student voice answers + uploaded module videos).
 OPENAI_STT_MODEL = os.getenv("OPENAI_STT_MODEL", "whisper-1")
-# Text-to-speech for the AI interviewer's voice. tts-1 is the low-latency model
-# (snappy responses); "nova" is a warm, natural female voice. mp3 keeps the
-# payload small for a fast transfer. For an even more expressive (but slower)
-# voice set OPENAI_TTS_MODEL=gpt-4o-mini-tts. All overridable via .env.
-OPENAI_TTS_MODEL = os.getenv("OPENAI_TTS_MODEL", "tts-1")
-OPENAI_TTS_VOICE = os.getenv("OPENAI_TTS_VOICE", "nova")
-OPENAI_TTS_FORMAT = os.getenv("OPENAI_TTS_FORMAT", "mp3")
-# Note: the Realtime (speech-to-speech interview) API now runs on Gemini Live,
-# not OpenAI — see gemini_config.py and services/realtime.py.
+# Embeddings for RAG vector search.
+OPENAI_EMBED_MODEL = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
+# Embedding dimension. Kept at 384 so it stays compatible with the existing
+# Postgres `Vector(384)` column and the existing Pinecone index — no migration
+# needed. text-embedding-3-small natively outputs 1536 dims but supports the
+# `dimensions` parameter to truncate, which we use here.
+EMBED_DIM = int(os.getenv("EMBED_DIM", "384"))
 
 _raw_client = None
 _raw_resolved = False
@@ -50,8 +48,8 @@ def has_openai() -> bool:
 def get_openai_client():
     """Return a cached raw OpenAI SDK client (or None if unavailable).
 
-    Used for Whisper speech-to-text and text-to-speech. Cached process-wide so
-    the underlying HTTP connection pool is created once and reused.
+    Used for Whisper transcription and embeddings. Cached process-wide so the
+    underlying HTTP connection pool is created once and reused.
     """
     global _raw_client, _raw_resolved
     if _raw_resolved:

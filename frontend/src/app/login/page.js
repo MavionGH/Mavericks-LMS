@@ -7,16 +7,16 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 
 export default function LoginPage() {
-  const [email, setEmail] = useState("");
+  const [email, setEmail]       = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [error, setError]       = useState("");
+  const [loading, setLoading]   = useState(false);
 
   // Google OAuth specific states
   const [googleCredential, setGoogleCredential] = useState("");
-  const [showRoleModal, setShowRoleModal] = useState(false);
-  const [roleLoading, setRoleLoading] = useState(false);
-  const [selectedRole, setSelectedRole] = useState(null); // 'student' | 'teacher'
+  const [showRoleModal, setShowRoleModal]       = useState(false);
+  const [roleLoading, setRoleLoading]           = useState(false);
+  const [selectedRole, setSelectedRole]         = useState(null); // 'student' | 'teacher'
 
   const { login, loginWithGoogle, user, loading: authLoading } = useAuth();
   const router = useRouter();
@@ -59,18 +59,15 @@ export default function LoginPage() {
     const initGoogleSignIn = () => {
       if (typeof window !== "undefined" && window.google) {
         try {
-          if (!window.__googleInitialized) {
-            google.accounts.id.initialize({
-              client_id: process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || "1234567890-placeholder.apps.googleusercontent.com",
-              callback: (resp) => googleCallbackRef.current(resp),
-            });
-            window.__googleInitialized = true;
-          }
+          google.accounts.id.initialize({
+            client_id: process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || "1234567890-placeholder.apps.googleusercontent.com",
+            callback: (resp) => googleCallbackRef.current(resp),
+          });
           google.accounts.id.renderButton(
             document.getElementById("google-signin-button"),
-            {
-              theme: "outline",
-              size: "large",
+            { 
+              theme: "outline", 
+              size: "large", 
               width: "100%",
               text: "signin_with",
               shape: "rectangular"
@@ -135,20 +132,20 @@ export default function LoginPage() {
   return (
     <>
       <Navbar />
-      <Script
-        src="https://accounts.google.com/gsi/client"
+      <Script 
+        src="https://accounts.google.com/gsi/client" 
         strategy="afterInteractive"
       />
       <div
         className="page-container"
         style={{ display: "grid", placeItems: "center", minHeight: "100vh", padding: "24px", backgroundColor: "var(--bg-canvas)" }}
       >
-        <div className="card" style={{ width: "100%", maxWidth: 400, padding: "40px", backgroundColor: "var(--bg-surface)", boxShadow: "0 10px 25px rgba(0,0,0,0.05)", borderRadius: "12px" }}>
+        <div className="card" style={{ width: "100%", maxWidth: 400, padding: "40px", backgroundColor: "#ffffff", boxShadow: "0 10px 25px rgba(0,0,0,0.05)", borderRadius: "12px" }}>
           <div style={{ textAlign: "center", marginBottom: "32px" }}>
             <div style={{ display: 'flex', justifyContent: 'center', marginBottom: "12px" }}>
               <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--brand)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M22 10v6M2 10l10-5 10 5-10 5z" />
-                <path d="M6 12v5c0 2 2 3 6 3s6-1 6-3v-5" />
+                <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
+                <path d="M6 12v5c0 2 2 3 6 3s6-1 6-3v-5"/>
               </svg>
             </div>
             <h1 style={{ fontSize: "22px", fontWeight: "700", color: "var(--text-title)", marginBottom: "6px", letterSpacing: "-0.01em" }}>
@@ -212,9 +209,9 @@ export default function LoginPage() {
 
           {/* Divider */}
           <div style={{ display: "flex", alignItems: "center", margin: "24px 0", color: "var(--text-muted)", fontSize: "12px" }}>
-            <div style={{ flex: 1, height: "1px", backgroundColor: "var(--border-muted)" }} />
+            <div style={{ flex: 1, height: "1px", backgroundColor: "#e5e7eb" }} />
             <span style={{ padding: "0 12px", letterSpacing: "0.05em", textTransform: "uppercase" }}>or continue with</span>
-            <div style={{ flex: 1, height: "1px", backgroundColor: "var(--border-muted)" }} />
+            <div style={{ flex: 1, height: "1px", backgroundColor: "#e5e7eb" }} />
           </div>
 
           {/* Google Button Wrapper */}
@@ -245,7 +242,7 @@ export default function LoginPage() {
           animation: "modalFadeIn 0.25s ease-out"
         }}>
           <div style={{
-            backgroundColor: "var(--bg-surface)",
+            backgroundColor: "#ffffff",
             width: "90%",
             maxWidth: "500px",
             padding: "36px",
@@ -263,7 +260,7 @@ export default function LoginPage() {
 
             <div style={{ display: "flex", flexDirection: "column", gap: "16px", marginBottom: "28px" }}>
               {/* Student Role Card */}
-              <button
+              <button 
                 onClick={() => setSelectedRole("student")}
                 disabled={roleLoading}
                 className={`role-card-btn ${selectedRole === "student" ? "active-student" : ""}`}
@@ -273,8 +270,8 @@ export default function LoginPage() {
                   gap: "16px",
                   padding: "20px",
                   borderRadius: "12px",
-                  border: selectedRole === "student" ? "2px solid var(--brand)" : "2px solid var(--border-muted)",
-                  background: selectedRole === "student" ? "rgba(0, 112, 243, 0.02)" : "var(--bg-surface)",
+                  border: selectedRole === "student" ? "2px solid var(--brand)" : "2px solid #e5e7eb",
+                  background: selectedRole === "student" ? "rgba(0, 112, 243, 0.02)" : "#ffffff",
                   textAlign: "left",
                   cursor: "pointer",
                   transition: "all 0.2s ease",
@@ -305,7 +302,7 @@ export default function LoginPage() {
                 {selectedRole === "student" && (
                   <div style={{
                     backgroundColor: "var(--brand)",
-                    color: "var(--bg-surface)",
+                    color: "#ffffff",
                     width: "22px",
                     height: "22px",
                     borderRadius: "50%",
@@ -322,7 +319,7 @@ export default function LoginPage() {
               </button>
 
               {/* Teacher Role Card */}
-              <button
+              <button 
                 onClick={() => setSelectedRole("teacher")}
                 disabled={roleLoading}
                 className={`role-card-btn ${selectedRole === "teacher" ? "active-teacher" : ""}`}
@@ -332,8 +329,8 @@ export default function LoginPage() {
                   gap: "16px",
                   padding: "20px",
                   borderRadius: "12px",
-                  border: selectedRole === "teacher" ? "2px solid var(--color-success, #10b981)" : "2px solid var(--border-muted)",
-                  background: selectedRole === "teacher" ? "rgba(16, 185, 129, 0.02)" : "var(--bg-surface)",
+                  border: selectedRole === "teacher" ? "2px solid var(--color-success, #10b981)" : "2px solid #e5e7eb",
+                  background: selectedRole === "teacher" ? "rgba(16, 185, 129, 0.02)" : "#ffffff",
                   textAlign: "left",
                   cursor: "pointer",
                   transition: "all 0.2s ease",
@@ -366,7 +363,7 @@ export default function LoginPage() {
                 {selectedRole === "teacher" && (
                   <div style={{
                     backgroundColor: "var(--color-success, #10b981)",
-                    color: "var(--bg-surface)",
+                    color: "#ffffff",
                     width: "22px",
                     height: "22px",
                     borderRadius: "50%",
@@ -396,8 +393,8 @@ export default function LoginPage() {
                 borderRadius: "10px",
                 marginBottom: "20px",
                 transition: "all 0.3s ease",
-                backgroundColor: !selectedRole ? "var(--border-subtle)" : selectedRole === "teacher" ? "var(--color-success, #10b981)" : "var(--brand)",
-                borderColor: !selectedRole ? "var(--border-subtle)" : selectedRole === "teacher" ? "var(--color-success, #10b981)" : "var(--brand)",
+                backgroundColor: !selectedRole ? "#cbd5e1" : selectedRole === "teacher" ? "var(--color-success, #10b981)" : "var(--brand)",
+                borderColor: !selectedRole ? "#cbd5e1" : selectedRole === "teacher" ? "var(--color-success, #10b981)" : "var(--brand)",
                 cursor: !selectedRole ? "not-allowed" : "pointer",
                 boxShadow: !selectedRole ? "none" : selectedRole === "teacher" ? "0 4px 14px rgba(16,185,129,0.2)" : "0 4px 14px rgba(0,112,243,0.2)"
               }}
@@ -413,7 +410,7 @@ export default function LoginPage() {
             </button>
 
             <div>
-              <button
+              <button 
                 onClick={() => { setShowRoleModal(false); setSelectedRole(null); }}
                 disabled={roleLoading}
                 style={{

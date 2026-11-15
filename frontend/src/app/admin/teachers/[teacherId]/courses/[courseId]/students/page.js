@@ -1,6 +1,5 @@
 "use client";
 import Navbar from "@/components/Navbar";
-import Skeleton, { SkeletonTable } from "@/components/Skeleton";
 import { useState, useEffect } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { withAuth } from "@/components/withAuth";
@@ -24,7 +23,6 @@ function CourseStudentsPage() {
 
   useEffect(() => {
     if (!teacherId || !courseId) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     Promise.all([
       authFetch(`/api/admin/teachers/${teacherId}`).then((r) => r.json()),
@@ -64,10 +62,10 @@ function CourseStudentsPage() {
     <>
       <Navbar />
       <div className="page-container" style={{ backgroundColor: "var(--bg-canvas)" }}>
-        <div className="container admin-container">
+        <div className="container" style={{ padding: "48px 32px" }}>
 
           {/* Breadcrumb */}
-          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "28px", fontSize: "13px", color: "var(--text-muted)", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "28px", fontSize: "13px", color: "var(--text-muted)" }}>
             <button onClick={() => router.push("/admin?tab=teachers")} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--brand)", padding: 0, fontWeight: "500" }}>
               ← Teachers
             </button>
@@ -80,46 +78,43 @@ function CourseStudentsPage() {
           </div>
 
           {loading ? (
-            <>
-              <div style={{ marginBottom: "28px" }}>
-                <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                  <Skeleton variant="text" width="280px" height={24} />
-                  <Skeleton variant="text" width="200px" height={14} />
-                </div>
-              </div>
-              <SkeletonTable rows={5} cols={6} />
-            </>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "300px", gap: "16px" }}>
+              <span style={{ width: 36, height: 36, border: "3px solid var(--border-muted)", borderTopColor: "var(--brand)", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
+              <span style={{ color: "var(--text-muted)", fontSize: "14px" }}>Loading enrolled students…</span>
+            </div>
           ) : error ? (
             <div style={{ padding: "20px", background: "var(--bg-danger)", border: "1px solid var(--border-danger)", borderRadius: "var(--radius-sm)", color: "var(--color-danger)", fontSize: "13px" }}>❌ {error}</div>
           ) : (
             <>
               {/* Course header */}
-              <div className="card admin-identity-card" style={{ marginBottom: "28px" }}>
-                <div className="admin-identity-info">
-                  <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "6px", flexWrap: "wrap", justifyContent: "inherit" }}>
-                    <h1 style={{ fontSize: "20px", fontWeight: "700", color: "var(--text-title)", margin: 0 }}>{courseInfo?.title ?? "Course"}</h1>
-                    {courseInfo && (
-                      <span className={`badge ${courseInfo.is_published ? "badge-success" : "badge-warning"}`}>
-                        {courseInfo.is_published ? "Published" : "Draft"}
-                      </span>
-                    )}
-                  </div>
-                  <p style={{ color: "var(--text-muted)", fontSize: "13px", margin: 0 }}>
-                    By <strong style={{ color: "var(--text-title)" }}>{teacherData?.name}</strong>
-                    <span style={{ marginLeft: "8px", color: "var(--text-subtle)" }}>({teacherData?.email})</span>
-                  </p>
-                </div>
-                <div className="admin-identity-stats">
-                  {[
-                    { label: "Enrolled", value: students.length, color: "var(--brand)" },
-                    { label: "Completed", value: students.filter((s) => s.status === "completed").length, color: "var(--color-success)" },
-                    { label: "Modules", value: courseInfo?.chapter_count ?? "—", color: "var(--color-warning)" },
-                  ].map((stat) => (
-                    <div key={stat.label} style={{ minWidth: "60px" }}>
-                      <div style={{ fontSize: "24px", fontWeight: "700", color: stat.color, fontFamily: "JetBrains Mono" }}>{stat.value}</div>
-                      <div style={{ fontSize: "11px", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{stat.label}</div>
+              <div className="card" style={{ padding: "24px 32px", marginBottom: "28px" }}>
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "16px" }}>
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "6px" }}>
+                      <h1 style={{ fontSize: "20px", fontWeight: "700", color: "var(--text-title)", margin: 0 }}>{courseInfo?.title ?? "Course"}</h1>
+                      {courseInfo && (
+                        <span className={`badge ${courseInfo.is_published ? "badge-success" : "badge-warning"}`}>
+                          {courseInfo.is_published ? "Published" : "Draft"}
+                        </span>
+                      )}
                     </div>
-                  ))}
+                    <p style={{ color: "var(--text-muted)", fontSize: "13px", margin: 0 }}>
+                      By <strong style={{ color: "var(--text-title)" }}>{teacherData?.name}</strong>
+                      <span style={{ marginLeft: "8px", color: "var(--text-subtle)" }}>({teacherData?.email})</span>
+                    </p>
+                  </div>
+                  <div style={{ display: "flex", gap: "24px", textAlign: "center" }}>
+                    {[
+                      { label: "Enrolled", value: students.length, color: "var(--brand)" },
+                      { label: "Completed", value: students.filter((s) => s.status === "completed").length, color: "var(--color-success)" },
+                      { label: "Modules", value: courseInfo?.chapter_count ?? "—", color: "var(--color-warning)" },
+                    ].map((stat) => (
+                      <div key={stat.label}>
+                        <div style={{ fontSize: "24px", fontWeight: "700", color: stat.color, fontFamily: "JetBrains Mono" }}>{stat.value}</div>
+                        <div style={{ fontSize: "11px", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{stat.label}</div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
 

@@ -1,11 +1,6 @@
-"use client";
 import Navbar from "@/components/Navbar";
-import Skeleton from "@/components/Skeleton";
 import Link from "next/link";
 import FeaturedCourses from "@/components/FeaturedCourses";
-import { useAuth } from "@/context/AuthContext";
-import { useRouter } from "next/navigation";
-import { useEffect } from "react";
 
 const FEATURES = [
   { metric: "01", title: "Adaptive Voice Interviews", desc: "Interact with an AI agent that speaks, listens, and tailors technical questions dynamically." },
@@ -15,42 +10,6 @@ const FEATURES = [
 ];
 
 export default function HomePage() {
-  const { user, loading } = useAuth();
-  const router = useRouter();
-
-  useEffect(() => {
-    if (!loading && user) {
-      if (user.role === "admin") {
-        router.replace("/admin");
-      } else if (user.role === "teacher") {
-        router.replace("/teacher");
-      } else {
-        router.replace("/dashboard");
-      }
-    }
-  }, [user, loading, router]);
-
-  // Loading state or authenticated state redirecting to dashboard
-  if (loading || user) {
-    return (
-      <div style={{
-        height: "100vh",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        backgroundColor: "var(--bg-canvas)",
-        gap: "32px"
-      }}>
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "14px", width: 260 }}>
-          <Skeleton variant="circular" width={56} height={56} />
-          <Skeleton variant="text" width="180px" height={16} />
-          <Skeleton variant="text" width="120px" height={12} />
-        </div>
-      </div>
-    );
-  }
-
   return (
     <>
       <Navbar />
@@ -64,14 +23,16 @@ export default function HomePage() {
               <p>
                 Verify true comprehension. Learn through curated modules, pass conceptual check-points, and prove your capabilities via real-time voice-to-voice AI interviews.
               </p>
-              <div className="hero-buttons">
+              <div style={{ display: "flex", gap: "12px" }}>
                 <Link href="/courses" className="btn btn-primary btn-lg">Explore Catalog</Link>
                 <Link href="/register" className="btn btn-secondary btn-lg">Create account</Link>
               </div>
+            
             </div>
-
-            <div className="hero-illustration">
-              <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+            
+            {/* Visual illustration for Coursera/Udemy style */}
+            <div style={{ display: "flex", justifyContent: "center", alignItems: "center" }}>
+              <svg width="320" height="320" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <circle cx="100" cy="100" r="80" fill="var(--brand-muted)" />
                 <path d="M100 50L150 75L100 100L50 75L100 50Z" fill="var(--brand)" />
                 <path d="M70 95V125C70 135 100 145 100 145C100 145 130 135 130 125V95" stroke="var(--brand)" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
@@ -84,7 +45,7 @@ export default function HomePage() {
         </section>
 
         {/* FEATURES */}
-        <section className="section" style={{ borderTop: "1px solid var(--border-muted)", backgroundColor: "var(--bg-surface)" }}>
+        <section className="section" style={{ borderTop: "1px solid var(--border-muted)", backgroundColor: "#ffffff" }}>
           <div className="container">
             <div className="section-header" style={{ textAlign: "center", marginBottom: "48px" }}>
               <h2>Built for Rigorous Learning Validation</h2>
@@ -114,8 +75,8 @@ export default function HomePage() {
         </section>
 
         {/* FOOTER */}
-        <footer style={{ borderTop: "1px solid var(--border-muted)", padding: "32px 0", backgroundColor: "var(--bg-surface)" }}>
-          <div className="container footer-container">
+        <footer style={{ borderTop: "1px solid var(--border-muted)", padding: "32px 0", backgroundColor: "#ffffff" }}>
+          <div className="container flex-between">
             <span style={{ color: "var(--text-muted)", fontSize: "12px" }}>© 2026 Maverik Learning. All rights reserved.</span>
             <div style={{ display: "flex", gap: "16px" }}>
               <Link href="/courses" style={{ color: "var(--text-muted)", fontSize: "12px", textDecoration: "none" }}>Platform Catalog</Link>

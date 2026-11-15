@@ -6,6 +6,14 @@ from datetime import datetime
 import enum
 import uuid
 
+try:
+    from pgvector.sqlalchemy import Vector
+    from app.services.openai_config import EMBED_DIM
+    _embedding_type = Vector(EMBED_DIM)
+except ImportError:
+    from sqlalchemy import Text as _TextFallback
+    _embedding_type = _TextFallback()
+
 from app.database import Base
 
 
@@ -41,7 +49,6 @@ class User(Base):
     role = Column(Enum(UserRole), default=UserRole.STUDENT)
     is_approved = Column(Boolean, default=True)
     avatar = Column(String(500), nullable=True)
-    certificate_name = Column(String(100), nullable=True)
     google_id = Column(String(255), unique=True, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -60,8 +67,7 @@ class Course(Base):
     title = Column(String(255), nullable=False)
     description = Column(Text, nullable=False)
     thumbnail = Column(String(500), nullable=True)
-    pass_threshold = Column(Integer, default=70)   # interview / oral assessment pass %
-    quiz_threshold = Column(Integer, default=70)    # quiz pass %
+    pass_threshold = Column(Integer, default=70)
     # teacher_id: owner of the course (nullable for backward-compat with existing rows)
     teacher_id = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     # is_published: teacher has submitted the course for review (their intent flag)
@@ -72,11 +78,10 @@ class Course(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     teacher = relationship("User", foreign_keys=[teacher_id])
-    chapters = relationship("Chapter", back_populates="course", order_by="Chapter.order_index", cascade="all, delete-orphan")
-    enrollments = relationship("Enrollment", back_populates="course", cascade="all, delete-orphan")
-    certificates = relationship("Certificate", back_populates="course", cascade="all, delete-orphan")
-    interview_sessions = relationship("InterviewSession", back_populates="course", cascade="all, delete-orphan")
-    evaluations = relationship("Evaluation", back_populates="course", cascade="all, delete-orphan")
+    chapters = relationship("Chapter", back_populates="course", order_by="Chapter.order_index")
+    enrollments = relationship("Enrollment", back_populates="course")
+    certificates = relationship("Certificate", back_populates="course")
+    chunk_embeddings = relationship("ChunkEmbedding", back_populates="course", cascade="all, delete-orphan")
 
     @property
     def student_count(self) -> int:
@@ -104,10 +109,10 @@ class Chapter(Base):
     course_id = Column(String, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False)
 
     course = relationship("Course", back_populates="chapters")
-    evaluations = relationship("Evaluation", back_populates="chapter", cascade="all, delete-orphan")
-    quiz_attempts = relationship("QuizAttempt", back_populates="chapter", cascade="all, delete-orphan")
-    quiz_question = relationship("QuizQuestion", back_populates="chapter", uselist=False, cascade="all, delete-orphan")
-    interview_sessions = relationship("InterviewSession", back_populates="chapter", cascade="all, delete-orphan")
+    evaluations = relationship("Evaluation", back_populates="chapter")
+    quiz_attempts = relationship("QuizAttempt", back_populates="chapter")
+    quiz_question = relationship("QuizQuestion", back_populates="chapter", uselist=False)
+    chunk_embeddings = relationship("ChunkEmbedding", back_populates="chapter", cascade="all, delete-orphan")
 
     @property
     def has_transcript(self) -> bool:
@@ -120,8 +125,8 @@ class Enrollment(Base):
     __tablename__ = "enrollments"
 
     id = Column(String, primary_key=True, default=generate_uuid)
-    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
-    course_id = Column(String, ForeignKey("courses.id"), nullable=False, index=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    course_id = Column(String, ForeignKey("courses.id"), nullable=False)
     current_chapter_index = Column(Integer, default=0)
     video_watched = Column(Boolean, default=False)
     article_read = Column(Boolean, default=False)
@@ -150,8 +155,8 @@ class QuizAttempt(Base):
     __tablename__ = "quiz_attempts"
 
     id = Column(String, primary_key=True, default=generate_uuid)
-    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
-    chapter_id = Column(String, ForeignKey("chapters.id"), nullable=False, index=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    chapter_id = Column(String, ForeignKey("chapters.id"), nullable=False)
     questions = Column(JSON, nullable=False)
     score = Column(Integer, nullable=False)
     passed = Column(Boolean, nullable=False)
@@ -166,11 +171,11 @@ class InterviewSession(Base):
     __tablename__ = "interview_sessions"
 
     id = Column(String, primary_key=True, default=generate_uuid)
-    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
     # chapter_id is set for a per-module interview; course_id is set for the
     # course-wide final interview (which spans every module). Exactly one is used.
-    chapter_id = Column(String, ForeignKey("chapters.id"), nullable=True, index=True)
-    course_id = Column(String, ForeignKey("courses.id"), nullable=True, index=True)
+    chapter_id = Column(String, ForeignKey("chapters.id"), nullable=True)
+    course_id = Column(String, ForeignKey("courses.id"), nullable=True)
     status = Column(String, default="active")  # active | completed
     transcript = Column(JSON, default=list)
     pause_metrics = Column(JSON, default=list)
@@ -182,8 +187,8 @@ class InterviewSession(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User")
-    chapter = relationship("Chapter", back_populates="interview_sessions")
-    course = relationship("Course", back_populates="interview_sessions")
+    chapter = relationship("Chapter")
+    course = relationship("Course")
 
 
 # ─── EVALUATION (AI Interview) ───
@@ -191,9 +196,9 @@ class Evaluation(Base):
     __tablename__ = "evaluations"
 
     id = Column(String, primary_key=True, default=generate_uuid)
-    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
-    chapter_id = Column(String, ForeignKey("chapters.id"), nullable=True, index=True)
-    course_id = Column(String, ForeignKey("courses.id"), nullable=True, index=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    chapter_id = Column(String, ForeignKey("chapters.id"), nullable=True)
+    course_id = Column(String, ForeignKey("courses.id"), nullable=True)
     type = Column(Enum(EvaluationType), nullable=False)
     transcript = Column(JSON, nullable=True)
     technical_score = Column(Float, default=0)
@@ -209,7 +214,7 @@ class Evaluation(Base):
 
     user = relationship("User", back_populates="evaluations")
     chapter = relationship("Chapter", back_populates="evaluations")
-    course = relationship("Course", back_populates="evaluations")
+    course = relationship("Course")
 
 
 # ─── CERTIFICATE ───
@@ -217,93 +222,25 @@ class Certificate(Base):
     __tablename__ = "certificates"
 
     id = Column(String, primary_key=True, default=generate_uuid)
-    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
-    course_id = Column(String, ForeignKey("courses.id"), nullable=False, index=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    course_id = Column(String, ForeignKey("courses.id"), nullable=False)
     issue_date = Column(DateTime, default=datetime.utcnow)
     verify_code = Column(String, unique=True, default=generate_uuid)
-    # Optional: Cloudflare R2 public URL for a rendered/stored certificate PDF
-    pdf_url = Column(String(500), nullable=True)
 
     user = relationship("User", back_populates="certificates")
     course = relationship("Course", back_populates="certificates")
 
 
-# ─── HIRING MODULE MODELS ───
-
-class HiringTemplate(Base):
-    __tablename__ = "hiring_templates"
-
-    id = Column(String, primary_key=True, default=generate_uuid)
-    job_title = Column(String(255), nullable=False)
-    teacher_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    teacher = relationship("User", foreign_keys=[teacher_id])
-    attempts = relationship("InterviewAttempt", back_populates="hiring_template", cascade="all, delete-orphan")
-    progresses = relationship("StudentInterviewProgress", back_populates="hiring_template", cascade="all, delete-orphan")
-
-
-class InterviewAttempt(Base):
-    __tablename__ = "interview_attempts"
+# ─── CHUNK EMBEDDINGS (for RAG — denormalized course_id for cross-chapter queries) ───
+class ChunkEmbedding(Base):
+    __tablename__ = "chunk_embeddings"
 
     id = Column(String, primary_key=True, default=generate_uuid)
-    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    hiring_template_id = Column(String, ForeignKey("hiring_templates.id", ondelete="CASCADE"), nullable=False, index=True)
-    cv_url = Column(String(500), nullable=True)
-    cv_name = Column(String(255), nullable=True)
-    job_description = Column(Text, nullable=True)
-    status = Column(String, default="in_progress")  # in_progress | passed | failed
-    current_stage = Column(String, default="hr")  # hr | coding | problem_solving | completed
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    user = relationship("User")
-    hiring_template = relationship("HiringTemplate", back_populates="attempts")
-    stages = relationship("InterviewStage", back_populates="attempt", cascade="all, delete-orphan")
-
-
-class InterviewStage(Base):
-    __tablename__ = "interview_stages"
-
-    id = Column(String, primary_key=True, default=generate_uuid)
-    attempt_id = Column(String, ForeignKey("interview_attempts.id", ondelete="CASCADE"), nullable=False, index=True)
-    stage_type = Column(String, nullable=False)  # hr | coding | problem_solving
-    status = Column(String, default="locked")  # locked | in_progress | passed | failed
-    score = Column(Float, nullable=True)
-    feedback = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    attempt = relationship("InterviewAttempt", back_populates="stages")
-    submissions = relationship("CodingSubmission", back_populates="stage", cascade="all, delete-orphan")
-
-
-class StudentInterviewProgress(Base):
-    __tablename__ = "student_interview_progress"
-
-    id = Column(String, primary_key=True, default=generate_uuid)
-    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    hiring_template_id = Column(String, ForeignKey("hiring_templates.id", ondelete="CASCADE"), nullable=False, index=True)
-    current_stage = Column(String, default="hr")  # hr | coding | problem_solving | completed
-    status = Column(String, default="in_progress")  # in_progress | passed | failed
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    user = relationship("User")
-    hiring_template = relationship("HiringTemplate", back_populates="progresses")
-
-
-class CodingSubmission(Base):
-    __tablename__ = "coding_submissions"
-
-    id = Column(String, primary_key=True, default=generate_uuid)
-    stage_id = Column(String, ForeignKey("interview_stages.id", ondelete="CASCADE"), nullable=False, index=True)
-    language = Column(String(50), nullable=False)
-    code = Column(Text, nullable=False)
-    status = Column(String, default="submitted")  # submitted | compiled | passed | failed
+    chapter_id = Column(String, ForeignKey("chapters.id", ondelete="CASCADE"), nullable=False, index=True)
+    course_id = Column(String, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
+    chunk_text = Column(Text, nullable=False)
+    embedding = Column(_embedding_type, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    stage = relationship("InterviewStage", back_populates="submissions")
-
-
-
+    chapter = relationship("Chapter", back_populates="chunk_embeddings")
+    course = relationship("Course", back_populates="chunk_embeddings")
